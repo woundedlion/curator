@@ -5,6 +5,7 @@ import { flushPendingPersist, usePlaylistStore } from "../store/playlistStore";
 import { useUiStore } from "../store/uiStore";
 import { bootstrapSpotify } from "../services/spotifyBootstrap";
 import { promoteSingleCandidateMatches } from "../services/spotifyMatchRunner";
+import { shutdownAudioParserPool } from "../workers/audioParserPool";
 
 function flushOnHide(): void {
   void flushPendingPersist();
@@ -28,6 +29,7 @@ export function useAppBootstrap(): void {
     return () => {
       window.removeEventListener("pagehide", flushOnHide);
       unsubscribe();
+      shutdownAudioParserPool();
     };
   }, []);
 }

@@ -1,5 +1,5 @@
 const PARENTHETICAL_SUFFIX = /\s*[\(\[][^()\[\]]*[\)\]]\s*$/g;
-const FEATURING_CLAUSE = /\s*(?:feat\.|featuring|ft\.)\s.+$/i;
+const FEATURING_CLAUSE = /\s+(?:feat\.?|featuring|ft\.?)\s.+$/i;
 const MULTIPLE_WHITESPACE = /\s+/g;
 
 function stripParentheticalSuffixes(value: string): string {

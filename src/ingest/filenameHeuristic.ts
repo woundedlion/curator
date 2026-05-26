@@ -1,3 +1,5 @@
+import { ARTIST_TITLE_SEPARATOR } from "../constants";
+
 type FilenameHint = {
   artist?: string;
   album?: string;
@@ -61,14 +63,20 @@ function hintFromFourOrMoreSegments(segments: string[]): FilenameHint {
       trackNo: possibleTrackNo,
       title,
       artist,
-      album: albumSegments.length > 0 ? albumSegments.join(" - ") : undefined,
+      album:
+        albumSegments.length > 0
+          ? albumSegments.join(ARTIST_TITLE_SEPARATOR)
+          : undefined,
     };
   }
   const albumSegments = segments.slice(0, segments.length - 2);
   return {
     title,
     artist,
-    album: albumSegments.length > 0 ? albumSegments.join(" - ") : undefined,
+    album:
+      albumSegments.length > 0
+        ? albumSegments.join(ARTIST_TITLE_SEPARATOR)
+        : undefined,
   };
 }
 
@@ -80,7 +88,9 @@ function hintFromSingleSegment(base: string): FilenameHint {
 
 export function deriveHintsFromFileName(fileName: string): FilenameHint {
   const base = stripExtension(fileName);
-  const segments = base.split(" - ").map((segment) => segment.trim());
+  const segments = base
+    .split(ARTIST_TITLE_SEPARATOR)
+    .map((segment) => segment.trim());
 
   if (segments.length >= 4) return hintFromFourOrMoreSegments(segments);
   if (segments.length === 3) return hintFromThreeSegments(segments);

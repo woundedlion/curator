@@ -1,14 +1,20 @@
 import { describe, expect, it } from "vitest";
 import {
+  captureSelection,
   pushBounded,
+  snapshotAddEntry,
+  snapshotDeleteEntry,
   snapshotReorderEntry,
   snapshotReplaceEntry,
+  type SelectionSnapshot,
   type UndoEntry,
 } from "./undoStack";
 import type { Track } from "../types";
 
+const NO_SELECTION: SelectionSnapshot = { priorSelection: [], priorAnchor: null };
+
 function buildAddEntry(n: number): UndoEntry {
-  return { kind: "add", addedTrackIds: [`t${n}`] };
+  return snapshotAddEntry([`t${n}`], NO_SELECTION);
 }
 
 describe("pushBounded", () => {
@@ -20,25 +26,36 @@ describe("pushBounded", () => {
     let stack: UndoEntry[] = [];
     for (let i = 0; i < 15; i++) stack = pushBounded(stack, buildAddEntry(i));
     expect(stack).toHaveLength(10);
-    expect(stack[0]).toEqual({ kind: "add", addedTrackIds: ["t5"] });
-    expect(stack.at(-1)).toEqual({ kind: "add", addedTrackIds: ["t14"] });
+    expect(stack[0]).toMatchObject({ kind: "add", addedTrackIds: ["t5"] });
+    expect(stack.at(-1)).toMatchObject({ kind: "add", addedTrackIds: ["t14"] });
+  });
+});
+
+describe("captureSelection", () => {
+  it("freezes the selection at call time", () => {
+    const set = new Set(["a", "b"]);
+    const snap = captureSelection(set, "a");
+    set.add("c");
+    expect(snap.priorSelection).toEqual(["a", "b"]);
+    expect(snap.priorAnchor).toBe("a");
   });
 });
 
 describe("snapshot helpers", () => {
   it("clones the trackIds array for reorder snapshots", () => {
     const ids = ["a", "b", "c"];
-    const entry = snapshotReorderEntry(ids, {
-      field: "artist",
-      dir: "asc",
-    });
+    const entry = snapshotReorderEntry(
+      ids,
+      { field: "artist", dir: "asc" },
+      NO_SELECTION,
+    );
     ids.push("d");
     if (entry.kind !== "reorder") throw new Error("expected reorder");
     expect(entry.priorTrackIds).toEqual(["a", "b", "c"]);
   });
 
   it("captures null sort spec for reorder snapshots", () => {
-    const entry = snapshotReorderEntry(["a"], null);
+    const entry = snapshotReorderEntry(["a"], null, NO_SELECTION);
     if (entry.kind !== "reorder") throw new Error("expected reorder");
     expect(entry.priorSort).toBeNull();
   });
@@ -52,9 +69,33 @@ describe("snapshot helpers", () => {
         spotify: { status: "idle" },
       },
     };
-    const entry = snapshotReplaceEntry(["a"], map);
+    const entry = snapshotReplaceEntry(["a"], map, NO_SELECTION);
     if (entry.kind !== "replace") throw new Error("expected replace");
     expect(entry.priorTracksById).toEqual(map);
     expect(entry.priorTracksById).not.toBe(map);
+  });
+
+  it("captures full Track objects for delete snapshots", () => {
+    const track: Track = {
+      id: "a",
+      source: { kind: "text", rawLine: "a" },
+      title: "Karma Police",
+      enrichment: { status: "matched", mbRecordingId: "mb-1" },
+      spotify: { status: "matched", uri: "spotify:track:xyz" },
+    };
+    const priorIds = ["a", "b"];
+    const entry = snapshotDeleteEntry(priorIds, [track], NO_SELECTION);
+    if (entry.kind !== "delete") throw new Error("expected delete");
+    priorIds.push("c");
+    expect(entry.priorTrackIds).toEqual(["a", "b"]);
+    expect(entry.deletedTracks[0]).toBe(track);
+  });
+
+  it("embeds the selection snapshot in every entry kind", () => {
+    const sel = captureSelection(new Set(["a", "b"]), "a");
+    expect(snapshotAddEntry(["x"], sel)).toMatchObject(sel);
+    expect(snapshotReorderEntry(["a"], null, sel)).toMatchObject(sel);
+    expect(snapshotReplaceEntry(["a"], {}, sel)).toMatchObject(sel);
+    expect(snapshotDeleteEntry(["a"], [], sel)).toMatchObject(sel);
   });
 });

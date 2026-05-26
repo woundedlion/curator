@@ -19,13 +19,52 @@ const defaultSettings: Settings = {
   preferFullPlayback: false,
 };
 
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+export function sanitizeSettings(parsed: unknown): Settings {
+  if (parsed === null || typeof parsed !== "object") return defaultSettings;
+  const p = parsed as Record<string, unknown>;
+  const thresholdsRaw =
+    p.acceptThresholds && typeof p.acceptThresholds === "object"
+      ? (p.acceptThresholds as Record<string, unknown>)
+      : {};
+  const mb = isFiniteNumber(thresholdsRaw.mb)
+    ? Math.min(1, Math.max(0, thresholdsRaw.mb))
+    : defaultSettings.acceptThresholds.mb;
+  const spotify = isFiniteNumber(thresholdsRaw.spotify)
+    ? Math.min(1, Math.max(0, thresholdsRaw.spotify))
+    : defaultSettings.acceptThresholds.spotify;
+  return {
+    spotifyClientId:
+      typeof p.spotifyClientId === "string" ? p.spotifyClientId : undefined,
+    spotifyRedirectUri:
+      typeof p.spotifyRedirectUri === "string"
+        ? p.spotifyRedirectUri
+        : defaultSettings.spotifyRedirectUri,
+    recursiveFolderScan:
+      typeof p.recursiveFolderScan === "boolean"
+        ? p.recursiveFolderScan
+        : defaultSettings.recursiveFolderScan,
+    acceptThresholds: { mb, spotify },
+    musicbrainzContact:
+      typeof p.musicbrainzContact === "string"
+        ? p.musicbrainzContact
+        : defaultSettings.musicbrainzContact,
+    preferFullPlayback:
+      typeof p.preferFullPlayback === "boolean"
+        ? p.preferFullPlayback
+        : defaultSettings.preferFullPlayback,
+  };
+}
+
 function loadSettingsFromStorage(): Settings {
   if (typeof window === "undefined") return defaultSettings;
   const raw = localStorage.getItem(SETTINGS_STORAGE_KEY);
   if (!raw) return defaultSettings;
   try {
-    const parsed = JSON.parse(raw) as Partial<Settings>;
-    return { ...defaultSettings, ...parsed };
+    return sanitizeSettings(JSON.parse(raw));
   } catch {
     return defaultSettings;
   }

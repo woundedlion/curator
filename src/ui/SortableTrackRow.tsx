@@ -1,3 +1,4 @@
+import { memo, useCallback, type MouseEvent } from "react";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import type { Track } from "../types";
@@ -6,13 +7,25 @@ import { TrashIcon } from "./icons";
 import { PlayButton } from "./PlayButton";
 import { StatusGlyph } from "./StatusGlyph";
 
+export type RowClickModifiers = {
+  shift: boolean;
+  // True for ctrl on Win/Linux, meta (cmd) on macOS — both used for toggle.
+  meta: boolean;
+};
+
 type Props = {
   track: Track;
   displayIndex: number;
-  onPickSpotifyMatch: () => void;
-  onPickEnrichmentMatch: () => void;
-  onReEnrich: () => void;
-  onRemove: () => void;
+  selected: boolean;
+  // True when the row immediately below is also selected. When set, the
+  // row drops its bottom divider so a multi-row selection reads as one
+  // continuous tinted block instead of N separately-bordered rows.
+  nextSelected: boolean;
+  onRowClick: (trackId: string, modifiers: RowClickModifiers) => void;
+  onPickSpotifyMatch: (trackId: string) => void;
+  onPickEnrichmentMatch: (trackId: string) => void;
+  onReEnrich: (trackId: string) => void;
+  onRemove: (trackId: string) => void;
 };
 
 function formatTrackNumber(track: Track): string {
@@ -26,9 +39,12 @@ function renderCell(value: string | number | undefined): string {
   return String(value);
 }
 
-export function SortableTrackRow({
+function SortableTrackRowImpl({
   track,
   displayIndex,
+  selected,
+  nextSelected,
+  onRowClick,
   onPickSpotifyMatch,
   onPickEnrichmentMatch,
   onReEnrich,
@@ -45,13 +61,59 @@ export function SortableTrackRow({
 
   const isMuted = track.spotify.status === "missing";
 
+  const handleClick = useCallback(
+    (e: MouseEvent<HTMLDivElement>) => {
+      if (
+        e.target instanceof Element &&
+        e.target.closest('button, a, input, [role="button"]')
+      ) {
+        return;
+      }
+      onRowClick(track.id, {
+        shift: e.shiftKey,
+        meta: e.metaKey || e.ctrlKey,
+      });
+    },
+    [onRowClick, track.id],
+  );
+  const handlePickSpotify = useCallback(
+    () => onPickSpotifyMatch(track.id),
+    [onPickSpotifyMatch, track.id],
+  );
+  const handlePickEnrichment = useCallback(
+    () => onPickEnrichmentMatch(track.id),
+    [onPickEnrichmentMatch, track.id],
+  );
+  const handleReEnrich = useCallback(
+    () => onReEnrich(track.id),
+    [onReEnrich, track.id],
+  );
+  const handleRemove = useCallback(
+    () => onRemove(track.id),
+    [onRemove, track.id],
+  );
+
+  // Selection background uses the Spotify-green tint at 10% alpha plus a
+  // small left accent strip so a glance at the edge confirms multi-select
+  // without competing with the data inside the row. When the next row is
+  // also selected we drop the bottom divider so the block reads as one
+  // continuous tinted area.
+  const selectionClasses = selected
+    ? "bg-matched/10 border-l-2 border-l-matched"
+    : "border-l-2 border-l-transparent";
+  const dividerClass =
+    selected && nextSelected ? "" : "border-b border-neutral-900";
+
   return (
     <div
       ref={setNodeRef}
       style={style}
-      className={`flex items-center border-b border-neutral-900 px-2 text-sm ${
+      onClick={handleClick}
+      className={`flex h-full items-center ${dividerClass} px-2 text-sm ${selectionClasses} ${
         isMuted ? "text-neutral-500" : "text-neutral-100"
       }`}
+      data-track-id={track.id}
+      aria-selected={selected}
     >
       <button
         type="button"
@@ -92,19 +154,19 @@ export function SortableTrackRow({
       <div className="w-10 px-2">
         <EnrichmentGlyph
           status={track.enrichment.status}
-          onPick={onPickEnrichmentMatch}
+          onPick={handlePickEnrichment}
         />
       </div>
       <div className="w-10 px-2">
         <StatusGlyph
           status={track.spotify.status}
-          onPick={onPickSpotifyMatch}
+          onPick={handlePickSpotify}
         />
       </div>
       <div className="w-8 px-1">
         <button
           type="button"
-          onClick={onReEnrich}
+          onClick={handleReEnrich}
           aria-label="Re-enrich (clears cached MusicBrainz result)"
           title="Re-enrich (clears cached MusicBrainz result)"
           className="inline-flex items-center justify-center bg-transparent px-1 py-0.5 text-sm text-neutral-100 transition-opacity hover:opacity-70"
@@ -115,7 +177,7 @@ export function SortableTrackRow({
       <div className="w-8 px-1">
         <button
           type="button"
-          onClick={onRemove}
+          onClick={handleRemove}
           aria-label="Remove track from playlist"
           title="Remove track from playlist"
           className="inline-flex items-center justify-center bg-transparent px-1 py-0.5 text-matched transition-opacity hover:opacity-80"
@@ -126,3 +188,5 @@ export function SortableTrackRow({
     </div>
   );
 }
+
+export const SortableTrackRow = memo(SortableTrackRowImpl);

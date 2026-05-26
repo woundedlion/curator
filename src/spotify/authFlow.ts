@@ -6,7 +6,7 @@ import {
   SPOTIFY_TOKEN_URL,
 } from "../constants";
 import type { SpotifyTokens } from "../types";
-import { runWithRateLimitPolicy } from "./apiClient";
+import { SpotifyAuthExpiredError, runWithRateLimitPolicy } from "./apiClient";
 import {
   deriveCodeChallenge,
   generateAuthState,
@@ -150,7 +150,10 @@ async function refreshAccessToken(
   const response = await postToTokenEndpoint(body);
   if (!response.ok) {
     clearTokens();
-    throw new Error("Spotify token refresh failed");
+    // Refresh failure means the session is irrecoverably gone — surface a
+    // typed error so callers (e.g. spotifyStore.loadPlaylists) flip
+    // `connected: false` and toast "reconnect in Settings".
+    throw new SpotifyAuthExpiredError();
   }
   const json = (await response.json()) as TokenResponse;
   const refreshed = toTokens(json, tokens.refreshToken);
@@ -158,11 +161,22 @@ async function refreshAccessToken(
   return refreshed;
 }
 
+// Serializes concurrent refresh attempts. Without this, N near-simultaneous
+// Spotify calls all see the same expiring token and each fire a refresh —
+// Spotify invalidates earlier refresh tokens on use, so racing refreshes
+// log the user out unpredictably.
+let refreshInFlight: Promise<SpotifyTokens> | null = null;
+
 export async function getValidAccessToken(clientId: string): Promise<string> {
   const tokens = readTokens();
-  if (!tokens) throw new Error("Not connected to Spotify");
+  if (!tokens) throw new SpotifyAuthExpiredError();
   if (isAccessTokenFresh(tokens)) return tokens.accessToken;
-  const refreshed = await refreshAccessToken(clientId, tokens);
+  if (!refreshInFlight) {
+    refreshInFlight = refreshAccessToken(clientId, tokens).finally(() => {
+      refreshInFlight = null;
+    });
+  }
+  const refreshed = await refreshInFlight;
   return refreshed.accessToken;
 }
 

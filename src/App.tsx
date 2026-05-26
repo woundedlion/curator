@@ -47,10 +47,6 @@ export function App() {
     void reenrichTrack(trackId);
   }, []);
 
-  const handleRemove = useCallback((trackId: string) => {
-    usePlaylistStore.getState().removeTrack(trackId);
-  }, []);
-
   return (
     <div className="flex h-full flex-col">
       <Toolbar hiddenCount={hiddenCount} onPickFolder={pickFolderAndIngest} />
@@ -65,7 +61,6 @@ export function App() {
               onPickSpotifyMatch={setSpotifyPickerTrackId}
               onPickEnrichmentMatch={setEnrichmentPickerTrackId}
               onReEnrich={handleReEnrich}
-              onRemove={handleRemove}
             />
           )}
           <CreatePlaylistPanel />

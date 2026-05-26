@@ -54,8 +54,16 @@ export const SPOTIFY_SEARCH_LIMIT = 10;
 export const ROW_HEIGHT_PX = 44;
 
 export const DRAFT_PLAYLIST_ID = "active-draft";
+export const DEFAULT_PLAYLIST_NAME = "New Playlist";
+
+// Universal " - " delimiter used by text-list ingest, filename heuristics,
+// and m3u EXTINF parsing to split artist/title (and album/track when present).
+export const ARTIST_TITLE_SEPARATOR = " - ";
 
 export const SETTINGS_STORAGE_KEY = "curator.settings.v1";
 export const TOKENS_STORAGE_KEY = "curator.spotify.tokens.v1";
 export const PKCE_VERIFIER_KEY = "curator.spotify.pkce_verifier";
 export const PKCE_STATE_KEY = "curator.spotify.pkce_state";
+// Per-tab playlist scroll position. sessionStorage scope: survives reloads,
+// clears on tab close — matches DESIGN §5 "fresh tab should start clean."
+export const PLAYLIST_SCROLL_KEY = "curator.playlist.scrollTop";

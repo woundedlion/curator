@@ -1,3 +1,4 @@
+import { useDialogFocus } from "../hooks/useDialogFocus";
 import type { SpotifyPlaylistSummary } from "../types";
 
 type Props = {
@@ -93,6 +94,10 @@ export function NameCollisionDialog({
   onReplace,
   onCancel,
 }: Props) {
+  const dialogRef = useDialogFocus<HTMLDivElement>(
+    matches.length > 0,
+    onCancel,
+  );
   if (matches.length === 0) return null;
 
   return (
@@ -102,7 +107,11 @@ export function NameCollisionDialog({
       aria-label="Existing playlist with the same name"
       className="fixed inset-0 z-40 flex items-center justify-center bg-black/70 p-4"
     >
-      <div className="w-full max-w-md rounded-lg bg-neutral-900 p-5 shadow-xl">
+      <div
+        ref={dialogRef}
+        tabIndex={-1}
+        className="w-full max-w-md rounded-lg bg-neutral-900 p-5 shadow-xl"
+      >
         <h2 className="text-base font-semibold">
           You already have a playlist named &ldquo;{candidateName}&rdquo;
         </h2>

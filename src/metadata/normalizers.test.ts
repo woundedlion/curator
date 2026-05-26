@@ -18,6 +18,28 @@ describe("normalizeForMatching", () => {
     );
   });
 
+  it("strips ft. (with period)", () => {
+    expect(normalizeForMatching("Lean On ft. MØ")).toBe("lean on");
+  });
+
+  it("strips bare ft (no period) — common in ID3 tags", () => {
+    expect(normalizeForMatching("Lean On ft MØ")).toBe("lean on");
+  });
+
+  it("strips feat (no period)", () => {
+    expect(normalizeForMatching("Yeah! feat Ludacris")).toBe("yeah!");
+  });
+
+  it("strips featuring (full word)", () => {
+    expect(normalizeForMatching("Stan featuring Dido")).toBe("stan");
+  });
+
+  it("does not strip 'feat' when no trailing artist clause", () => {
+    // The clause needs at least one trailing token after the keyword;
+    // a song titled just "feat" or "Feature" shouldn't be eaten.
+    expect(normalizeForMatching("Feature")).toBe("feature");
+  });
+
   it("expands ampersands and casefolds", () => {
     expect(normalizeForMatching("Hall & Oates")).toBe("hall and oates");
   });

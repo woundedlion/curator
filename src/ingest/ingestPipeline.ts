@@ -18,6 +18,13 @@ export type IngestOptions = {
   onProgress?: (progress: IngestProgress) => void;
 };
 
+export type IngestFailure = { fileName: string; error: unknown };
+
+export type IngestResult = {
+  tracks: Track[];
+  failures: IngestFailure[];
+};
+
 async function parseSingleFile(file: File): Promise<Track[]> {
   if (isAudioFile(file.name)) {
     const track = await parseAudioFile(file);
@@ -31,19 +38,22 @@ async function parseSingleFile(file: File): Promise<Track[]> {
 export async function ingestFiles(
   files: File[],
   options: IngestOptions = {},
-): Promise<Track[]> {
+): Promise<IngestResult> {
   const unique = dedupeFiles(files);
   const totalCount = unique.length;
-  const allTracks: Track[] = [];
+  const tracks: Track[] = [];
+  const failures: IngestFailure[] = [];
 
   for (let index = 0; index < unique.length; index++) {
+    const file = unique[index];
     try {
-      const parsed = await parseSingleFile(unique[index]);
-      allTracks.push(...parsed);
-    } catch {
-      // A single bad file should not abort the whole drop; skip it silently.
+      const parsed = await parseSingleFile(file);
+      tracks.push(...parsed);
+    } catch (error) {
+      failures.push({ fileName: file.name, error });
+      console.warn("ingest: failed to parse", file.name, error);
     }
     options.onProgress?.({ parsedCount: index + 1, totalCount });
   }
-  return allTracks;
+  return { tracks, failures };
 }

@@ -32,6 +32,15 @@ type UiStore = {
 };
 
 let nextToastId = 1;
+const toastTimers = new Map<number, { fade: number; remove: number }>();
+
+function clearTimersFor(id: number): void {
+  const timers = toastTimers.get(id);
+  if (!timers) return;
+  clearTimeout(timers.fade);
+  clearTimeout(timers.remove);
+  toastTimers.delete(id);
+}
 
 export const useUiStore = create<UiStore>((set, get) => {
   function beginFadeFor(id: number): void {
@@ -43,6 +52,7 @@ export const useUiStore = create<UiStore>((set, get) => {
   }
 
   function removeToastFor(id: number): void {
+    clearTimersFor(id);
     set((state) => ({
       toasts: state.toasts.filter((toast) => toast.id !== id),
     }));
@@ -60,8 +70,9 @@ export const useUiStore = create<UiStore>((set, get) => {
       set((state) => ({
         toasts: [...state.toasts, { ...toast, id, fading: false }],
       }));
-      setTimeout(() => beginFadeFor(id), TOAST_VISIBLE_MS);
-      setTimeout(() => removeToastFor(id), TOAST_TOTAL_MS);
+      const fade = setTimeout(() => beginFadeFor(id), TOAST_VISIBLE_MS) as unknown as number;
+      const remove = setTimeout(() => removeToastFor(id), TOAST_TOTAL_MS) as unknown as number;
+      toastTimers.set(id, { fade, remove });
     },
 
     dismissToast(id) {

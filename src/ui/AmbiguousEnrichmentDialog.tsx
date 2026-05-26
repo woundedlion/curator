@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useDialogFocus } from "../hooks/useDialogFocus";
 import { usePlaylistStore } from "../store/playlistStore";
 
 type Props = {
@@ -23,13 +23,7 @@ export function AmbiguousEnrichmentDialog({ trackId, onClose }: Props) {
   );
   const updateTrack = usePlaylistStore((state) => state.updateTrack);
 
-  useEffect(() => {
-    function onKey(event: KeyboardEvent) {
-      if (event.key === "Escape") onClose();
-    }
-    if (trackId) window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [trackId, onClose]);
+  const dialogRef = useDialogFocus<HTMLDivElement>(Boolean(trackId), onClose);
 
   if (!trackId || !track) return null;
   const candidates = track.enrichment.candidates ?? [];
@@ -41,7 +35,11 @@ export function AmbiguousEnrichmentDialog({ trackId, onClose }: Props) {
       aria-label="Pick a MusicBrainz match"
       className="fixed inset-0 z-40 flex items-center justify-center bg-black/70 p-4"
     >
-      <div className="w-full max-w-xl rounded-lg bg-neutral-900 p-4 shadow-xl">
+      <div
+        ref={dialogRef}
+        tabIndex={-1}
+        className="w-full max-w-xl rounded-lg bg-neutral-900 p-4 shadow-xl"
+      >
         <h2 className="mb-3 text-base font-semibold">
           Pick a MusicBrainz match
           <span className="block text-xs font-normal text-neutral-400">

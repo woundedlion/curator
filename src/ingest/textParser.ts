@@ -1,7 +1,10 @@
 import { v4 as uuid } from "uuid";
+import { ARTIST_TITLE_SEPARATOR } from "../constants";
 import type { Track } from "../types";
-
-const ARTIST_TITLE_SEPARATOR = " - ";
+import {
+  buildTracksFromExport,
+  tryParseCuratorExport,
+} from "./curatorExportParser";
 
 function isMeaningfulLine(line: string): boolean {
   const trimmed = line.trim();
@@ -39,5 +42,10 @@ export function parseTextContent(text: string): Track[] {
 
 export async function parseTextFile(file: File): Promise<Track[]> {
   const content = await file.text();
+  // A Curator export file is a `.txt` carrying our JSON envelope. Detect
+  // it before falling back to line-based parsing so the round-trip preserves
+  // Spotify/MB selections instead of treating the JSON as 1 line per token.
+  const env = tryParseCuratorExport(content);
+  if (env) return buildTracksFromExport(env);
   return parseTextContent(content);
 }

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useDialogFocus } from "../hooks/useDialogFocus";
 import {
   candidatePlaybackId,
   usePlaybackStore,
@@ -180,13 +181,7 @@ export function AmbiguousMatchDialog({ trackId, onClose }: Props) {
     setSearchedCandidates(null);
   }, [trackId, track?.title, track?.artist]);
 
-  useEffect(() => {
-    function onKey(event: KeyboardEvent) {
-      if (event.key === "Escape") onClose();
-    }
-    if (trackId) window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [trackId, onClose]);
+  const dialogRef = useDialogFocus<HTMLDivElement>(Boolean(trackId), onClose);
 
   // Stop any dialog-initiated playback when the dialog closes.
   useEffect(() => {
@@ -208,7 +203,10 @@ export function AmbiguousMatchDialog({ trackId, onClose }: Props) {
     Boolean(preferFullPlayback && clientId) &&
     (sdkStatus === "ready" || sdkStatus === "off" || sdkStatus === "loading");
 
-  async function runSearchAgain() {
+  async function runSearchWithFields(
+    title: string | undefined,
+    artist: string | undefined,
+  ) {
     if (!clientId) {
       pushToast({
         kind: "error",
@@ -219,7 +217,7 @@ export function AmbiguousMatchDialog({ trackId, onClose }: Props) {
     setSearching(true);
     try {
       const next = await searchSpotifyCandidatesByFields(
-        { title: titleInput, artist: artistInput },
+        { title, artist },
         clientId,
         market,
       );
@@ -237,6 +235,27 @@ export function AmbiguousMatchDialog({ trackId, onClose }: Props) {
     }
   }
 
+  function runSearchAgain() {
+    void runSearchWithFields(titleInput, artistInput);
+  }
+
+  // Curator-export round-trips drop the `candidates[]` array (DESIGN §4.5.1
+  // serializes only the chosen `spotifyUri`), so a re-imported track opens
+  // this dialog with no list to pick from. Auto-fire the search once when
+  // the dialog opens against a candidate-less track that has enough
+  // metadata to query, so the user lands on a populated picker without an
+  // extra click. We key off `trackId` only, so picking a candidate (which
+  // populates `track.spotify.candidates` and closes the dialog) doesn't
+  // retrigger this in flight.
+  useEffect(() => {
+    if (!trackId || !track || !clientId) return;
+    const existing = track.spotify.candidates ?? [];
+    if (existing.length > 0) return;
+    if (!track.title && !track.artist) return;
+    void runSearchWithFields(track.title, track.artist);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [trackId]);
+
   if (!trackId || !track) return null;
   const currentUri = track.spotify.uri;
 
@@ -247,7 +266,11 @@ export function AmbiguousMatchDialog({ trackId, onClose }: Props) {
       aria-label="Pick a Spotify match"
       className="fixed inset-0 z-40 flex items-center justify-center bg-black/70 p-4"
     >
-      <div className="flex max-h-[85vh] w-full max-w-2xl flex-col rounded-lg bg-neutral-900 p-4 shadow-xl">
+      <div
+        ref={dialogRef}
+        tabIndex={-1}
+        className="flex max-h-[85vh] w-full max-w-2xl flex-col rounded-lg bg-neutral-900 p-4 shadow-xl"
+      >
         <div className="mb-3">
           <h2 className="text-base font-semibold">Pick a Spotify version</h2>
           <p className="text-xs text-neutral-400">

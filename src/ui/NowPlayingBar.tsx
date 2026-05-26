@@ -4,6 +4,7 @@ import { PauseIcon, PlayIcon, StopIcon } from "./icons";
 
 function sourceLabel(kind: string): string {
   if (kind === "local") return "Local file";
+  if (kind === "spotify-sdk") return "Spotify (full track)";
   if (kind === "spotify-preview") return "Spotify preview (30s)";
   return "—";
 }
@@ -23,7 +24,7 @@ export function NowPlayingBar() {
   return (
     <footer
       className="flex items-center gap-3 border-t border-neutral-800 bg-neutral-900 px-4 py-2 text-sm"
-      role="contentinfo"
+      role="region"
       aria-label="Now playing"
     >
       <button

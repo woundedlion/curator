@@ -4,42 +4,60 @@ import { useSettingsStore } from "../store/settingsStore";
 import { useSpotifyStore } from "../store/spotifyStore";
 import { useUiStore } from "../store/uiStore";
 import { findPlaylistsByName } from "../spotify/playlists";
+import { exportActivePlaylist } from "../services/playlistExporter";
 import { publishPlaylist } from "../services/playlistPublisher";
+import { CloudUploadIcon, DownloadIcon } from "./icons";
+import { IconButton } from "./IconButton";
 import { NameCollisionDialog } from "./NameCollisionDialog";
 import type { SpotifyPlaylistSummary } from "../types";
-
-function hasInFlightWork(): boolean {
-  const state = usePlaylistStore.getState();
-  for (const id of state.playlist.trackIds) {
-    const track = state.tracksById[id];
-    if (track?.enrichment.status === "pending") return true;
-    if (track?.spotify.status === "pending") return true;
-  }
-  return false;
-}
 
 export function CreatePlaylistPanel() {
   const playlist = usePlaylistStore((state) => state.playlist);
   const setMeta = usePlaylistStore((state) => state.setPlaylistMeta);
+  const trackCount = usePlaylistStore((state) => state.playlist.trackIds.length);
   const clientId = useSettingsStore((state) => state.settings.spotifyClientId);
   const connected = useSpotifyStore((state) => state.connected);
   const user = useSpotifyStore((state) => state.user);
   const spotifyPlaylists = useSpotifyStore((state) => state.playlists);
   const pushToast = useUiStore((state) => state.pushToast);
 
+  const inFlightWork = usePlaylistStore((state) => {
+    for (const id of state.playlist.trackIds) {
+      const track = state.tracksById[id];
+      if (track?.enrichment.status === "pending") return true;
+      if (track?.spotify.status === "pending") return true;
+    }
+    return false;
+  });
+
+  // Ambiguous rows demand a user pick before publish — silently dropping
+  // them produces partial playlists the user didn't authorize.
+  const unresolvedAmbiguousCount = usePlaylistStore((state) => {
+    let count = 0;
+    for (const id of state.playlist.trackIds) {
+      const track = state.tracksById[id];
+      if (track?.spotify.status === "ambiguous" && !track.spotify.uri) {
+        count++;
+      }
+    }
+    return count;
+  });
+
   const [publishing, setPublishing] = useState(false);
   const [collision, setCollision] = useState<SpotifyPlaylistSummary[] | null>(
     null,
   );
   const [progressLabel, setProgressLabel] = useState<string>("");
-
-  const inFlightWork = hasInFlightWork();
-  const disabledReason = useMemo(() => {
+  const publishDisabledReason = useMemo(() => {
     if (!connected) return "Connect to Spotify first";
     if (!playlist.name.trim()) return "Name the playlist first";
     if (inFlightWork) return "Wait for enrichment/search to finish";
+    if (unresolvedAmbiguousCount > 0) {
+      return `Pick a Spotify match for ${unresolvedAmbiguousCount} ambiguous track${unresolvedAmbiguousCount === 1 ? "" : "s"}`;
+    }
+    if (trackCount === 0) return "Add tracks before publishing";
     return null;
-  }, [connected, playlist.name, inFlightWork]);
+  }, [connected, playlist.name, inFlightWork, unresolvedAmbiguousCount, trackCount]);
 
   async function publish(mode: "create" | { update: string }) {
     if (!clientId) return;
@@ -53,11 +71,20 @@ export function CreatePlaylistPanel() {
         (progress) =>
           setProgressLabel(`${progress.added}/${progress.total} added`),
       );
-      pushToast({
-        kind: "success",
-        message: "Playlist created on Spotify",
-        href: result.playlistUrl,
-      });
+      const { added, total, failedChunks } = result.progress;
+      if (failedChunks.length > 0) {
+        pushToast({
+          kind: "error",
+          message: `Published partially: ${added}/${total} tracks added — ${failedChunks.length} chunk${failedChunks.length === 1 ? "" : "s"} failed (retry to fill gaps)`,
+          href: result.playlistUrl,
+        });
+      } else {
+        pushToast({
+          kind: "success",
+          message: "Playlist created on Spotify",
+          href: result.playlistUrl,
+        });
+      }
       void useSpotifyStore.getState().loadPlaylists(clientId);
     } catch (error) {
       console.error("publishPlaylist failed", error);
@@ -82,6 +109,13 @@ export function CreatePlaylistPanel() {
     }
     setCollision(matches);
   }
+
+  const exportDisabledReason =
+    trackCount === 0 ? "Nothing to export" : null;
+  const publishLabel =
+    publishing && progressLabel
+      ? `Publishing — ${progressLabel}`
+      : publishDisabledReason ?? "Create / update on Spotify";
 
   return (
     <div className="flex flex-col gap-2 border-t border-neutral-800 px-4 py-3">
@@ -109,15 +143,26 @@ export function CreatePlaylistPanel() {
           />
           Collaborative
         </label>
-        <button
-          type="button"
-          disabled={Boolean(disabledReason) || publishing}
-          title={disabledReason ?? "Create Playlist"}
+        {publishing && progressLabel && (
+          <span
+            className="text-xs text-neutral-400 tabular-nums"
+            aria-live="polite"
+          >
+            {progressLabel}
+          </span>
+        )}
+        <IconButton
+          label={exportDisabledReason ?? "Export playlist to file"}
+          icon={<DownloadIcon />}
+          onClick={exportActivePlaylist}
+          disabled={Boolean(exportDisabledReason)}
+        />
+        <IconButton
+          label={publishLabel}
+          icon={<CloudUploadIcon />}
           onClick={start}
-          className="rounded bg-matched px-3 py-1 text-sm font-semibold text-black hover:opacity-90 disabled:opacity-40"
-        >
-          {publishing ? progressLabel || "Working…" : "Create Playlist"}
-        </button>
+          disabled={Boolean(publishDisabledReason) || publishing}
+        />
       </div>
       <textarea
         value={playlist.description ?? ""}

@@ -41,4 +41,31 @@ describe("deriveHintsFromFileName", () => {
       title: "Stargazer",
     });
   });
+
+  it("parses leading track number on a single segment (e.g. '03 Stargazer.flac')", () => {
+    expect(deriveHintsFromFileName("03 Stargazer.flac")).toEqual({
+      trackNo: 3,
+      title: "Stargazer",
+    });
+  });
+
+  it("treats a leading zero-padded track number as its numeric value", () => {
+    expect(deriveHintsFromFileName("007 - Radiohead - Karma Police.mp3")).toEqual({
+      trackNo: 7,
+      artist: "Radiohead",
+      title: "Karma Police",
+    });
+  });
+
+  it("treats a pure-digit filename as title (not as a stray track number)", () => {
+    expect(deriveHintsFromFileName("03.mp3")).toEqual({ title: "03" });
+  });
+
+  it("strips only the final extension segment", () => {
+    // The "extension" is everything after the last dot, not the first —
+    // titles can legitimately contain periods.
+    expect(deriveHintsFromFileName("Mr. Brightside.mp3")).toEqual({
+      title: "Mr. Brightside",
+    });
+  });
 });

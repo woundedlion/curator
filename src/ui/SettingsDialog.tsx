@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useDialogFocus } from "../hooks/useDialogFocus";
 import { clearMusicbrainzCache } from "../db/musicbrainzCache";
 import { useSettingsStore } from "../store/settingsStore";
 import { useSpotifyStore } from "../store/spotifyStore";
@@ -24,14 +24,7 @@ export function SettingsDialog() {
   const disconnect = useSpotifyStore((state) => state.disconnect);
   const pushToast = useUiStore((state) => state.pushToast);
 
-  useEffect(() => {
-    if (!open) return;
-    function onKey(event: KeyboardEvent) {
-      if (event.key === "Escape") closeDialog();
-    }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [open]);
+  const dialogRef = useDialogFocus<HTMLDivElement>(open, closeDialog);
 
   if (!open) return null;
 
@@ -62,7 +55,11 @@ export function SettingsDialog() {
       aria-label="Settings"
       className="fixed inset-0 z-40 flex items-center justify-center bg-black/70 p-4"
     >
-      <div className="w-full max-w-lg rounded-lg bg-neutral-900 p-5 shadow-xl">
+      <div
+        ref={dialogRef}
+        tabIndex={-1}
+        className="w-full max-w-lg rounded-lg bg-neutral-900 p-5 shadow-xl"
+      >
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-lg font-semibold">Settings</h2>
           <span className="text-xs text-neutral-500">Changes save automatically</span>

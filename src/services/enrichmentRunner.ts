@@ -150,6 +150,12 @@ function hasContactEmail(): boolean {
   );
 }
 
+function warnMissingContactEmail(): void {
+  pushErrorToast(
+    "Add a MusicBrainz contact email in Settings to enable enrichment",
+  );
+}
+
 export async function enrichAllPending(): Promise<void> {
   const trackIds = usePlaylistStore.getState().playlist.trackIds.filter(
     (id) => !shouldSkipTrack(id),
@@ -157,9 +163,7 @@ export async function enrichAllPending(): Promise<void> {
   if (trackIds.length === 0) return;
 
   if (!hasContactEmail()) {
-    pushErrorToast(
-      "Add a MusicBrainz contact email in Settings to enable enrichment",
-    );
+    warnMissingContactEmail();
     return;
   }
 
@@ -226,9 +230,7 @@ async function resetTrackForReenrichment(trackId: string): Promise<void> {
 
 export async function reenrichAll(): Promise<void> {
   if (!hasContactEmail()) {
-    pushErrorToast(
-      "Add a MusicBrainz contact email in Settings to enable enrichment",
-    );
+    warnMissingContactEmail();
     return;
   }
   const trackIds = usePlaylistStore
@@ -264,9 +266,7 @@ export async function reenrichAll(): Promise<void> {
 
 export async function reenrichTrack(trackId: string): Promise<EnrichmentResult> {
   if (!hasContactEmail()) {
-    pushErrorToast(
-      "Add a MusicBrainz contact email in Settings to enable enrichment",
-    );
+    warnMissingContactEmail();
     return "failed";
   }
   await clearTrackEnrichmentCache(trackId);

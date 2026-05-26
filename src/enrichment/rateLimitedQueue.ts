@@ -9,6 +9,7 @@ export type QueueObserver = (depth: number) => void;
 export class RateLimitedQueue {
   private readonly intervalMs: number;
   private readonly pending: Task<unknown>[] = [];
+  private inFlight = 0;
   private running = false;
   private lastRunAt = 0;
   private observers: Set<QueueObserver> = new Set();
@@ -17,9 +18,17 @@ export class RateLimitedQueue {
     this.intervalMs = intervalMs;
   }
 
+  // Total tasks the queue is responsible for right now — waiting in `pending`
+  // plus any task currently executing. Reporting only `pending.length` gives
+  // a misleading zero while the single in-flight task runs, which made the
+  // toolbar's "Enriching · N remaining" indicator never appear.
+  private depth(): number {
+    return this.pending.length + this.inFlight;
+  }
+
   observe(observer: QueueObserver): () => void {
     this.observers.add(observer);
-    observer(this.pending.length);
+    observer(this.depth());
     return () => this.observers.delete(observer);
   }
 
@@ -32,7 +41,8 @@ export class RateLimitedQueue {
   }
 
   private notify(): void {
-    for (const observer of this.observers) observer(this.pending.length);
+    const depth = this.depth();
+    for (const observer of this.observers) observer(depth);
   }
 
   private msUntilNextRun(): number {
@@ -48,6 +58,7 @@ export class RateLimitedQueue {
         const wait = this.msUntilNextRun();
         if (wait > 0) await sleep(wait);
         const task = this.pending.shift()!;
+        this.inFlight++;
         this.lastRunAt = Date.now();
         this.notify();
         try {
@@ -55,6 +66,9 @@ export class RateLimitedQueue {
           task.resolve(value);
         } catch (error) {
           task.reject(error);
+        } finally {
+          this.inFlight--;
+          this.notify();
         }
       }
     } finally {

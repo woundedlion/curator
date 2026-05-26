@@ -13,7 +13,23 @@ export function isPlayable(
   if (track.localFile) return true;
   if (sdkEnabled && track.spotify.uri) return true;
   if (track.spotify.previewUrl) return true;
+  // Round-tripped tracks (.curator.txt re-import) carry a `spotifyUri` but
+  // lose `previewUrl` + `localFile`, so the row would otherwise be marked
+  // unplayable. We still expose a play affordance — PlayButton routes the
+  // click to open.spotify.com as a fallback, matching the picker dialog's
+  // chain (§4.5 picker preview chain).
+  if (track.spotify.uri) return true;
   return false;
+}
+
+// Parses `spotify:track:abc123` → `https://open.spotify.com/track/abc123`.
+// Used as the play fallback when no in-app source is available.
+export function externalSpotifyUrl(spotifyUri: string): string | null {
+  const prefix = "spotify:track:";
+  if (!spotifyUri.startsWith(prefix)) return null;
+  const id = spotifyUri.slice(prefix.length);
+  if (!id) return null;
+  return `https://open.spotify.com/track/${id}`;
 }
 
 export function createPlaybackSource(

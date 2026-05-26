@@ -66,6 +66,22 @@ export function ExternalLinkIcon({ className }: IconProps) {
   );
 }
 
+export function DownloadIcon({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" className={svgClass(className)} aria-hidden>
+      <path d="M11 3h2v10.59l3.3-3.3 1.4 1.42L12 17.41l-5.7-5.7 1.4-1.42 3.3 3.3V3zM5 19h14v2H5v-2z" />
+    </svg>
+  );
+}
+
+export function CloudUploadIcon({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" className={svgClass(className)} aria-hidden>
+      <path d="M19.35 10.04A7.5 7.5 0 0 0 5.08 9.5 4.5 4.5 0 0 0 6 18.5h13a4 4 0 0 0 .35-7.96zM13 13v4h-2v-4H8l4-4 4 4h-3z" />
+    </svg>
+  );
+}
+
 export function GearIcon({ className }: IconProps) {
   return (
     <svg

@@ -1,4 +1,5 @@
 import { v4 as uuid } from "uuid";
+import { ARTIST_TITLE_SEPARATOR } from "../constants";
 import type { Track } from "../types";
 
 const EXTINF_PREFIX = "#EXTINF:";
@@ -9,9 +10,15 @@ function parseExtInfLine(line: string): ExtInfHint {
   const commaIndex = line.indexOf(",");
   if (commaIndex === -1) return {};
   const after = line.slice(commaIndex + 1).trim();
-  const segments = after.split(" - ").map((segment) => segment.trim());
+  if (after.length === 0) return {};
+  const segments = after
+    .split(ARTIST_TITLE_SEPARATOR)
+    .map((segment) => segment.trim());
   if (segments.length >= 2) {
-    return { artist: segments[0], title: segments.slice(1).join(" - ") };
+    return {
+      artist: segments[0],
+      title: segments.slice(1).join(ARTIST_TITLE_SEPARATOR),
+    };
   }
   return { title: after };
 }

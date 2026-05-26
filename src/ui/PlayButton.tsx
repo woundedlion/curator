@@ -1,12 +1,22 @@
 import { usePlaybackStore } from "../playback/playbackStore";
-import { isPlayable } from "../playback/playbackSource";
+import { externalSpotifyUrl, isPlayable } from "../playback/playbackSource";
 import { useSettingsStore } from "../store/settingsStore";
 import type { Track } from "../types";
-import { PauseIcon, PlayIcon } from "./icons";
+import { ExternalLinkIcon, PauseIcon, PlayIcon } from "./icons";
 
 type Props = {
   track: Track;
 };
+
+// Whether the row can play *in app* right now. When false but a Spotify
+// URI exists, the button instead opens the Spotify track page (matching
+// the picker dialog's preview→SDK→external-link fallback chain).
+function hasInAppPlayback(track: Track, sdkPreferred: boolean): boolean {
+  if (track.localFile) return true;
+  if (sdkPreferred && track.spotify.uri) return true;
+  if (track.spotify.previewUrl) return true;
+  return false;
+}
 
 export function PlayButton({ track }: Props) {
   const currentTrackId = usePlaybackStore((state) => state.currentTrackId);
@@ -17,6 +27,9 @@ export function PlayButton({ track }: Props) {
   );
 
   const playable = isPlayable(track, sdkPreferred);
+  const inApp = hasInAppPlayback(track, sdkPreferred);
+  const externalUrl =
+    !inApp && track.spotify.uri ? externalSpotifyUrl(track.spotify.uri) : null;
   const isCurrent = currentTrackId === track.id;
   const showPause = isCurrent && isPlaying;
 
@@ -31,6 +44,21 @@ export function PlayButton({ track }: Props) {
       >
         <PlayIcon />
       </button>
+    );
+  }
+
+  if (externalUrl) {
+    return (
+      <a
+        href={externalUrl}
+        target="_blank"
+        rel="noopener noreferrer"
+        aria-label="Open in Spotify"
+        title="Open in Spotify (no in-app preview available)"
+        className="inline-flex w-6 items-center justify-center bg-transparent text-matched transition-opacity hover:opacity-80"
+      >
+        <ExternalLinkIcon />
+      </a>
     );
   }
 

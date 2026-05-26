@@ -22,16 +22,19 @@ export type PublishResult = {
 function collectPushableUris(): string[] {
   const state = usePlaylistStore.getState();
   const hideUnmatched = state.playlist.hideUnmatched;
-  return state.playlist.trackIds
-    .map((id) => state.tracksById[id])
-    .filter((track) =>
-      hideUnmatched
-        ? track.spotify.status === "matched"
-        : track.spotify.status === "matched" ||
-          track.spotify.status === "ambiguous",
-    )
-    .map((track) => track.spotify.uri)
-    .filter((uri): uri is string => Boolean(uri));
+  const uris: string[] = [];
+  for (const id of state.playlist.trackIds) {
+    const track = state.tracksById[id];
+    if (!track) continue;
+    const status = track.spotify.status;
+    const eligible = hideUnmatched
+      ? status === "matched"
+      : status === "matched" || status === "ambiguous";
+    if (!eligible) continue;
+    const uri = track.spotify.uri;
+    if (uri) uris.push(uri);
+  }
+  return uris;
 }
 
 function playlistWebUrl(playlistId: string): string {

@@ -159,7 +159,7 @@ export const usePlaybackStore = create<PlaybackState>((set, get) => ({
     if (!state.audio) return;
 
     if (state.currentTrackId === trackId) {
-      await togglePause(state);
+      await togglePause(state, (patch) => set(patch));
       return;
     }
 
@@ -175,13 +175,16 @@ export const usePlaybackStore = create<PlaybackState>((set, get) => ({
     const nextSource = createPlaybackSource(track, sdkReady);
     if (nextSource.kind === "none") return;
 
-    releasePlaybackSource(state.currentSource);
-    set({ currentTrackId: trackId, currentSource: nextSource });
-
     if (nextSource.kind === "spotify-sdk" && sdkState.status === "ready") {
-      await playOnSdk(nextSource.uri, sdkState, (patch) => set(patch));
+      const ok = await playOnSdk(nextSource.uri, sdkState, (patch) => set(patch));
+      if (!ok) return;
+      releasePlaybackSource(state.currentSource);
+      set({ currentTrackId: trackId, currentSource: nextSource });
       return;
     }
+
+    releasePlaybackSource(state.currentSource);
+    set({ currentTrackId: trackId, currentSource: nextSource });
     void loadAndPlayAudio(state.audio, nextSource);
   },
 
@@ -191,7 +194,7 @@ export const usePlaybackStore = create<PlaybackState>((set, get) => ({
 
     const playbackId = candidatePlaybackId(candidate.uri);
     if (state.currentTrackId === playbackId) {
-      await togglePause(state);
+      await togglePause(state, (patch) => set(patch));
       return;
     }
 
@@ -222,13 +225,16 @@ export const usePlaybackStore = create<PlaybackState>((set, get) => ({
       return;
     }
 
-    releasePlaybackSource(state.currentSource);
-    set({ currentTrackId: playbackId, currentSource: nextSource });
-
     if (nextSource.kind === "spotify-sdk" && sdkState.status === "ready") {
-      await playOnSdk(nextSource.uri, sdkState, (patch) => set(patch));
+      const ok = await playOnSdk(nextSource.uri, sdkState, (patch) => set(patch));
+      if (!ok) return;
+      releasePlaybackSource(state.currentSource);
+      set({ currentTrackId: playbackId, currentSource: nextSource });
       return;
     }
+
+    releasePlaybackSource(state.currentSource);
+    set({ currentTrackId: playbackId, currentSource: nextSource });
     void loadAndPlayAudio(state.audio, nextSource);
   },
 
@@ -239,7 +245,9 @@ export const usePlaybackStore = create<PlaybackState>((set, get) => ({
     state.audio.removeAttribute("src");
     state.audio.load();
     if (state.sdk.status === "ready") {
-      void pauseSpotifyPlayback(state.sdk.player).catch(() => undefined);
+      void pauseSpotifyPlayback(state.sdk.player).catch((error) => {
+        console.warn("Spotify SDK pause failed", error);
+      });
     }
     releasePlaybackSource(state.currentSource);
     set({
@@ -250,21 +258,33 @@ export const usePlaybackStore = create<PlaybackState>((set, get) => ({
   },
 }));
 
-async function togglePause(state: PlaybackState): Promise<void> {
+async function togglePause(
+  state: PlaybackState,
+  set: (patch: Partial<PlaybackState>) => void,
+): Promise<void> {
   if (!state.audio) return;
   if (state.currentSource.kind === "spotify-sdk" && isSdkEnabled(state)) {
     if (state.sdk.status !== "ready") return;
     if (state.isPlaying) {
-      await pauseSpotifyPlayback(state.sdk.player).catch(() => undefined);
-      usePlaybackStore.setState({ isPlaying: false });
+      try {
+        await pauseSpotifyPlayback(state.sdk.player);
+        set({ isPlaying: false });
+      } catch (error) {
+        console.warn("Spotify SDK pause failed", error);
+      }
     } else {
-      await resumeSpotifyPlayback(state.sdk.player).catch(() => undefined);
-      usePlaybackStore.setState({ isPlaying: true });
+      try {
+        await resumeSpotifyPlayback(state.sdk.player);
+        set({ isPlaying: true });
+      } catch (error) {
+        console.warn("Spotify SDK resume failed", error);
+      }
     }
     return;
   }
   if (state.audio.paused) {
     void state.audio.play().catch((error) => {
+      if (error instanceof DOMException && error.name === "AbortError") return;
       const detail = error instanceof Error ? error.message : String(error);
       reportPlaybackFailure(detail);
     });
@@ -273,20 +293,24 @@ async function togglePause(state: PlaybackState): Promise<void> {
   }
 }
 
+// Returns true if the SDK accepted the play command; on failure, leaves
+// playback state untouched so callers don't paint a stale "now playing" row.
 async function playOnSdk(
   uri: string,
   sdk: SdkState,
   set: (patch: Partial<PlaybackState>) => void,
-): Promise<void> {
-  if (sdk.status !== "ready") return;
+): Promise<boolean> {
+  if (sdk.status !== "ready") return false;
   const clientId = useSettingsStore.getState().settings.spotifyClientId;
-  if (!clientId) return;
+  if (!clientId) return false;
   try {
     await playSpotifyTrackOnDevice(uri, sdk.deviceId, clientId);
     set({ isPlaying: true });
+    return true;
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "unknown SDK error";
     reportPlaybackFailure(`Spotify SDK: ${message}`);
+    return false;
   }
 }

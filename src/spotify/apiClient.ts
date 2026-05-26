@@ -59,7 +59,8 @@ function appendQuery(path: string, query?: SpotifyRequest["query"]): string {
 
 function readRetryAfterMs(response: Response): number {
   const header = response.headers.get("Retry-After");
-  const seconds = header ? parseInt(header, 10) : DEFAULT_RETRY_AFTER_SECONDS;
+  const parsed = header ? parseInt(header, 10) : NaN;
+  const seconds = Number.isFinite(parsed) ? parsed : DEFAULT_RETRY_AFTER_SECONDS;
   return Math.max(1, seconds) * 1000;
 }
 
