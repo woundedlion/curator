@@ -1,0 +1,173 @@
+import {
+  PKCE_STATE_KEY,
+  PKCE_VERIFIER_KEY,
+  SPOTIFY_AUTHORIZE_URL,
+  SPOTIFY_SCOPES,
+  SPOTIFY_TOKEN_URL,
+} from "../constants";
+import type { SpotifyTokens } from "../types";
+import { runWithRateLimitPolicy } from "./apiClient";
+import {
+  deriveCodeChallenge,
+  generateAuthState,
+  generateCodeVerifier,
+} from "./pkce";
+import { clearTokens, readTokens, writeTokens } from "./tokenStorage";
+
+const ACCESS_TOKEN_REFRESH_GUARD_MS = 30 * 1000;
+
+type TokenResponse = {
+  access_token: string;
+  refresh_token?: string;
+  expires_in: number;
+  scope: string;
+  token_type: string;
+};
+
+function toTokens(response: TokenResponse, fallbackRefresh?: string): SpotifyTokens {
+  const refreshToken = response.refresh_token ?? fallbackRefresh ?? "";
+  return {
+    accessToken: response.access_token,
+    refreshToken,
+    expiresAt: Date.now() + response.expires_in * 1000,
+    scope: response.scope,
+  };
+}
+
+function isAccessTokenFresh(tokens: SpotifyTokens): boolean {
+  return tokens.expiresAt - Date.now() > ACCESS_TOKEN_REFRESH_GUARD_MS;
+}
+
+export async function beginAuthFlow(
+  clientId: string,
+  redirectUri: string,
+): Promise<void> {
+  const verifier = generateCodeVerifier();
+  const challenge = await deriveCodeChallenge(verifier);
+  const state = generateAuthState();
+  sessionStorage.setItem(PKCE_VERIFIER_KEY, verifier);
+  sessionStorage.setItem(PKCE_STATE_KEY, state);
+
+  const params = new URLSearchParams({
+    client_id: clientId,
+    response_type: "code",
+    redirect_uri: redirectUri,
+    code_challenge_method: "S256",
+    code_challenge: challenge,
+    state,
+    scope: SPOTIFY_SCOPES,
+  });
+  window.location.assign(`${SPOTIFY_AUTHORIZE_URL}?${params.toString()}`);
+}
+
+// Token endpoints live on accounts.spotify.com, not api.spotify.com, so they
+// can't go through callSpotify (no Bearer, different base). But they DO count
+// against the same per-IP rate budget, and Spotify enforces it with the same
+// 429 + Retry-After contract — so we share the wrapper's wait window and
+// circuit breaker. This stops a 429 storm from triggering an unguarded burst
+// of refresh attempts that would deepen the lockout.
+function postToTokenEndpoint(body: URLSearchParams): Promise<Response> {
+  return runWithRateLimitPolicy(() =>
+    fetch(SPOTIFY_TOKEN_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body,
+    }),
+  );
+}
+
+async function exchangeAuthorizationCode(
+  clientId: string,
+  redirectUri: string,
+  code: string,
+  verifier: string,
+): Promise<SpotifyTokens> {
+  const body = new URLSearchParams({
+    grant_type: "authorization_code",
+    code,
+    redirect_uri: redirectUri,
+    client_id: clientId,
+    code_verifier: verifier,
+  });
+  const response = await postToTokenEndpoint(body);
+  if (!response.ok) throw new Error("Spotify token exchange failed");
+  const json = (await response.json()) as TokenResponse;
+  return toTokens(json);
+}
+
+export type CallbackParams = {
+  code: string;
+  state: string;
+};
+
+export function readCallbackParams(): CallbackParams | null {
+  const url = new URL(window.location.href);
+  const code = url.searchParams.get("code");
+  const state = url.searchParams.get("state");
+  if (!code || !state) return null;
+  return { code, state };
+}
+
+export function clearCallbackParams(): void {
+  const url = new URL(window.location.href);
+  url.searchParams.delete("code");
+  url.searchParams.delete("state");
+  url.searchParams.delete("error");
+  window.history.replaceState({}, "", url.toString());
+}
+
+export async function completeAuthFlow(
+  clientId: string,
+  redirectUri: string,
+  callback: CallbackParams,
+): Promise<SpotifyTokens> {
+  const expectedState = sessionStorage.getItem(PKCE_STATE_KEY);
+  const verifier = sessionStorage.getItem(PKCE_VERIFIER_KEY);
+  if (!expectedState || !verifier) throw new Error("Missing PKCE state");
+  if (expectedState !== callback.state) throw new Error("PKCE state mismatch");
+
+  const tokens = await exchangeAuthorizationCode(
+    clientId,
+    redirectUri,
+    callback.code,
+    verifier,
+  );
+  sessionStorage.removeItem(PKCE_STATE_KEY);
+  sessionStorage.removeItem(PKCE_VERIFIER_KEY);
+  writeTokens(tokens);
+  return tokens;
+}
+
+async function refreshAccessToken(
+  clientId: string,
+  tokens: SpotifyTokens,
+): Promise<SpotifyTokens> {
+  const body = new URLSearchParams({
+    grant_type: "refresh_token",
+    refresh_token: tokens.refreshToken,
+    client_id: clientId,
+  });
+  const response = await postToTokenEndpoint(body);
+  if (!response.ok) {
+    clearTokens();
+    throw new Error("Spotify token refresh failed");
+  }
+  const json = (await response.json()) as TokenResponse;
+  const refreshed = toTokens(json, tokens.refreshToken);
+  writeTokens(refreshed);
+  return refreshed;
+}
+
+export async function getValidAccessToken(clientId: string): Promise<string> {
+  const tokens = readTokens();
+  if (!tokens) throw new Error("Not connected to Spotify");
+  if (isAccessTokenFresh(tokens)) return tokens.accessToken;
+  const refreshed = await refreshAccessToken(clientId, tokens);
+  return refreshed.accessToken;
+}
+
+export function disconnectFromSpotify(): void {
+  clearTokens();
+  sessionStorage.removeItem(PKCE_STATE_KEY);
+  sessionStorage.removeItem(PKCE_VERIFIER_KEY);
+}

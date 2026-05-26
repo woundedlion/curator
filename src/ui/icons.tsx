@@ -1,0 +1,79 @@
+type IconProps = { className?: string };
+
+const BASE_SVG_CLASS = "h-4 w-4 fill-current";
+
+function svgClass(extra?: string): string {
+  return extra ? `${BASE_SVG_CLASS} ${extra}` : BASE_SVG_CLASS;
+}
+
+export function TrashIcon({ className }: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      className={svgClass(className)}
+      aria-hidden
+    >
+      <path d="M9 3h6l1 2h4v2H4V5h4l1-2zm-3 6h12l-1 12H7L6 9zm3 2v8h2v-8H9zm4 0v8h2v-8h-2z" />
+    </svg>
+  );
+}
+
+export function FilterIcon({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" className={svgClass(className)} aria-hidden>
+      <path d="M3 5h18l-7 9v6l-4-2v-4L3 5z" />
+    </svg>
+  );
+}
+
+export function TreeIcon({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" className={svgClass(className)} aria-hidden>
+      <path d="M4 4h6v4H4V4zm10 5h6v4h-6V9zm0 7h6v4h-6v-4zM7 8v4h5v2H7v3h5v2H6V8h1z" />
+    </svg>
+  );
+}
+
+export function PlayIcon({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" className={svgClass(className)} aria-hidden>
+      <path d="M8 5v14l11-7-11-7z" />
+    </svg>
+  );
+}
+
+export function PauseIcon({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" className={svgClass(className)} aria-hidden>
+      <path d="M6 5h4v14H6V5zm8 0h4v14h-4V5z" />
+    </svg>
+  );
+}
+
+export function StopIcon({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" className={svgClass(className)} aria-hidden>
+      <path d="M6 6h12v12H6V6z" />
+    </svg>
+  );
+}
+
+export function ExternalLinkIcon({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" className={svgClass(className)} aria-hidden>
+      <path d="M14 3h7v7h-2V6.41l-9.29 9.3-1.42-1.42 9.3-9.29H14V3zM5 5h6v2H7v10h10v-4h2v6H5V5z" />
+    </svg>
+  );
+}
+
+export function GearIcon({ className }: IconProps) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      className={svgClass(className)}
+      aria-hidden
+    >
+      <path d="M19.14 12.94a7.49 7.49 0 0 0 0-1.88l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.51 7.51 0 0 0-1.62-.94l-.36-2.54a.5.5 0 0 0-.5-.42h-3.84a.5.5 0 0 0-.5.42l-.36 2.54c-.59.23-1.13.55-1.62.94l-2.39-.96a.5.5 0 0 0-.6.22L2.71 8.84a.5.5 0 0 0 .12.64l2.03 1.58a7.49 7.49 0 0 0 0 1.88L2.83 14.5a.5.5 0 0 0-.12.64l1.92 3.32a.5.5 0 0 0 .6.22l2.39-.96c.49.39 1.03.71 1.62.94l.36 2.54c.06.24.27.42.5.42h3.84c.23 0 .44-.18.5-.42l.36-2.54c.59-.23 1.13-.55 1.62-.94l2.39.96a.5.5 0 0 0 .6-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58zM12 15.5a3.5 3.5 0 1 1 0-7 3.5 3.5 0 0 1 0 7z" />
+    </svg>
+  );
+}
