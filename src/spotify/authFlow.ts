@@ -149,6 +149,13 @@ async function refreshAccessToken(
   });
   const response = await postToTokenEndpoint(body);
   if (!response.ok) {
+    // Distinguish unrecoverable session loss (400/401 — invalid_grant or
+    // unauthorized client) from a transient Spotify outage (5xx). Clearing
+    // tokens on a 502 would log the user out for every flake; let the
+    // caller retry instead.
+    if (response.status >= 500) {
+      throw new Error(`Spotify token refresh transient failure: ${response.status}`);
+    }
     clearTokens();
     // Refresh failure means the session is irrecoverably gone — surface a
     // typed error so callers (e.g. spotifyStore.loadPlaylists) flip

@@ -178,14 +178,28 @@ export async function pickFolderAndIngest(): Promise<void> {
   fallbackFolderInput(recursive);
 }
 
-function fallbackFolderInput(_recursive: boolean): void {
+function fallbackFolderInput(recursive: boolean): void {
   const input = document.createElement("input");
   input.type = "file";
   input.setAttribute("webkitdirectory", "");
   input.multiple = true;
   input.addEventListener("change", async () => {
     if (!input.files) return;
-    await addAndEnrich(Array.from(input.files));
+    let files = Array.from(input.files);
+    // `<input webkitdirectory>` always reports the full recursive tree —
+    // there is no non-recursive mode on the input. When the user has
+    // disabled recursion, keep only the direct children of the picked
+    // folder (entries whose webkitRelativePath has exactly two segments:
+    // the root folder name and the filename).
+    if (!recursive) {
+      files = files.filter((file) => {
+        const path = (file as File & { webkitRelativePath?: string })
+          .webkitRelativePath;
+        if (!path) return true;
+        return path.split("/").length <= 2;
+      });
+    }
+    await addAndEnrich(files);
   });
   input.click();
 }

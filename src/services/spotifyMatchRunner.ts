@@ -5,10 +5,12 @@ import {
 } from "../spotify/apiClient";
 import { ConcurrencyLimiter } from "../spotify/concurrencyLimiter";
 import { searchSpotifyForTrack } from "../spotify/spotifySearch";
+import { spotifyDisplayFieldsFromCandidate } from "../spotify/spotifyMappers";
 import { usePlaylistStore } from "../store/playlistStore";
 import { useSettingsStore } from "../store/settingsStore";
 import { useSpotifyStore } from "../store/spotifyStore";
 import { useUiStore } from "../store/uiStore";
+import type { SpotifyMatch } from "../types";
 
 let firstErrorReported = false;
 
@@ -74,21 +76,11 @@ async function matchOne(trackId: string): Promise<void> {
   }
 }
 
-function displayFieldsFromMatch(match: {
-  status: string;
-  uri?: string;
-  candidates?: { uri: string; title: string; artist: string; album?: string; year?: number }[];
-}): Partial<{ title: string; artist: string; album: string; year: number }> {
+function displayFieldsFromMatch(match: SpotifyMatch) {
   if (match.status !== "matched" || !match.uri) return {};
   const chosen = match.candidates?.find((candidate) => candidate.uri === match.uri);
   if (!chosen) return {};
-  const result: Partial<{ title: string; artist: string; album: string; year: number }> = {
-    title: chosen.title,
-    artist: chosen.artist,
-  };
-  if (chosen.album !== undefined) result.album = chosen.album;
-  if (chosen.year !== undefined) result.year = chosen.year;
-  return result;
+  return spotifyDisplayFieldsFromCandidate(chosen);
 }
 
 export async function matchAllOnSpotify(): Promise<void> {
@@ -115,16 +107,8 @@ export function promoteSingleCandidateMatches(): void {
     if (spotify.status === "matched") continue;
     if (!spotify.candidates || spotify.candidates.length !== 1) continue;
     const only = spotify.candidates[0];
-    const fillIns: Partial<{
-      title: string;
-      artist: string;
-      album: string;
-      year: number;
-    }> = { title: only.title, artist: only.artist };
-    if (only.album !== undefined) fillIns.album = only.album;
-    if (only.year !== undefined) fillIns.year = only.year;
     store.updateTrack(trackId, {
-      ...fillIns,
+      ...spotifyDisplayFieldsFromCandidate(only),
       spotify: {
         status: "matched",
         uri: only.uri,

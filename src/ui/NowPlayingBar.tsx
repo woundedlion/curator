@@ -1,5 +1,4 @@
 import { usePlaybackStore } from "../playback/playbackStore";
-import { usePlaylistStore } from "../store/playlistStore";
 import { PauseIcon, PlayIcon, StopIcon } from "./icons";
 
 function sourceLabel(kind: string): string {
@@ -12,14 +11,18 @@ function sourceLabel(kind: string): string {
 export function NowPlayingBar() {
   const currentTrackId = usePlaybackStore((state) => state.currentTrackId);
   const currentSource = usePlaybackStore((state) => state.currentSource);
+  const currentDisplay = usePlaybackStore((state) => state.currentDisplay);
   const isPlaying = usePlaybackStore((state) => state.isPlaying);
   const toggle = usePlaybackStore((state) => state.toggle);
   const stop = usePlaybackStore((state) => state.stop);
-  const track = usePlaylistStore((state) =>
-    currentTrackId ? state.tracksById[currentTrackId] : null,
-  );
 
-  if (!track) return null;
+  if (!currentTrackId || !currentDisplay) return null;
+
+  // `currentTrackId` is a real Track id for table-driven playback and the
+  // synthetic `candidate:{uri}` form for dialog-driven candidate previews.
+  // Only the former is a valid `toggle()` argument; the latter is owned by
+  // the dialog and toggled from inside it.
+  const canToggleFromHere = !currentTrackId.startsWith("candidate:");
 
   return (
     <footer
@@ -31,8 +34,11 @@ export function NowPlayingBar() {
         type="button"
         aria-label={isPlaying ? "Pause" : "Play"}
         title={isPlaying ? "Pause" : "Play"}
-        onClick={() => toggle(track.id)}
-        className="inline-flex items-center justify-center bg-transparent px-2 py-1 text-matched transition-opacity hover:opacity-80"
+        onClick={() => {
+          if (canToggleFromHere) toggle(currentTrackId);
+        }}
+        disabled={!canToggleFromHere}
+        className="inline-flex items-center justify-center bg-transparent px-2 py-1 text-matched transition-opacity hover:opacity-80 disabled:cursor-not-allowed disabled:opacity-40"
       >
         {isPlaying ? <PauseIcon /> : <PlayIcon />}
       </button>
@@ -46,12 +52,9 @@ export function NowPlayingBar() {
         <StopIcon />
       </button>
       <div className="min-w-0 flex-1">
-        <div className="truncate font-medium">
-          {track.title ?? "Unknown title"}
-        </div>
+        <div className="truncate font-medium">{currentDisplay.title}</div>
         <div className="truncate text-xs text-neutral-400">
-          {track.artist ?? "Unknown artist"} ·{" "}
-          {sourceLabel(currentSource.kind)}
+          {currentDisplay.artist} · {sourceLabel(currentSource.kind)}
         </div>
       </div>
     </footer>

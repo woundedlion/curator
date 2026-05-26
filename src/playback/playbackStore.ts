@@ -31,10 +31,18 @@ type SdkState =
     }
   | { status: "unavailable"; reason: string };
 
+// Title/artist for the now-playing UI. Set for both regular track playback
+// (mirrors the Track's fields) and dialog candidate playback (mirrors the
+// candidate's fields). Without this the NowPlayingBar could only resolve
+// playback via `tracksById[currentTrackId]`, which is null for the
+// synthetic `candidate:{uri}` ids that AmbiguousMatchDialog uses.
+export type PlaybackDisplay = { title: string; artist: string };
+
 type PlaybackState = {
   audio: HTMLAudioElement | null;
   currentTrackId: string | null;
   currentSource: PlaybackSource;
+  currentDisplay: PlaybackDisplay | null;
   isPlaying: boolean;
   sdk: SdkState;
 
@@ -82,8 +90,16 @@ function attachAudioEvents(
       isPlaying: false,
       currentTrackId: null,
       currentSource: { kind: "none" },
+      currentDisplay: null,
     });
   });
+}
+
+function trackDisplay(track: { title?: string; artist?: string }): PlaybackDisplay {
+  return {
+    title: track.title ?? "Unknown title",
+    artist: track.artist ?? "Unknown artist",
+  };
 }
 
 async function loadAndPlayAudio(
@@ -143,6 +159,7 @@ export const usePlaybackStore = create<PlaybackState>((set, get) => ({
   audio: null,
   currentTrackId: null,
   currentSource: { kind: "none" },
+  currentDisplay: null,
   isPlaying: false,
   sdk: { status: "off" },
 
@@ -179,12 +196,20 @@ export const usePlaybackStore = create<PlaybackState>((set, get) => ({
       const ok = await playOnSdk(nextSource.uri, sdkState, (patch) => set(patch));
       if (!ok) return;
       releasePlaybackSource(state.currentSource);
-      set({ currentTrackId: trackId, currentSource: nextSource });
+      set({
+        currentTrackId: trackId,
+        currentSource: nextSource,
+        currentDisplay: trackDisplay(track),
+      });
       return;
     }
 
     releasePlaybackSource(state.currentSource);
-    set({ currentTrackId: trackId, currentSource: nextSource });
+    set({
+      currentTrackId: trackId,
+      currentSource: nextSource,
+      currentDisplay: trackDisplay(track),
+    });
     void loadAndPlayAudio(state.audio, nextSource);
   },
 
@@ -225,16 +250,28 @@ export const usePlaybackStore = create<PlaybackState>((set, get) => ({
       return;
     }
 
+    const display: PlaybackDisplay = trackDisplay({
+      title: candidate.title,
+      artist: candidate.artist,
+    });
     if (nextSource.kind === "spotify-sdk" && sdkState.status === "ready") {
       const ok = await playOnSdk(nextSource.uri, sdkState, (patch) => set(patch));
       if (!ok) return;
       releasePlaybackSource(state.currentSource);
-      set({ currentTrackId: playbackId, currentSource: nextSource });
+      set({
+        currentTrackId: playbackId,
+        currentSource: nextSource,
+        currentDisplay: display,
+      });
       return;
     }
 
     releasePlaybackSource(state.currentSource);
-    set({ currentTrackId: playbackId, currentSource: nextSource });
+    set({
+      currentTrackId: playbackId,
+      currentSource: nextSource,
+      currentDisplay: display,
+    });
     void loadAndPlayAudio(state.audio, nextSource);
   },
 
@@ -253,6 +290,7 @@ export const usePlaybackStore = create<PlaybackState>((set, get) => ({
     set({
       currentTrackId: null,
       currentSource: { kind: "none" },
+      currentDisplay: null,
       isPlaying: false,
     });
   },

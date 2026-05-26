@@ -1,6 +1,7 @@
 import { COVER_ART_BASE } from "../constants";
 
 const FRONT_250_SUFFIX = "/front-250";
+const PROBE_TIMEOUT_MS = 5_000;
 
 // Negative results — a confirmed 404 from Cover Art Archive — are stable;
 // re-probing burns bandwidth and rate budget for no benefit. Transient
@@ -18,8 +19,17 @@ export async function probeCoverArtUrl(
   const url = coverArtUrlForRelease(releaseMbid);
   if (!url || !releaseMbid) return undefined;
   if (negativeCache.has(releaseMbid)) return undefined;
+  // HEAD probes against CAA are usually fast but the host occasionally
+  // hangs without responding. Cap the wait so a stall doesn't leak fetch
+  // resources and so re-enrich-all on a 1k-track playlist can't pin on
+  // one bad release id.
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
   try {
-    const response = await fetch(url, { method: "HEAD" });
+    const response = await fetch(url, {
+      method: "HEAD",
+      signal: controller.signal,
+    });
     if (response.status === 404) {
       negativeCache.add(releaseMbid);
       return undefined;
@@ -32,5 +42,7 @@ export async function probeCoverArtUrl(
   } catch (error) {
     console.warn("probeCoverArtUrl: network error", url, error);
     return undefined;
+  } finally {
+    clearTimeout(timeoutId);
   }
 }

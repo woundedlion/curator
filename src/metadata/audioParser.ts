@@ -92,7 +92,12 @@ export async function parseAudioFile(file: File): Promise<Track> {
   try {
     const parsed = await parseAudioInPool(file);
     return buildTrackFromParsed(file, parsed, filenameHint);
-  } catch {
+  } catch (error) {
+    // ID3/container parse failure is a real signal — file may be corrupt
+    // or a format `music-metadata` doesn't cover. We still fall back to
+    // filename-only so the row isn't dropped, but the error needs to
+    // surface (DESIGN §4.1) so a user can diagnose the row.
+    console.warn("audioParser: ID3 parse failed", file.name, error);
     return buildTrackFromFilenameOnly(file, filenameHint);
   }
 }

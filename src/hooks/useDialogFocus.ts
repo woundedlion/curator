@@ -50,10 +50,16 @@ export function useDialogFocus<T extends HTMLElement>(
       const first = items[0];
       const last = items[items.length - 1];
       const active = document.activeElement as HTMLElement | null;
-      if (event.shiftKey && (active === first || !container!.contains(active))) {
+      // "On the container itself" must be treated as outside the focusable
+      // ring — otherwise Shift+Tab from the (tabIndex={-1}) container slips
+      // back through the trap because `container.contains(container)` is
+      // true, missing the `!container.contains(active)` branch.
+      const onContainerItself = active === container;
+      const outsideRing = onContainerItself || !container!.contains(active);
+      if (event.shiftKey && (active === first || outsideRing)) {
         event.preventDefault();
         last.focus();
-      } else if (!event.shiftKey && active === last) {
+      } else if (!event.shiftKey && (active === last || outsideRing)) {
         event.preventDefault();
         first.focus();
       }

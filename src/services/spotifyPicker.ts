@@ -1,5 +1,6 @@
 import { deleteCachedCandidates } from "../db/musicbrainzCache";
 import { normalizeForMatching } from "../metadata/normalizers";
+import { spotifyDisplayFieldsFromCandidate } from "../spotify/spotifyMappers";
 import { usePlaylistStore } from "../store/playlistStore";
 import { useSettingsStore } from "../store/settingsStore";
 import { useUiStore } from "../store/uiStore";
@@ -33,12 +34,7 @@ function applyCandidateToTrack(
   const track = store.tracksById[trackId];
   if (!track) return;
   store.updateTrack(trackId, {
-    title: candidate.title,
-    artist: candidate.artist,
-    album: candidate.album ?? track.album,
-    year: candidate.year ?? track.year,
-    durationMs: candidate.durationMs ?? track.durationMs,
-    coverUrl: candidate.coverUrl ?? track.coverUrl,
+    ...spotifyDisplayFieldsFromCandidate(candidate),
     enrichment: { status: "idle" },
     spotify: {
       status: "matched",

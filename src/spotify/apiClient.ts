@@ -173,6 +173,10 @@ export async function runWithRateLimitPolicy(
   let attempt = 0;
   while (true) {
     await waitForRateLimitWindow();
+    // Re-check the breaker after sleeping. Another caller may have tripped
+    // it while we were waiting in the rate-limit window; without this
+    // check the "stop digging" semantic leaks (DESIGN §4.5 ¶3).
+    failFastIfCircuitOpen();
     const response = await send();
     if (response.status !== RATE_LIMIT_STATUS) return response;
 

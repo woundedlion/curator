@@ -11,6 +11,10 @@ function flushOnHide(): void {
   void flushPendingPersist();
 }
 
+function flushIfHidden(): void {
+  if (document.visibilityState === "hidden") flushOnHide();
+}
+
 export function useAppBootstrap(): void {
   useEffect(() => {
     usePlaybackStore.getState().initialize();
@@ -23,11 +27,10 @@ export function useAppBootstrap(): void {
       useUiStore.getState().setEnrichmentQueueDepth(depth);
     });
     window.addEventListener("pagehide", flushOnHide);
-    document.addEventListener("visibilitychange", () => {
-      if (document.visibilityState === "hidden") flushOnHide();
-    });
+    document.addEventListener("visibilitychange", flushIfHidden);
     return () => {
       window.removeEventListener("pagehide", flushOnHide);
+      document.removeEventListener("visibilitychange", flushIfHidden);
       unsubscribe();
       shutdownAudioParserPool();
     };

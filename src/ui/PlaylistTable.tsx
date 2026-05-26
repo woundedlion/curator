@@ -460,15 +460,24 @@ export function PlaylistTable({
         return;
       }
 
-      // Single-row drag falls through to the simple arrayMove path so the
-      // existing semantics are preserved bit-for-bit.
+      // Single-row drag. dnd-kit's `over.id` comes from the SortableContext's
+      // visible items list, so we must compute the move in *visible* terms
+      // and then map the new visible order back into `allTrackIds`. Doing
+      // arrayMove directly on `allTrackIds` would land the row before/after
+      // hidden rows that sit between the visible source and target.
       if (activeId === overId) return;
-      const oldIndex = allTrackIds.indexOf(activeId);
-      const newIndex = allTrackIds.indexOf(overId);
-      if (oldIndex === -1 || newIndex === -1) return;
-      reorderTracks(arrayMove(allTrackIds, oldIndex, newIndex));
+      const visibleOld = visibleTrackIds.indexOf(activeId);
+      const visibleNew = visibleTrackIds.indexOf(overId);
+      if (visibleOld === -1 || visibleNew === -1) return;
+      const newVisibleOrder = arrayMove(visibleTrackIds, visibleOld, visibleNew);
+      const visibleSet = new Set(visibleTrackIds);
+      let cursor = 0;
+      const newAll = allTrackIds.map((id) =>
+        visibleSet.has(id) ? newVisibleOrder[cursor++] : id,
+      );
+      reorderTracks(newAll);
     },
-    [allTrackIds, reorderTracks, moveSelectionTo],
+    [allTrackIds, visibleTrackIds, reorderTracks, moveSelectionTo],
   );
 
   const visibleTracks = useMemo<Track[]>(

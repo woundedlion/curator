@@ -43,17 +43,30 @@ export async function ingestFiles(
   const totalCount = unique.length;
   const tracks: Track[] = [];
   const failures: IngestFailure[] = [];
+  let parsedCount = 0;
 
-  for (let index = 0; index < unique.length; index++) {
-    const file = unique[index];
-    try {
-      const parsed = await parseSingleFile(file);
-      tracks.push(...parsed);
-    } catch (error) {
-      failures.push({ fileName: file.name, error });
-      console.warn("ingest: failed to parse", file.name, error);
+  // Dispatch every file concurrently so the worker pool runs in parallel —
+  // a sequential `for await` here pinned throughput to one worker regardless
+  // of pool size. The pool itself bounds parallelism.
+  const results = await Promise.allSettled(
+    unique.map(async (file) => {
+      try {
+        return await parseSingleFile(file);
+      } finally {
+        parsedCount++;
+        options.onProgress?.({ parsedCount, totalCount });
+      }
+    }),
+  );
+  for (let index = 0; index < results.length; index++) {
+    const result = results[index];
+    if (result.status === "fulfilled") {
+      tracks.push(...result.value);
+      continue;
     }
-    options.onProgress?.({ parsedCount: index + 1, totalCount });
+    const file = unique[index];
+    failures.push({ fileName: file.name, error: result.reason });
+    console.warn("ingest: failed to parse", file.name, result.reason);
   }
   return { tracks, failures };
 }

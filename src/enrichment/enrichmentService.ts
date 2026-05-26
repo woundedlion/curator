@@ -153,8 +153,14 @@ export async function enrichTrack(
     outcome = classifyOutcome(mergedCandidates, altScoringTrack, acceptThreshold);
   }
 
-  if (mergedCandidates.length > 0) {
-    await writeCachedCandidates(cacheKey, mergedCandidates);
+  // The cache is keyed on the **primary** (title, artist, album) — so it
+  // must store only candidates that the primary query produced. If we
+  // wrote `mergedCandidates` here, alt-query-derived recordings would
+  // leak into a future enrichment of any *other* track that shares this
+  // primary identity. The alt query is a per-track-altQuery effort and
+  // re-runs on cache miss anyway.
+  if (primaryScored.length > 0) {
+    await writeCachedCandidates(cacheKey, primaryScored);
   } else if (primaryFields.title === undefined && primaryFields.artist === undefined) {
     return {
       status: "failed",

@@ -58,7 +58,33 @@ export function AmbiguousEnrichmentDialog({ trackId, onClose }: Props) {
                   type="button"
                   className="w-full rounded border border-neutral-800 px-3 py-2 text-left text-sm hover:bg-neutral-800"
                   onClick={() => {
+                    // MB is supplementary — fill missing fields only. Never
+                    // overwrite a Spotify-matched row's identity (per
+                    // DESIGN §4.3 field-overwrite matrix), and never stomp
+                    // a value the user already has.
+                    const fields: Partial<{
+                      title: string;
+                      artist: string;
+                      album: string;
+                      year: number;
+                      originalYear: number;
+                    }> = {};
+                    if (track.title === undefined) fields.title = candidate.title;
+                    if (track.artist === undefined) fields.artist = candidate.artist;
+                    if (track.album === undefined && candidate.album !== undefined) {
+                      fields.album = candidate.album;
+                    }
+                    if (track.year === undefined && candidate.year !== undefined) {
+                      fields.year = candidate.year;
+                    }
+                    if (
+                      track.originalYear === undefined &&
+                      candidate.originalYear !== undefined
+                    ) {
+                      fields.originalYear = candidate.originalYear;
+                    }
                     updateTrack(trackId, {
+                      ...fields,
                       enrichment: {
                         status: "matched",
                         candidates,
@@ -66,11 +92,6 @@ export function AmbiguousEnrichmentDialog({ trackId, onClose }: Props) {
                         mbRecordingId: candidate.recordingId,
                         userOverride: true,
                       },
-                      title: candidate.title,
-                      artist: candidate.artist,
-                      album: candidate.album ?? track.album,
-                      year: candidate.year ?? track.year,
-                      originalYear: candidate.originalYear ?? track.originalYear,
                     });
                     onClose();
                   }}

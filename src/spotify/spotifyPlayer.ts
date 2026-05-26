@@ -2,6 +2,8 @@ import { SPOTIFY_PLAYBACK_SDK_URL } from "../constants";
 import { callSpotify } from "./apiClient";
 import { getValidAccessToken } from "./authFlow";
 
+const SDK_INIT_TIMEOUT_MS = 10_000;
+
 type SpotifyPlayerInstance = {
   connect: () => Promise<boolean>;
   disconnect: () => void;
@@ -68,8 +70,22 @@ export async function initializeSpotifyPlayer(
     function settle(result: PlayerInitResult) {
       if (settled) return;
       settled = true;
+      clearTimeout(timeoutHandle);
       resolve(result);
     }
+
+    // The SDK is supposed to fire `ready` or one of the `*_error` events
+    // after `connect()`. If neither fires (e.g. CSP blocks the EME license
+    // server), the promise would otherwise hang forever and pin the
+    // playback store in `loading`. Bound the wait so a hang surfaces as
+    // a normal init failure and the preview-fallback path engages.
+    const timeoutHandle = setTimeout(() => {
+      settle({
+        ok: false,
+        reason: "unknown",
+        message: `SDK did not respond within ${SDK_INIT_TIMEOUT_MS / 1000}s`,
+      });
+    }, SDK_INIT_TIMEOUT_MS);
 
     player.addListener("ready", (data) => {
       const deviceId = (data as { device_id?: string }).device_id;

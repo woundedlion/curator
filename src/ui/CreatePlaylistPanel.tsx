@@ -5,7 +5,10 @@ import { useSpotifyStore } from "../store/spotifyStore";
 import { useUiStore } from "../store/uiStore";
 import { findPlaylistsByName } from "../spotify/playlists";
 import { exportActivePlaylist } from "../services/playlistExporter";
-import { publishPlaylist } from "../services/playlistPublisher";
+import {
+  EmptyReplaceError,
+  publishPlaylist,
+} from "../services/playlistPublisher";
 import { CloudUploadIcon, DownloadIcon } from "./icons";
 import { IconButton } from "./IconButton";
 import { NameCollisionDialog } from "./NameCollisionDialog";
@@ -88,7 +91,15 @@ export function CreatePlaylistPanel() {
       void useSpotifyStore.getState().loadPlaylists(clientId);
     } catch (error) {
       console.error("publishPlaylist failed", error);
-      pushToast({ kind: "error", message: "Publish failed" });
+      if (error instanceof EmptyReplaceError) {
+        pushToast({
+          kind: "error",
+          message:
+            "Draft has no Spotify-matched tracks — refusing to replace existing playlist with an empty one",
+        });
+      } else {
+        pushToast({ kind: "error", message: "Publish failed" });
+      }
     } finally {
       setPublishing(false);
       setProgressLabel("");

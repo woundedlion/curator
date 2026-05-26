@@ -7,6 +7,7 @@ import type { MBCandidate } from "../types";
 import { RateLimitedQueue } from "./rateLimitedQueue";
 
 const SEARCH_LIMIT = 5;
+const SEARCH_TIMEOUT_MS = 10_000;
 
 type MBRecording = {
   id: string;
@@ -102,7 +103,23 @@ async function runOneSearch(
 ): Promise<MBCandidate[]> {
   return queue.enqueue(async () => {
     const url = buildSearchUrl(query, contactEmail, dismax);
-    const response = await fetch(url, { headers: buildRequestHeaders() });
+    // The rate-limited queue serializes work — one hung request pins the
+    // entire enrichment pipeline. Cap each fetch so a network stall
+    // becomes a normal failure instead of a deadlock.
+    const controller = new AbortController();
+    const timeoutId = setTimeout(
+      () => controller.abort(),
+      SEARCH_TIMEOUT_MS,
+    );
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        headers: buildRequestHeaders(),
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timeoutId);
+    }
     if (!response.ok) {
       const body = await response.text().catch(() => "");
       console.error("MusicBrainz search failed", {
@@ -114,9 +131,20 @@ async function runOneSearch(
         `MusicBrainz ${response.status} ${response.statusText}: ${body.slice(0, 200)}`,
       );
     }
-    const json = (await response.json()) as MBSearchResponse;
-    const recordings = json.recordings ?? [];
-    return recordings.map(recordingToCandidate);
+    try {
+      const json = (await response.json()) as MBSearchResponse;
+      const recordings = json.recordings ?? [];
+      return recordings.map(recordingToCandidate);
+    } catch (error) {
+      // MB occasionally serves HTML during maintenance windows; a
+      // SyntaxError from `response.json()` shouldn't kill the row with
+      // an opaque message — surface a clearer transient-error message.
+      throw new Error(
+        `MusicBrainz returned non-JSON response: ${
+          error instanceof Error ? error.message : "unknown"
+        }`,
+      );
+    }
   });
 }
 

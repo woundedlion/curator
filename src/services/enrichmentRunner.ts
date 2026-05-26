@@ -219,6 +219,17 @@ function isSpotifyImport(trackId: string): boolean {
   return Boolean(track && track.source.kind === "spotify-import");
 }
 
+// `reenrichAll` (toolbar ↻) is explicit but bulk — treat it as "automatic
+// enough" that user-picked rows are preserved. A user who picked a
+// specific MB candidate via the ambiguous-enrichment dialog had their
+// row set with `userOverride = true`; wiping that in a bulk pass would
+// silently destroy their choice. The per-row ↻ deliberately clears
+// `userOverride` and re-enriches a single row — that's the escape hatch.
+function isUserOverridden(trackId: string): boolean {
+  const track = usePlaylistStore.getState().tracksById[trackId];
+  return Boolean(track && track.enrichment.userOverride);
+}
+
 async function resetTrackForReenrichment(trackId: string): Promise<void> {
   await clearTrackEnrichmentCache(trackId);
   const track = usePlaylistStore.getState().tracksById[trackId];
@@ -235,7 +246,9 @@ export async function reenrichAll(): Promise<void> {
   }
   const trackIds = usePlaylistStore
     .getState()
-    .playlist.trackIds.filter((id) => !isSpotifyImport(id));
+    .playlist.trackIds.filter(
+      (id) => !isSpotifyImport(id) && !isUserOverridden(id),
+    );
   if (trackIds.length === 0) return;
 
   await useUiStore.getState().withBusy(async () => {

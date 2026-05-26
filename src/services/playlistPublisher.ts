@@ -19,6 +19,19 @@ export type PublishResult = {
   progress: PlaylistPushProgress;
 };
 
+// Update-mode (Replace) with no pushable URIs would issue a PUT /items
+// with an empty body, which Spotify treats as "clear this playlist." The
+// user almost never wants that — they wanted to publish a draft and the
+// draft happened to be empty (every row unmatched + hideUnmatched=true).
+// Surfacing it explicitly is the only way to avoid silent data loss
+// against a real Spotify playlist.
+export class EmptyReplaceError extends Error {
+  constructor() {
+    super("Draft has no pushable tracks");
+    this.name = "EmptyReplaceError";
+  }
+}
+
 function collectPushableUris(): string[] {
   const state = usePlaylistStore.getState();
   const hideUnmatched = state.playlist.hideUnmatched;
@@ -50,6 +63,7 @@ export async function publishPlaylist(
   const draft = usePlaylistStore.getState().playlist;
 
   if (mode.kind === "update") {
+    if (uris.length === 0) throw new EmptyReplaceError();
     const progress = await replaceAndPushTracks(
       mode.playlistId,
       uris,

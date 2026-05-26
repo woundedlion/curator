@@ -97,3 +97,30 @@ export function isImportableTrack(
 ): item is SpotifyTrackResponse {
   return Boolean(item && item.id && item.uri && item.name);
 }
+
+// The six displayed fields Spotify is authoritative for (DESIGN §4.5). Both
+// the auto-match runner and the manual picker promote a candidate to the
+// row's displayed identity by writing this exact set, so the two paths can't
+// drift — earlier versions had auto-match miss `durationMs` / `coverUrl`.
+export type SpotifyDisplayFields = Partial<{
+  title: string;
+  artist: string;
+  album: string;
+  year: number;
+  durationMs: number;
+  coverUrl: string;
+}>;
+
+export function spotifyDisplayFieldsFromCandidate(
+  candidate: SpotifyCandidate,
+): SpotifyDisplayFields {
+  const result: SpotifyDisplayFields = {
+    title: candidate.title,
+    artist: candidate.artist,
+  };
+  if (candidate.album !== undefined) result.album = candidate.album;
+  if (candidate.year !== undefined) result.year = candidate.year;
+  if (candidate.durationMs !== undefined) result.durationMs = candidate.durationMs;
+  if (candidate.coverUrl !== undefined) result.coverUrl = candidate.coverUrl;
+  return result;
+}

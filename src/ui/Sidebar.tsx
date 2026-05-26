@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { useSpotifyStore } from "../store/spotifyStore";
 import { useSettingsStore } from "../store/settingsStore";
 import { IconButton } from "./IconButton";
@@ -10,6 +11,14 @@ export function Sidebar() {
   const loading = useSpotifyStore((state) => state.loadingPlaylists);
   const connected = useSpotifyStore((state) => state.connected);
   const loadPlaylists = useSpotifyStore((state) => state.loadPlaylists);
+
+  const sortedPlaylists = useMemo(
+    () =>
+      [...playlists].sort((a, b) =>
+        a.name.localeCompare(b.name, undefined, { sensitivity: "base" }),
+      ),
+    [playlists],
+  );
 
   async function refresh() {
     if (!clientId) return;
@@ -52,7 +61,7 @@ export function Sidebar() {
             Drag a playlist onto the draft to append its tracks.
           </p>
           <ul className="flex-1 overflow-auto">
-            {playlists.map((playlist) => (
+            {sortedPlaylists.map((playlist) => (
               <li
                 key={playlist.id}
                 draggable
