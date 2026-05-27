@@ -13,6 +13,10 @@ export type Toast = {
 const TOAST_VISIBLE_MS = 2700;
 const TOAST_FADE_MS = 300;
 const TOAST_TOTAL_MS = TOAST_VISIBLE_MS + TOAST_FADE_MS;
+// Errors deserve the user's attention — auto-dismissing them after 2.7s
+// often means they vanish before the user has read them. We bound the
+// queue separately (MAX_TOASTS) so a spammy loop can't pile up dozens.
+const MAX_TOASTS = 5;
 
 type UiStore = {
   toasts: Toast[];
@@ -67,12 +71,28 @@ export const useUiStore = create<UiStore>((set, get) => {
 
     pushToast(toast) {
       const id = nextToastId++;
-      set((state) => ({
-        toasts: [...state.toasts, { ...toast, id, fading: false }],
-      }));
-      const fade = setTimeout(() => beginFadeFor(id), TOAST_VISIBLE_MS) as unknown as number;
-      const remove = setTimeout(() => removeToastFor(id), TOAST_TOTAL_MS) as unknown as number;
-      toastTimers.set(id, { fade, remove });
+      set((state) => {
+        const queue = [...state.toasts, { ...toast, id, fading: false }];
+        // Bound the queue. When too many toasts pile up, drop the oldest
+        // *non-error* toast first so persistent error messages stick around.
+        while (queue.length > MAX_TOASTS) {
+          const dropIdx = queue.findIndex((t) => t.kind !== "error");
+          const idx = dropIdx === -1 ? 0 : dropIdx;
+          const dropped = queue.splice(idx, 1)[0];
+          if (dropped) clearTimersFor(dropped.id);
+        }
+        return { toasts: queue };
+      });
+      // Errors require user action to dismiss — vanishing them silently
+      // means the user never sees critical failures (publish failed,
+      // playback error, etc.).
+      if (toast.kind === "error") return;
+      const fade = setTimeout(() => beginFadeFor(id), TOAST_VISIBLE_MS);
+      const remove = setTimeout(() => removeToastFor(id), TOAST_TOTAL_MS);
+      toastTimers.set(id, {
+        fade: fade as unknown as number,
+        remove: remove as unknown as number,
+      });
     },
 
     dismissToast(id) {

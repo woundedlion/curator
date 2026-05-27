@@ -8,7 +8,9 @@ const FOCUSABLE_SELECTOR =
 function getFocusable(container: HTMLElement): HTMLElement[] {
   return Array.from(
     container.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR),
-  ).filter((el) => !el.hasAttribute("aria-hidden"));
+    // Only treat aria-hidden="true" as hidden — explicit aria-hidden="false"
+    // means the element is intentionally exposed and should remain focusable.
+  ).filter((el) => el.getAttribute("aria-hidden") !== "true");
 }
 
 // Modal-dialog focus management: when `open` is true, focus moves into the

@@ -13,12 +13,19 @@ const STATUS_LABELS: Record<SpotifyMatchStatus, string> = {
   missing: "Not available on Spotify (click to re-search)",
 };
 
+// Distinct shapes — not just filled/half/open variants of the same
+// circle — so colorblind users (and anyone reading at a glance) can
+// tell the four states apart by silhouette alone:
+//   ✓ checkmark — matched
+//   ? question — ambiguous (user input needed)
+//   ✕ cross — missing
+//   – dash — idle (nothing has happened yet)
 const STATUS_GLYPHS: Record<SpotifyMatchStatus, string> = {
-  idle: "·",
+  idle: "–",
   pending: "…",
-  matched: "●",
-  ambiguous: "◐",
-  missing: "○",
+  matched: "✓",
+  ambiguous: "?",
+  missing: "✕",
 };
 
 const STATUS_COLORS: Record<SpotifyMatchStatus, string> = {

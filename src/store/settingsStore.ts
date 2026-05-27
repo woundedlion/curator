@@ -80,11 +80,17 @@ type SettingsStore = {
   update: (patch: Partial<Settings>) => void;
 };
 
-export const useSettingsStore = create<SettingsStore>((set, get) => ({
+export const useSettingsStore = create<SettingsStore>((set) => ({
   settings: loadSettingsFromStorage(),
   update(patch) {
-    const next = { ...get().settings, ...patch };
-    persistSettings(next);
-    set({ settings: next });
+    // Use the functional `set` form so the patch sees the latest state
+    // (matters if two updates race) and we can collapse read+write into
+    // one atomic step. persistSettings is called inside set so the
+    // localStorage and store states stay aligned.
+    set((state) => {
+      const next = { ...state.settings, ...patch };
+      persistSettings(next);
+      return { settings: next };
+    });
   },
 }));

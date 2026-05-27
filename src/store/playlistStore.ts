@@ -24,6 +24,12 @@ type PlaylistStore = {
   undoStack: UndoEntry[];
   hydrated: boolean;
 
+  // Track records are always replaced (never mutated in place) — every
+  // store action that touches a Track writes `{ ...existing, ...patch }`
+  // into a new tracksById entry. Other layers can rely on referential
+  // identity to detect changes; the undo helpers depend on it for cheap
+  // shallow copies.
+
   // Selection state. `selectedTrackIds` is the authoritative set for both
   // group-drag and bulk-delete. `selectionAnchorId` is the last id the user
   // affirmatively clicked (used as the origin for shift-extend). Selection
@@ -34,6 +40,20 @@ type PlaylistStore = {
   hydrateFromStorage: () => Promise<void>;
   addTracks: (tracks: Track[]) => void;
   updateTrack: (id: string, patch: Partial<Track>) => void;
+  // Atomic "fill missing displayed fields" — applies only to fields that are
+  // currently `undefined` or `""` on the live track. Used by enrichment +
+  // Spotify-match runners to honor the source-of-truth rule (user edit and
+  // Spotify-selected values are never clobbered) even when the calling
+  // closure is stale relative to an interleaving write.
+  fillMissingDisplayFields: (
+    id: string,
+    fillIns: Partial<
+      Pick<
+        Track,
+        "title" | "artist" | "album" | "year" | "originalYear" | "coverUrl"
+      >
+    >,
+  ) => void;
   removeTrack: (id: string) => void;
   removeTracks: (ids: string[]) => void;
   reorderTracks: (orderedIds: string[]) => void;
@@ -184,7 +204,11 @@ function applyUndo(
   }
   return {
     tracksById: { ...entry.priorTracksById },
-    playlist: { ...state.playlist, trackIds: [...entry.priorTrackIds] },
+    playlist: {
+      ...state.playlist,
+      trackIds: [...entry.priorTrackIds],
+      sort: entry.priorSort,
+    },
     ...restoreSelection(new Set(entry.priorTrackIds)),
   };
 }
@@ -248,6 +272,19 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => ({
       if (!existing) return state;
       return {
         tracksById: { ...state.tracksById, [id]: { ...existing, ...patch } },
+      };
+    });
+    schedulePersist();
+  },
+
+  fillMissingDisplayFields(id, fillIns) {
+    set((state) => {
+      const existing = state.tracksById[id];
+      if (!existing) return state;
+      const merged = mergeOnlyMissing(existing, fillIns);
+      if (merged === existing) return state;
+      return {
+        tracksById: { ...state.tracksById, [id]: merged },
       };
     });
     schedulePersist();
@@ -422,6 +459,7 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => ({
         snapshotReplaceEntry(
           state.playlist.trackIds,
           state.tracksById,
+          state.playlist.sort,
           captureSelection(state.selectedTrackIds, state.selectionAnchorId),
         ),
       ),
@@ -442,6 +480,7 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => ({
           snapshotReplaceEntry(
             state.playlist.trackIds,
             state.tracksById,
+            state.playlist.sort,
             captureSelection(state.selectedTrackIds, state.selectionAnchorId),
           ),
         ),
@@ -485,12 +524,18 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => ({
 
   extendSelectionTo(id, visibleIds) {
     set((state) => {
-      const range = rangeBetween(visibleIds, state.selectionAnchorId, id);
+      // If the stored anchor is no longer in the visible set (the filter
+      // changed, or it was deleted), the anchor is stale and would
+      // produce a range of just `[id]`. Reset it to `id` so subsequent
+      // shift-clicks pivot off a meaningful origin.
+      const anchorValid =
+        state.selectionAnchorId !== null &&
+        visibleIds.includes(state.selectionAnchorId);
+      const effectiveAnchor = anchorValid ? state.selectionAnchorId : id;
+      const range = rangeBetween(visibleIds, effectiveAnchor, id);
       return {
         selectedTrackIds: new Set(range),
-        // Anchor stays put so subsequent shift-clicks pivot off the same
-        // origin (matches file-explorer behavior).
-        selectionAnchorId: state.selectionAnchorId ?? id,
+        selectionAnchorId: effectiveAnchor,
       };
     });
   },
@@ -521,6 +566,31 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => ({
     });
   },
 }));
+
+function isFieldMissing(value: unknown): boolean {
+  return value === undefined || value === null || value === "";
+}
+
+type FillableTrackFields = Pick<
+  Track,
+  "title" | "artist" | "album" | "year" | "originalYear" | "coverUrl"
+>;
+
+function mergeOnlyMissing(
+  existing: Track,
+  fillIns: Partial<FillableTrackFields>,
+): Track {
+  let changed = false;
+  const merged: Track = { ...existing };
+  for (const key of Object.keys(fillIns) as (keyof FillableTrackFields)[]) {
+    const candidate = fillIns[key];
+    if (candidate === undefined) continue;
+    if (!isFieldMissing(existing[key])) continue;
+    (merged[key] as FillableTrackFields[typeof key]) = candidate;
+    changed = true;
+  }
+  return changed ? merged : existing;
+}
 
 function pruneSelection(
   selection: Set<string>,

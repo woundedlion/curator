@@ -16,6 +16,26 @@ import { useUiStore } from "../store/uiStore";
 import { enrichAllPending } from "./enrichmentRunner";
 import { matchAllOnSpotify } from "./spotifyMatchRunner";
 
+// Chains all post-ingest match-then-enrich runs onto a single promise.
+// If a second ingest finishes while the first's runners are still going,
+// its match+enrich step waits for the previous one to drain instead of
+// running in parallel and racing on shared track state. The chain
+// .catch's onto a resolved promise so one failure does not poison the
+// queue for subsequent runs.
+let backgroundRunners: Promise<void> = Promise.resolve();
+
+function queuePostIngestRunners(): void {
+  backgroundRunners = backgroundRunners.then(() =>
+    useUiStore.getState().withBusy(async () => {
+      await matchAllOnSpotify();
+      await enrichAllPending();
+    }),
+  );
+  // Drop a rejection so the next .then() runs cleanly. Errors are already
+  // surfaced as toasts by the runners themselves.
+  backgroundRunners = backgroundRunners.catch(() => undefined);
+}
+
 async function addAndEnrich(files: File[]): Promise<void> {
   if (files.length === 0) return;
   const ui = useUiStore.getState();
@@ -40,10 +60,7 @@ async function addAndEnrich(files: File[]): Promise<void> {
     }
   });
 
-  void useUiStore.getState().withBusy(async () => {
-    await matchAllOnSpotify();
-    await enrichAllPending();
-  });
+  queuePostIngestRunners();
 }
 
 // Read text files once up front so we can route Curator-export drops to
@@ -101,10 +118,7 @@ async function importEnvelope(env: CuratorExportEnvelope): Promise<void> {
   });
   // Resolved rows (matched status) are skipped by both runners; this
   // pass picks up only the unresolved tracks if any are present.
-  void useUiStore.getState().withBusy(async () => {
-    await matchAllOnSpotify();
-    await enrichAllPending();
-  });
+  queuePostIngestRunners();
 }
 
 export async function ingestDroppedFiles(files: File[]): Promise<void> {
@@ -136,9 +150,7 @@ export async function importPlaylistById(playlistId: string): Promise<void> {
         message: `Appended ${tracks.length} tracks from Spotify`,
       });
     });
-    void useUiStore.getState().withBusy(async () => {
-      await enrichAllPending();
-    });
+    queuePostIngestRunners();
   } catch (error) {
     console.error("importPlaylistById failed", error);
     if (error instanceof SpotifyForbiddenError) {

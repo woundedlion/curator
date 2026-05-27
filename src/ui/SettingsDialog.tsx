@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useDialogFocus } from "../hooks/useDialogFocus";
 import { clearMusicbrainzCache } from "../db/musicbrainzCache";
 import { useSettingsStore } from "../store/settingsStore";
@@ -8,6 +9,7 @@ import {
   spotifyCircuitOpenMs,
 } from "../spotify/apiClient";
 import { beginAuthFlow } from "../spotify/authFlow";
+import { ConfirmDialog } from "./ConfirmDialog";
 
 function emptyToUndefined(value: string): string | undefined {
   const trimmed = value.trim();
@@ -25,6 +27,7 @@ export function SettingsDialog() {
   const pushToast = useUiStore((state) => state.pushToast);
 
   const dialogRef = useDialogFocus<HTMLDivElement>(open, closeDialog);
+  const [pendingClearCache, setPendingClearCache] = useState(false);
 
   if (!open) return null;
 
@@ -33,7 +36,12 @@ export function SettingsDialog() {
     await beginAuthFlow(settings.spotifyClientId, settings.spotifyRedirectUri);
   }
 
-  async function clearCache() {
+  function requestClearCache() {
+    setPendingClearCache(true);
+  }
+
+  async function confirmClearCache() {
+    setPendingClearCache(false);
     await clearMusicbrainzCache();
     pushToast({ kind: "info", message: "MusicBrainz cache cleared" });
   }
@@ -169,7 +177,7 @@ export function SettingsDialog() {
           <h3 className="mb-1 text-sm font-semibold">Cache</h3>
           <button
             type="button"
-            onClick={clearCache}
+            onClick={requestClearCache}
             className="rounded border border-neutral-700 px-2 py-1 text-xs hover:bg-neutral-800"
           >
             Clear MusicBrainz cache
@@ -186,6 +194,15 @@ export function SettingsDialog() {
           </button>
         </div>
       </div>
+      <ConfirmDialog
+        open={pendingClearCache}
+        title="Clear MusicBrainz cache?"
+        message="All cached MusicBrainz results will be discarded. The next enrichment pass will re-fetch every track from MusicBrainz (subject to the 1 req/sec rate limit)."
+        confirmLabel="Clear"
+        kind="danger"
+        onConfirm={confirmClearCache}
+        onCancel={() => setPendingClearCache(false)}
+      />
     </div>
   );
 }

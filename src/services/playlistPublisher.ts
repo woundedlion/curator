@@ -7,7 +7,6 @@ import {
   replaceAndPushTracks,
 } from "../spotify/playlists";
 import { usePlaylistStore } from "../store/playlistStore";
-import { useSpotifyStore } from "../store/spotifyStore";
 
 export type PublishMode =
   | { kind: "create" }
@@ -19,12 +18,10 @@ export type PublishResult = {
   progress: PlaylistPushProgress;
 };
 
-// Update-mode (Replace) with no pushable URIs would issue a PUT /items
-// with an empty body, which Spotify treats as "clear this playlist." The
-// user almost never wants that — they wanted to publish a draft and the
-// draft happened to be empty (every row unmatched + hideUnmatched=true).
-// Surfacing it explicitly is the only way to avoid silent data loss
-// against a real Spotify playlist.
+// Publish with no pushable URIs. Update-mode (Replace) would clear an
+// existing Spotify playlist; create-mode would silently litter the user's
+// account with empty playlists. In both cases surfacing the gap loudly
+// is more useful than the silent "success" the API would otherwise give.
 export class EmptyReplaceError extends Error {
   constructor() {
     super("Draft has no pushable tracks");
@@ -62,8 +59,13 @@ export async function publishPlaylist(
   const uris = collectPushableUris();
   const draft = usePlaylistStore.getState().playlist;
 
+  // Refuse both create and update when there's nothing to push. The
+  // alternative for create is a Spotify playlist that exists but has no
+  // tracks — the user almost certainly intended the publish action as a
+  // commit of *content*, not a metadata-only operation.
+  if (uris.length === 0) throw new EmptyReplaceError();
+
   if (mode.kind === "update") {
-    if (uris.length === 0) throw new EmptyReplaceError();
     const progress = await replaceAndPushTracks(
       mode.playlistId,
       uris,
@@ -77,11 +79,7 @@ export async function publishPlaylist(
     };
   }
 
-  const user = useSpotifyStore.getState().user;
-  if (!user) throw new Error("Spotify user is not loaded");
-
   const created = await createPlaylist(
-    user.id,
     {
       name: draft.name,
       description: draft.description,

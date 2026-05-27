@@ -72,7 +72,11 @@ export function exportActivePlaylist(): void {
   document.body.appendChild(a);
   a.click();
   a.remove();
-  URL.revokeObjectURL(url);
+  // Defer revocation. Some browsers (notably Firefox/Safari) start the
+  // download asynchronously after a.click(); revoking the object URL
+  // synchronously can race and cancel the download. The macrotask lets
+  // the download stream initiate first.
+  setTimeout(() => URL.revokeObjectURL(url), 0);
   useUiStore.getState().pushToast({
     kind: "success",
     message: `Exported ${envelope.tracks.length} tracks`,

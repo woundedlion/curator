@@ -38,6 +38,29 @@ function isAccessTokenFresh(tokens: SpotifyTokens): boolean {
   return tokens.expiresAt - Date.now() > ACCESS_TOKEN_REFRESH_GUARD_MS;
 }
 
+function tokenScopes(tokens: SpotifyTokens): Set<string> {
+  return new Set(tokens.scope.split(/\s+/).filter(Boolean));
+}
+
+const REQUIRED_SCOPES = SPOTIFY_SCOPES.split(/\s+/).filter(Boolean);
+
+// Returns scopes the cached token is missing relative to the current
+// SPOTIFY_SCOPES list. Users who authorized before a scope was added
+// will keep getting 403s on the new endpoint until they reconnect; this
+// lets the bootstrap detect that proactively instead of waiting for a
+// confusing 403 on first publish.
+export function missingScopes(tokens: SpotifyTokens): string[] {
+  const granted = tokenScopes(tokens);
+  return REQUIRED_SCOPES.filter((scope) => !granted.has(scope));
+}
+
+export function readTokensIfScopesValid(): SpotifyTokens | null {
+  const tokens = readTokens();
+  if (!tokens) return null;
+  if (missingScopes(tokens).length > 0) return null;
+  return tokens;
+}
+
 export async function beginAuthFlow(
   clientId: string,
   redirectUri: string,
@@ -100,12 +123,35 @@ export type CallbackParams = {
   state: string;
 };
 
+export type AuthCallback =
+  | { kind: "code"; code: string; state: string }
+  | { kind: "error"; error: string; description?: string };
+
+// readCallbackParams returns just the success-shaped payload (kept for
+// API compatibility with code that only cares about the happy path).
+// readAuthCallback returns the discriminated union including denials
+// (?error=access_denied) so callers can show a clear toast instead of
+// silently falling through to "disconnected" with no explanation.
 export function readCallbackParams(): CallbackParams | null {
   const url = new URL(window.location.href);
   const code = url.searchParams.get("code");
   const state = url.searchParams.get("state");
   if (!code || !state) return null;
   return { code, state };
+}
+
+export function readAuthCallback(): AuthCallback | null {
+  const url = new URL(window.location.href);
+  const error = url.searchParams.get("error");
+  if (error) {
+    const description =
+      url.searchParams.get("error_description") ?? undefined;
+    return { kind: "error", error, description };
+  }
+  const code = url.searchParams.get("code");
+  const state = url.searchParams.get("state");
+  if (!code || !state) return null;
+  return { kind: "code", code, state };
 }
 
 export function clearCallbackParams(): void {
@@ -116,6 +162,11 @@ export function clearCallbackParams(): void {
   window.history.replaceState({}, "", url.toString());
 }
 
+function clearPkceKeys(): void {
+  sessionStorage.removeItem(PKCE_STATE_KEY);
+  sessionStorage.removeItem(PKCE_VERIFIER_KEY);
+}
+
 export async function completeAuthFlow(
   clientId: string,
   redirectUri: string,
@@ -123,19 +174,35 @@ export async function completeAuthFlow(
 ): Promise<SpotifyTokens> {
   const expectedState = sessionStorage.getItem(PKCE_STATE_KEY);
   const verifier = sessionStorage.getItem(PKCE_VERIFIER_KEY);
-  if (!expectedState || !verifier) throw new Error("Missing PKCE state");
-  if (expectedState !== callback.state) throw new Error("PKCE state mismatch");
+  if (!expectedState || !verifier) {
+    clearPkceKeys();
+    throw new Error("Missing PKCE state");
+  }
+  if (expectedState !== callback.state) {
+    // CSRF defence: a state mismatch may indicate a forged callback. Drop
+    // both keys so a follow-up legitimate flow starts fresh, and never
+    // reuse a verifier that was bound to a now-suspect state.
+    clearPkceKeys();
+    throw new Error("PKCE state mismatch");
+  }
 
-  const tokens = await exchangeAuthorizationCode(
-    clientId,
-    redirectUri,
-    callback.code,
-    verifier,
-  );
-  sessionStorage.removeItem(PKCE_STATE_KEY);
-  sessionStorage.removeItem(PKCE_VERIFIER_KEY);
-  writeTokens(tokens);
-  return tokens;
+  try {
+    const tokens = await exchangeAuthorizationCode(
+      clientId,
+      redirectUri,
+      callback.code,
+      verifier,
+    );
+    clearPkceKeys();
+    writeTokens(tokens);
+    return tokens;
+  } catch (error) {
+    // Verifier is consumed by the failed exchange — Spotify won't accept
+    // it again. Clearing here prevents a stale-verifier replay on the
+    // next attempt.
+    clearPkceKeys();
+    throw error;
+  }
 }
 
 async function refreshAccessToken(

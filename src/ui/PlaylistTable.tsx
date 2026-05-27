@@ -14,6 +14,7 @@ import {
   useSensor,
   useSensors,
   type DragEndEvent,
+  type DragOverEvent,
   type DragStartEvent,
 } from "@dnd-kit/core";
 import {
@@ -24,6 +25,8 @@ import {
 } from "@dnd-kit/sortable";
 import { PLAYLIST_SCROLL_KEY, ROW_HEIGHT_PX } from "../constants";
 import { usePlaylistStore } from "../store/playlistStore";
+import { moveSelectionMaintainingShape } from "../store/selectionHelpers";
+import { ConfirmDialog } from "./ConfirmDialog";
 import { IconButton } from "./IconButton";
 import { TrashIcon } from "./icons";
 import type { RowClickModifiers } from "./SortableTrackRow";
@@ -37,14 +40,8 @@ type Props = {
   onReEnrich: (trackId: string) => void;
 };
 
-// Shared confirm prompt used by the header Delete button, the Delete key,
-// and the per-row trash icon when the clicked row is part of a multi-
-// selection. Kept module-level so the wording stays consistent regardless
-// of entry point.
-function confirmBulkDelete(count: number): boolean {
-  return window.confirm(
-    `Remove ${count} selected tracks? You can undo this while the tab is open.`,
-  );
+function bulkDeleteMessage(count: number): string {
+  return `Remove ${count} selected tracks? You can undo this while the tab is open.`;
 }
 
 const HEADERS: { field: SortField; label: string; width: string }[] = [
@@ -141,7 +138,6 @@ export function PlaylistTable({
   const sort = usePlaylistStore((state) => state.playlist.sort);
   const setSort = usePlaylistStore((state) => state.setSort);
   const reorderTracks = usePlaylistStore((state) => state.reorderTracks);
-  const moveSelectionTo = usePlaylistStore((state) => state.moveSelectionTo);
   const removeTracks = usePlaylistStore((state) => state.removeTracks);
   const allTrackIds = usePlaylistStore((state) => state.playlist.trackIds);
   const selectedTrackIds = usePlaylistStore((state) => state.selectedTrackIds);
@@ -229,6 +225,14 @@ export function PlaylistTable({
     };
   }, []);
 
+  // Confirm-dialog state for destructive bulk deletes. `pendingDeleteIds`
+  // is the snapshot taken at the moment the user requested the delete —
+  // the live selection may have shifted by the time the user clicks
+  // Confirm, so we honor what they had selected when they pressed.
+  const [pendingDeleteIds, setPendingDeleteIds] = useState<string[] | null>(
+    null,
+  );
+
   // Delete every currently-selected row. Confirms when ≥2 are selected so
   // an accidental press of Delete (or click of the header Delete button)
   // doesn't wipe a whole multi-selection. Bound by the live store state so
@@ -239,7 +243,10 @@ export function PlaylistTable({
       usePlaylistStore.getState().selectedTrackIds,
     );
     if (ids.length === 0) return;
-    if (ids.length > 1 && !confirmBulkDelete(ids.length)) return;
+    if (ids.length > 1) {
+      setPendingDeleteIds(ids);
+      return;
+    }
     removeTracks(ids);
   }, [removeTracks]);
 
@@ -252,8 +259,7 @@ export function PlaylistTable({
     (trackId: string) => {
       const selection = usePlaylistStore.getState().selectedTrackIds;
       if (selection.has(trackId) && selection.size > 1) {
-        if (!confirmBulkDelete(selection.size)) return;
-        removeTracks(Array.from(selection));
+        setPendingDeleteIds(Array.from(selection));
         return;
       }
       removeTracks([trackId]);
@@ -261,14 +267,25 @@ export function PlaylistTable({
     [removeTracks],
   );
 
+  const confirmPendingDelete = useCallback(() => {
+    if (pendingDeleteIds) removeTracks(pendingDeleteIds);
+    setPendingDeleteIds(null);
+  }, [pendingDeleteIds, removeTracks]);
+
   // ─── Keyboard: Delete = bulk remove, Esc = clear selection ───────────────
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
       const target = e.target;
-      // Ignore when the user is typing into a field or content-editable area.
+      // Ignore when the user is typing into a field or content-editable area,
+      // or when focus is on a row-level icon button (Delete on the per-row
+      // trash icon already runs its own click handler; a global Delete here
+      // would double-fire). Body-level focus and row-level (role="row")
+      // focus are the only places these shortcuts should activate.
       if (target instanceof Element) {
         if (
-          target.closest('input, textarea, select, [contenteditable="true"]')
+          target.closest(
+            'input, textarea, select, button, a, [contenteditable="true"]',
+          )
         ) {
           return;
         }
@@ -430,33 +447,126 @@ export function PlaylistTable({
   }, [setSelection]);
 
   // ─── DnD-kit drag wiring ────────────────────────────────────────────────
+  // Live preview of the visible-id order while a multi-row drag is in
+  // flight. `null` means "no preview — render `visibleTrackIds` directly"
+  // (single-row drags fall back to dnd-kit's built-in row-shift animation,
+  // which already does the right thing). When set, the SortableContext +
+  // virtualizer render this order instead, so unselected rows visibly slide
+  // out of the way and the non-active selected rows visibly slot into their
+  // landing positions before the user releases. On drop, the same algorithm
+  // (`moveSelectionMaintainingShape`) produces the final order — what the
+  // user sees is what they get.
+  const [dragPreviewIds, setDragPreviewIds] = useState<string[] | null>(null);
+  // Set true for the duration of a multi-row drag. Lets non-active selected
+  // rows render the same "lifting" opacity that dnd-kit applies to the
+  // active row, so all rows in the moving block read as a single group.
+  const [multiDragActive, setMultiDragActive] = useState(false);
+  // dnd-kit's `over.id` can settle on a selected row while the preview is
+  // shifting things around (a non-active selected row slides under the
+  // cursor's screen position). The drop semantics treat "over a selected
+  // row" as a no-op, which would silently abort the move the user just
+  // built up visually. To avoid that, we remember the most recent UNSELECTED
+  // over-id we saw during the drag and use it on release as a fallback
+  // anchor when the final over-id is on a selected row. Cleared at drag
+  // start/cancel.
+  const lastUnselectedOverIdRef = useRef<string | null>(null);
+  // The active drag id, captured at drag start so that handleDragOver can
+  // pass it into the new algorithm without depending on dnd-kit's event
+  // re-firing semantics. Cleared on end/cancel.
+  const activeDragIdRef = useRef<string | null>(null);
+
   const handleDragStart = useCallback(
     (event: DragStartEvent) => {
       const activeId = String(event.active.id);
+      activeDragIdRef.current = activeId;
+      lastUnselectedOverIdRef.current = null;
       // If the dragged row isn't part of the current selection, the drag
       // should affect only that row. Make this visible by replacing the
       // selection so the user sees what they're carrying.
       if (!selectedTrackIds.has(activeId)) {
         selectOnly(activeId);
+        setMultiDragActive(false);
+        return;
       }
+      setMultiDragActive(selectedTrackIds.size > 1);
     },
     [selectedTrackIds, selectOnly],
+  );
+
+  const handleDragOver = useCallback(
+    (event: DragOverEvent) => {
+      const { active, over } = event;
+      if (!over) return;
+      const activeId = String(active.id);
+      const overId = String(over.id);
+      const selection = usePlaylistStore.getState().selectedTrackIds;
+      // Only multi-row drags need a preview override — dnd-kit handles the
+      // single-row case natively.
+      if (selection.size <= 1 || !selection.has(activeId)) {
+        if (dragPreviewIds !== null) setDragPreviewIds(null);
+        return;
+      }
+      // Hovering over a selected row keeps the last preview as-is (the live
+      // reorder can scoot a selected row under the cursor mid-drag, but the
+      // user's intent hasn't moved — keep showing the last valid landing).
+      if (selection.has(overId)) return;
+      lastUnselectedOverIdRef.current = overId;
+      const next = moveSelectionMaintainingShape(
+        visibleTrackIds,
+        selection,
+        activeId,
+        overId,
+      );
+      if (next === visibleTrackIds) {
+        if (dragPreviewIds !== null) setDragPreviewIds(null);
+      } else if (next !== dragPreviewIds) {
+        setDragPreviewIds(next);
+      }
+    },
+    [visibleTrackIds, dragPreviewIds],
   );
 
   const handleDragEnd = useCallback(
     (event: DragEndEvent) => {
       const { active, over } = event;
+      const lastUnselectedOver = lastUnselectedOverIdRef.current;
+      setDragPreviewIds(null);
+      setMultiDragActive(false);
+      activeDragIdRef.current = null;
+      lastUnselectedOverIdRef.current = null;
       if (!over) return;
       const activeId = String(active.id);
-      const overId = String(over.id);
+      const overFromEvent = String(over.id);
 
       // After handleDragStart, the selection always contains activeId. So
       // the "current selection" is the set we should move.
       const currentSelection = usePlaylistStore.getState().selectedTrackIds;
 
       if (currentSelection.size > 1) {
-        if (currentSelection.has(overId)) return;
-        moveSelectionTo(overId);
+        // Prefer the live event's over-id, but if it landed on a selected
+        // row (because the preview shifted things under the cursor), fall
+        // back to the last unselected over we saw. Without this fallback
+        // the user's deliberate multi-drag would silently no-op.
+        const overId = currentSelection.has(overFromEvent)
+          ? lastUnselectedOver
+          : overFromEvent;
+        if (!overId || currentSelection.has(overId)) return;
+        const newVisibleOrder = moveSelectionMaintainingShape(
+          visibleTrackIds,
+          currentSelection,
+          activeId,
+          overId,
+        );
+        if (newVisibleOrder === visibleTrackIds) return;
+        // Map the new visible-list order back into the full track-id list,
+        // preserving hidden rows (filtered by Hide-unmatched) at their
+        // original positions.
+        const visibleSet = new Set(visibleTrackIds);
+        let cursor = 0;
+        const newAll = allTrackIds.map((id) =>
+          visibleSet.has(id) ? newVisibleOrder[cursor++] : id,
+        );
+        reorderTracks(newAll);
         return;
       }
 
@@ -465,9 +575,9 @@ export function PlaylistTable({
       // and then map the new visible order back into `allTrackIds`. Doing
       // arrayMove directly on `allTrackIds` would land the row before/after
       // hidden rows that sit between the visible source and target.
-      if (activeId === overId) return;
+      if (activeId === overFromEvent) return;
       const visibleOld = visibleTrackIds.indexOf(activeId);
-      const visibleNew = visibleTrackIds.indexOf(overId);
+      const visibleNew = visibleTrackIds.indexOf(overFromEvent);
       if (visibleOld === -1 || visibleNew === -1) return;
       const newVisibleOrder = arrayMove(visibleTrackIds, visibleOld, visibleNew);
       const visibleSet = new Set(visibleTrackIds);
@@ -477,27 +587,45 @@ export function PlaylistTable({
       );
       reorderTracks(newAll);
     },
-    [allTrackIds, visibleTrackIds, reorderTracks, moveSelectionTo],
+    [allTrackIds, visibleTrackIds, reorderTracks],
   );
 
-  const visibleTracks = useMemo<Track[]>(
-    () => visibleTrackIds.map((id) => tracksById[id]).filter(Boolean),
-    [visibleTrackIds, tracksById],
+  const handleDragCancel = useCallback(() => {
+    setDragPreviewIds(null);
+    setMultiDragActive(false);
+    activeDragIdRef.current = null;
+    lastUnselectedOverIdRef.current = null;
+  }, []);
+
+  // Render order: the live drag preview when present, else the canonical
+  // visible-id order. Always the same length, so the virtualizer's `count`
+  // stays in sync.
+  const orderedIds = dragPreviewIds ?? visibleTrackIds;
+  const orderedTracks = useMemo<Track[]>(
+    () => orderedIds.map((id) => tracksById[id]).filter(Boolean),
+    [orderedIds, tracksById],
   );
 
   const selectedCount = selectedTrackIds.size;
 
   return (
-    <div className="flex min-h-0 flex-1 select-none flex-col">
-      <div className="flex items-center border-b border-neutral-800 bg-neutral-900 px-2 text-xs font-semibold uppercase tracking-wide text-neutral-400">
-        <div className="w-6" aria-hidden />
-        <div className="w-8" aria-hidden />
+    <div
+      className="flex min-h-0 flex-1 select-none flex-col"
+      role="grid"
+      aria-label="Playlist tracks"
+      aria-rowcount={visibleTrackIds.length + 1}
+    >
+      <div
+        role="row"
+        aria-rowindex={1}
+        className="flex items-center border-b border-neutral-800 bg-neutral-900 px-2 text-xs font-semibold uppercase tracking-wide text-neutral-400"
+      >
+        <div role="columnheader" aria-hidden className="w-6" />
+        <div role="columnheader" aria-hidden className="w-8" />
         {HEADERS.map((header) => (
           <Fragment key={header.field}>
-            <button
-              type="button"
-              onClick={() => setSort(header.field)}
-              className={`${header.width} px-2 py-2 text-left hover:text-neutral-200`}
+            <div
+              role="columnheader"
               aria-sort={
                 sort?.field === header.field
                   ? sort.dir === "asc"
@@ -505,25 +633,38 @@ export function PlaylistTable({
                     : "descending"
                   : "none"
               }
+              className={`${header.width} px-2 py-2 text-left`}
             >
-              {header.label} {indicatorFor(header.field, sort?.field, sort?.dir)}
-            </button>
+              <button
+                type="button"
+                onClick={() => setSort(header.field)}
+                className="hover:text-neutral-200"
+                aria-label={`Sort by ${header.label}`}
+              >
+                {header.label} {indicatorFor(header.field, sort?.field, sort?.dir)}
+              </button>
+            </div>
             {header.field === "index" && (
-              <div className="w-8" aria-hidden title="Cover" />
+              <div role="columnheader" aria-hidden className="w-8" title="Cover" />
             )}
           </Fragment>
         ))}
         <div
+          role="columnheader"
           className="w-10 px-2 py-2 text-left"
           title="MusicBrainz enrichment status"
         >
           MB
         </div>
-        <div className="w-10 px-2 py-2 text-left" title="Spotify match status">
-          ♫
+        <div
+          role="columnheader"
+          className="w-10 px-2 py-2 text-left"
+          title="Spotify match status"
+        >
+          <span aria-label="Spotify match status">♫</span>
         </div>
-        <div className="w-8" aria-hidden />
-        <div className="w-8" aria-hidden />
+        <div role="columnheader" aria-hidden className="w-8" />
+        <div role="columnheader" aria-hidden className="w-8" />
         {selectedCount > 0 && (
           <div className="ml-auto flex items-center gap-1">
             {selectedCount > 1 && (
@@ -549,16 +690,19 @@ export function PlaylistTable({
 
       <div
         ref={parentRef}
+        role="rowgroup"
         className="relative flex-1 overflow-auto"
         onPointerDown={handleContainerPointerDown}
       >
         <DndContext
           sensors={sensors}
           onDragStart={handleDragStart}
+          onDragOver={handleDragOver}
           onDragEnd={handleDragEnd}
+          onDragCancel={handleDragCancel}
         >
           <SortableContext
-            items={visibleTrackIds}
+            items={orderedIds}
             strategy={verticalListSortingStrategy}
           >
             <div
@@ -568,10 +712,10 @@ export function PlaylistTable({
               }}
             >
               {rowVirtualizer.getVirtualItems().map((virtualRow) => {
-                const track = visibleTracks[virtualRow.index];
+                const track = orderedTracks[virtualRow.index];
                 if (!track) return null;
                 const isSelected = selectedTrackIds.has(track.id);
-                const nextTrack = visibleTracks[virtualRow.index + 1];
+                const nextTrack = orderedTracks[virtualRow.index + 1];
                 const nextSelected = nextTrack
                   ? selectedTrackIds.has(nextTrack.id)
                   : false;
@@ -590,8 +734,10 @@ export function PlaylistTable({
                     <SortableTrackRow
                       track={track}
                       displayIndex={virtualRow.index + 1}
+                      ariaRowIndex={virtualRow.index + 2}
                       selected={isSelected}
                       nextSelected={nextSelected}
+                      partOfActiveMultiDrag={multiDragActive && isSelected}
                       onRowClick={handleRowClick}
                       onPickSpotifyMatch={onPickSpotifyMatch}
                       onPickEnrichmentMatch={onPickEnrichmentMatch}
@@ -609,7 +755,7 @@ export function PlaylistTable({
       {rubberbandRect && (
         <div
           aria-hidden
-          className="pointer-events-none fixed z-40 rounded-sm border border-matched/60 bg-matched/15"
+          className="pointer-events-none fixed z-50 rounded-sm border border-matched/60 bg-matched/15"
           style={{
             left: `${rubberbandRect.left}px`,
             top: `${rubberbandRect.top}px`,
@@ -618,6 +764,18 @@ export function PlaylistTable({
           }}
         />
       )}
+
+      <ConfirmDialog
+        open={pendingDeleteIds !== null}
+        title="Remove tracks?"
+        message={
+          pendingDeleteIds ? bulkDeleteMessage(pendingDeleteIds.length) : ""
+        }
+        confirmLabel="Remove"
+        kind="danger"
+        onConfirm={confirmPendingDelete}
+        onCancel={() => setPendingDeleteIds(null)}
+      />
     </div>
   );
 }

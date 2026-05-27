@@ -13,12 +13,14 @@ const STATUS_LABELS: Record<EnrichmentStatus, string> = {
   failed: "MusicBrainz lookup failed",
 };
 
+// Glyphs picked for distinct silhouettes so colorblind users (and anyone
+// glancing at the column) can read status from shape, not just hue.
 const STATUS_GLYPHS: Record<EnrichmentStatus, string> = {
-  idle: "·",
+  idle: "–",
   pending: "…",
-  matched: "●",
-  ambiguous: "◐",
-  failed: "✗",
+  matched: "✓",
+  ambiguous: "?",
+  failed: "✕",
 };
 
 const STATUS_COLORS: Record<EnrichmentStatus, string> = {

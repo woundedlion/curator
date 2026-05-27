@@ -3,6 +3,7 @@ import { useAppBootstrap } from "./hooks/useAppBootstrap";
 import { useVisibleTrackIds } from "./hooks/useVisibleTrackIds";
 import { useSettingsStore } from "./store/settingsStore";
 import { usePlaylistStore } from "./store/playlistStore";
+import { EmptyFilterState } from "./ui/EmptyFilterState";
 import {
   importPlaylistById,
   ingestDroppedFiles,
@@ -55,6 +56,8 @@ export function App() {
         <main className="flex min-w-0 flex-1 flex-col">
           {trackCount === 0 ? (
             <EmptyState onPickFolder={pickFolderAndIngest} />
+          ) : visibleTrackIds.length === 0 ? (
+            <EmptyFilterState hiddenCount={hiddenCount} />
           ) : (
             <PlaylistTable
               visibleTrackIds={visibleTrackIds}

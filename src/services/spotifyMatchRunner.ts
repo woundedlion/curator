@@ -12,7 +12,39 @@ import { useSpotifyStore } from "../store/spotifyStore";
 import { useUiStore } from "../store/uiStore";
 import type { SpotifyMatch } from "../types";
 
-let firstErrorReported = false;
+// Per-batch first-error tracking. Each batch (matchAll / rematch) owns its
+// own flag so two concurrent batches don't share state — the previous
+// module-level boolean would silently drop the second batch's errors.
+type ErrorReporter = (error: unknown) => void;
+
+function createErrorReporter(): ErrorReporter {
+  let reported = false;
+  return (error: unknown) => {
+    if (reported) return;
+    reported = true;
+    const ui = useUiStore.getState();
+    if (error instanceof SpotifyAuthExpiredError) {
+      ui.pushToast({
+        kind: "error",
+        message: "Spotify session expired — reconnect in Settings",
+      });
+      return;
+    }
+    if (error instanceof SpotifyRateLimitError) {
+      ui.pushToast({
+        kind: "error",
+        message:
+          "Spotify rate limit hit too many times — wait a minute, then re-enrich",
+      });
+      return;
+    }
+    const detail = error instanceof Error ? error.message : "see console";
+    ui.pushToast({
+      kind: "error",
+      message: `Spotify search failed: ${detail}`,
+    });
+  };
+}
 
 function markPending(trackId: string): void {
   const track = usePlaylistStore.getState().tracksById[trackId];
@@ -22,33 +54,10 @@ function markPending(trackId: string): void {
   });
 }
 
-function reportFirstError(error: unknown): void {
-  if (firstErrorReported) return;
-  firstErrorReported = true;
-  const ui = useUiStore.getState();
-  if (error instanceof SpotifyAuthExpiredError) {
-    ui.pushToast({
-      kind: "error",
-      message: "Spotify session expired — reconnect in Settings",
-    });
-    return;
-  }
-  if (error instanceof SpotifyRateLimitError) {
-    ui.pushToast({
-      kind: "error",
-      message:
-        "Spotify rate limit hit too many times — wait a minute, then re-enrich",
-    });
-    return;
-  }
-  const detail = error instanceof Error ? error.message : "see console";
-  ui.pushToast({
-    kind: "error",
-    message: `Spotify search failed: ${detail}`,
-  });
-}
-
-async function matchOne(trackId: string): Promise<void> {
+async function matchOne(
+  trackId: string,
+  reportFirstError: ErrorReporter,
+): Promise<void> {
   const settings = useSettingsStore.getState().settings;
   const clientId = settings.spotifyClientId;
   if (!clientId) return;
@@ -62,11 +71,20 @@ async function matchOne(trackId: string): Promise<void> {
   const market = useSpotifyStore.getState().user?.country;
   try {
     const match = await searchSpotifyForTrack(track, clientId, market);
+
+    // Re-read inside the store before writing back. When the user edits
+    // a track's title/artist while the Spotify search is in flight, the
+    // captured `track` snapshot is stale; the store-level fill action
+    // refuses to clobber user-set fields.
+    const store = usePlaylistStore.getState();
+    const liveTrack = store.tracksById[trackId];
+    if (!liveTrack) return;
+
     const fillIns = displayFieldsFromMatch(match);
-    usePlaylistStore.getState().updateTrack(trackId, {
-      ...fillIns,
-      spotify: match,
-    });
+    if (Object.keys(fillIns).length > 0) {
+      store.fillMissingDisplayFields(trackId, fillIns);
+    }
+    store.updateTrack(trackId, { spotify: match });
   } catch (error) {
     console.error("Spotify match failed", { trackId, error });
     reportFirstError(error);
@@ -84,15 +102,16 @@ function displayFieldsFromMatch(match: SpotifyMatch) {
 }
 
 export async function matchAllOnSpotify(): Promise<void> {
-  firstErrorReported = false;
+  const reportFirstError = createErrorReporter();
   const limiter = new ConcurrencyLimiter(SPOTIFY_SEARCH_CONCURRENCY);
   const trackIds = usePlaylistStore.getState().playlist.trackIds;
-  await Promise.all(trackIds.map((id) => limiter.run(() => matchOne(id))));
+  await Promise.all(
+    trackIds.map((id) => limiter.run(() => matchOne(id, reportFirstError))),
+  );
 }
 
 export async function rematchOnSpotify(trackId: string): Promise<void> {
-  firstErrorReported = false;
-  await matchOne(trackId);
+  await matchOne(trackId, createErrorReporter());
 }
 
 // Promotes already-stored ambiguous Spotify matches that have exactly one

@@ -47,7 +47,6 @@ export const SPOTIFY_TRACK_ADD_CHUNK = 100;
 
 export const DEFAULT_ACCEPT_MB = 0.75;
 export const DEFAULT_ACCEPT_SPOTIFY_HIGH = 0.9;
-export const DEFAULT_ACCEPT_SPOTIFY_LOW = 0.6;
 export const SPOTIFY_AUTOPICK_GAP = 0.15;
 export const SPOTIFY_SEARCH_LIMIT = 10;
 
@@ -67,3 +66,10 @@ export const PKCE_STATE_KEY = "curator.spotify.pkce_state";
 // Per-tab playlist scroll position. sessionStorage scope: survives reloads,
 // clears on tab close — matches DESIGN §5 "fresh tab should start clean."
 export const PLAYLIST_SCROLL_KEY = "curator.playlist.scrollTop";
+
+// Spotify rate-limit circuit-breaker expiry. localStorage scope: must
+// survive across page reloads and across tabs — a Retry-After penalty
+// is enforced per Spotify app (client_id), not per tab, so a fresh tab
+// would otherwise re-burn the quota immediately.
+export const SPOTIFY_CIRCUIT_OPEN_UNTIL_KEY =
+  "curator.spotify.circuitOpenUntil.v1";

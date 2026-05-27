@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { dedupeFiles } from "./dedupe";
 
-// `dedupeFiles` only inspects `name` and `size`, so we cast a minimal shim
-// rather than depend on the runtime `File` constructor (which is environment-
-// specific and produces a heavyweight object we don't need here).
-function makeFile(name: string, size: number): File {
-  return { name, size } as unknown as File;
+// `dedupeFiles` inspects `name`, `size`, and `lastModified`. Cast a minimal
+// shim rather than depend on the runtime `File` constructor (which is
+// environment-specific and produces a heavyweight object we don't need
+// here).
+function makeFile(name: string, size: number, lastModified = 0): File {
+  return { name, size, lastModified } as unknown as File;
 }
 
 describe("dedupeFiles", () => {
@@ -61,5 +62,24 @@ describe("dedupeFiles", () => {
 
   it("returns an empty array for empty input", () => {
     expect(dedupeFiles([])).toEqual([]);
+  });
+
+  it("keeps files that share name+size but differ in lastModified", () => {
+    // Two genuinely different MP3s with the same filename and byte count
+    // — common for re-rips of the same album at the same bitrate from
+    // different sources. The lastModified disambiguates without a hash.
+    const files = [
+      makeFile("song.mp3", 100, 1_700_000_000_000),
+      makeFile("song.mp3", 100, 1_700_000_001_000),
+    ];
+    expect(dedupeFiles(files)).toHaveLength(2);
+  });
+
+  it("collapses files whose name+size+lastModified all match", () => {
+    const files = [
+      makeFile("song.mp3", 100, 1_700_000_000_000),
+      makeFile("song.mp3", 100, 1_700_000_000_000),
+    ];
+    expect(dedupeFiles(files)).toHaveLength(1);
   });
 });

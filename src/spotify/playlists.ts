@@ -3,7 +3,11 @@ import type {
   SpotifyPlaylistSummary,
   Track,
 } from "../types";
-import { callSpotify } from "./apiClient";
+import {
+  callSpotify,
+  SpotifyAuthExpiredError,
+  SpotifyRateLimitError,
+} from "./apiClient";
 import type {
   SpotifyPaging,
   SpotifyPlaylistResponse,
@@ -149,20 +153,33 @@ async function replacePlaylistContents(
 }
 
 export async function createPlaylist(
-  userId: string,
   input: CreatePlaylistInput,
   clientId: string,
 ): Promise<SpotifyPlaylistResponse> {
+  // Use POST /me/playlists. The legacy /users/{user_id}/playlists is
+  // deprecated and returns 403 for many accounts even when scopes and
+  // dashboard allowlists are correct. /me/playlists derives the owner
+  // from the bearer token, which Spotify still accepts.
+  //
+  // Conservative body shape — Spotify's validation is strict:
+  //   - description is OPTIONAL; sending "" is accepted by most users
+  //     but some accounts reject it. Omit when empty.
+  //   - `collaborative: true` REQUIRES `public: false` per Spotify docs;
+  //     the combination otherwise yields a 400/403. Force a private
+  //     playlist when collaborative is requested.
+  const body: Record<string, unknown> = {
+    name: input.name,
+    public: input.collaborative ? false : input.public,
+    collaborative: input.collaborative,
+  };
+  const trimmedDescription = input.description?.trim();
+  if (trimmedDescription) body.description = trimmedDescription;
+
   return callSpotify<SpotifyPlaylistResponse>(
     {
-      path: `/users/${userId}/playlists`,
+      path: `/me/playlists`,
       method: "POST",
-      body: {
-        name: input.name,
-        description: input.description ?? "",
-        public: input.public,
-        collaborative: input.collaborative,
-      },
+      body,
     },
     clientId,
   );
@@ -171,6 +188,16 @@ export async function createPlaylist(
 type PushHandlers = {
   onProgress?: (progress: PlaylistPushProgress) => void;
 };
+
+// Errors that mean "every subsequent chunk will also fail." Bucketing
+// these as a "failed chunk" would silently continue and produce a publish
+// claim of "0/N added" with no real error to surface to the user.
+function isFatalPushError(error: unknown): boolean {
+  return (
+    error instanceof SpotifyAuthExpiredError ||
+    error instanceof SpotifyRateLimitError
+  );
+}
 
 export async function pushTracksToPlaylist(
   playlistId: string,
@@ -189,7 +216,8 @@ export async function pushTracksToPlaylist(
     try {
       await addTrackChunk(playlistId, chunks[i], clientId);
       progress.added += chunks[i].length;
-    } catch {
+    } catch (error) {
+      if (isFatalPushError(error)) throw error;
       progress.failedChunks.push(i);
     }
     handlers.onProgress?.({ ...progress });
@@ -213,7 +241,8 @@ export async function replaceAndPushTracks(
   try {
     await replacePlaylistContents(playlistId, firstChunk ?? [], clientId);
     progress.added += firstChunk?.length ?? 0;
-  } catch {
+  } catch (error) {
+    if (isFatalPushError(error)) throw error;
     progress.failedChunks.push(0);
   }
   handlers.onProgress?.({ ...progress });
@@ -222,7 +251,8 @@ export async function replaceAndPushTracks(
     try {
       await addTrackChunk(playlistId, remainingChunks[i], clientId);
       progress.added += remainingChunks[i].length;
-    } catch {
+    } catch (error) {
+      if (isFatalPushError(error)) throw error;
       progress.failedChunks.push(i + 1);
     }
     handlers.onProgress?.({ ...progress });

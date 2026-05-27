@@ -68,4 +68,39 @@ describe("deriveHintsFromFileName", () => {
       title: "Mr. Brightside",
     });
   });
+
+  it("parses Artist - Album - TrackNo - Title (4 segments, track at -2)", () => {
+    // The dominant convention from rippers (foobar2000, EAC, iTunes
+    // export, etc.) — track number sits between album and title.
+    expect(
+      deriveHintsFromFileName("Radiohead - In Rainbows - 03 - Nude.mp3"),
+    ).toEqual({
+      trackNo: 3,
+      artist: "Radiohead",
+      album: "In Rainbows",
+      title: "Nude",
+    });
+  });
+
+  it("does NOT treat 4-digit years as track numbers", () => {
+    // "1999 - Prince - 1999.mp3" used to half-parse as trackNo=199 by
+    // truncation. The 1-2 digit cap rejects 4-digit numbers entirely.
+    const result = deriveHintsFromFileName("1999 - Prince - 1999.mp3");
+    expect(result.trackNo).toBeUndefined();
+  });
+
+  it("rejects 4-digit numbers (years) as track numbers", () => {
+    // "2017 - Some Title.mp3" — "2017" looks like a track number to a
+    // naive parser but is actually a release year.
+    const result = deriveHintsFromFileName("2017 - Some Title.mp3");
+    expect(result.trackNo).toBeUndefined();
+  });
+
+  it("rejects out-of-range track numbers (200+)", () => {
+    // "456 - Track.mp3" — 3 digits but well above any realistic album
+    // track number. Better to treat as a leading numeric title than to
+    // claim it's track 456.
+    const result = deriveHintsFromFileName("456 - Track.mp3");
+    expect(result.trackNo).toBeUndefined();
+  });
 });

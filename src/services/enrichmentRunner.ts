@@ -40,10 +40,6 @@ function markPending(trackId: string): void {
   });
 }
 
-function fillMissing<T>(existing: T, fromMatch: T): T {
-  return existing ?? fromMatch;
-}
-
 async function runOneTrack(
   trackId: string,
   options: { bypassCache?: boolean } = {},
@@ -64,32 +60,50 @@ async function runOneTrack(
       { bypassCache: options.bypassCache },
     );
     const best = outcome.candidates[0];
-    // MB is now always supplementary: fill missing fields only. Spotify
-    // (when matched) and the user (when edited) own the displayed values.
-    const fillIns =
-      outcome.status === "matched" && best
-        ? {
-            title: fillMissing(track.title, best.title),
-            artist: fillMissing(track.artist, best.artist),
-            album: fillMissing(track.album, best.album),
-            year: fillMissing(track.year, best.year),
-            originalYear: fillMissing(track.originalYear, best.originalYear),
-          }
-        : {};
-    usePlaylistStore.getState().updateTrack(trackId, {
-      ...fillIns,
+
+    // Re-read the live track inside the store so the store-level merge
+    // honors any concurrent user/Spotify edits that landed during the
+    // (multi-second) async search. The store action does the only-fill-
+    // missing merge atomically inside set(), so this closure's stale
+    // `track` snapshot can no longer clobber a fresher value.
+    const store = usePlaylistStore.getState();
+    const liveTrack = store.tracksById[trackId];
+    if (!liveTrack) return { result: outcome.status, failureReason: outcome.failureReason };
+
+    // Preserve `userOverride` across re-enrichment — it survives a bulk
+    // pass via shouldSkipTrack/isUserOverridden, but if the user picked a
+    // candidate via the ambiguous-MB dialog and then a re-enrichment
+    // landed, we need to keep the bit set.
+    if (outcome.status === "matched" && best) {
+      store.fillMissingDisplayFields(trackId, {
+        title: best.title,
+        artist: best.artist,
+        album: best.album,
+        year: best.year,
+        originalYear: best.originalYear,
+      });
+    }
+    store.updateTrack(trackId, {
       enrichment: {
         status: outcome.status,
         candidates: outcome.candidates,
         score: outcome.topScore,
         mbRecordingId: outcome.recordingId,
+        userOverride: liveTrack.enrichment.userOverride,
       },
     });
-    if (outcome.status === "matched" && best?.releaseId && !track.coverUrl) {
+    if (outcome.status === "matched" && best?.releaseId) {
       void probeCoverArtUrl(best.releaseId).then((url) => {
-        if (url) {
-          usePlaylistStore.getState().updateTrack(trackId, { coverUrl: url });
-        }
+        if (!url) return;
+        // Re-check: the track may have been removed, or its identity may
+        // have changed (different mbRecordingId picked, or a Spotify
+        // candidate selected) during the cover-art HEAD probe.
+        const current = usePlaylistStore.getState().tracksById[trackId];
+        if (!current) return;
+        if (current.enrichment.mbRecordingId !== outcome.recordingId) return;
+        usePlaylistStore
+          .getState()
+          .fillMissingDisplayFields(trackId, { coverUrl: url });
       });
     }
     return { result: outcome.status, failureReason: outcome.failureReason };

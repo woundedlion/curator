@@ -4,6 +4,11 @@ import { useSettingsStore } from "../store/settingsStore";
 import { useSpotifyStore } from "../store/spotifyStore";
 import { useUiStore } from "../store/uiStore";
 import { findPlaylistsByName } from "../spotify/playlists";
+import {
+  SpotifyAuthExpiredError,
+  SpotifyForbiddenError,
+  SpotifyRateLimitError,
+} from "../spotify/apiClient";
 import { exportActivePlaylist } from "../services/playlistExporter";
 import {
   EmptyReplaceError,
@@ -13,6 +18,42 @@ import { CloudUploadIcon, DownloadIcon } from "./icons";
 import { IconButton } from "./IconButton";
 import { NameCollisionDialog } from "./NameCollisionDialog";
 import type { SpotifyPlaylistSummary } from "../types";
+
+// 403s on /me/playlists with the stock "Forbidden" body almost always
+// mean the user account isn't in the Spotify Dashboard app's User
+// Management list. Insufficient-scope 403s say "Insufficient client
+// scope" in the body and bootstrap already catches scope mismatches
+// proactively, so by the time we reach here scopes are fine.
+function describeForbiddenPublish(error: SpotifyForbiddenError): string {
+  if (error.path === "/me/playlists") {
+    return (
+      "Spotify refused to create the playlist (403). " +
+      "Verify your account is in your Spotify Dashboard app's User Management list " +
+      "and that the app isn't restricted to Extended Quota endpoints only. " +
+      "Full request/response details are in the console."
+    );
+  }
+  return `Spotify denied the request (403): ${error.message}`;
+}
+
+function describePublishError(error: unknown): string {
+  if (error instanceof EmptyReplaceError) {
+    return "Draft has no Spotify-matched tracks — refusing to publish an empty playlist";
+  }
+  if (error instanceof SpotifyAuthExpiredError) {
+    return "Spotify session expired — reconnect in Settings, then try again";
+  }
+  if (error instanceof SpotifyForbiddenError) {
+    return describeForbiddenPublish(error);
+  }
+  if (error instanceof SpotifyRateLimitError) {
+    return "Spotify rate-limited the publish — wait a minute, then retry";
+  }
+  if (error instanceof Error) {
+    return `Publish failed: ${error.message}`;
+  }
+  return "Publish failed (see console for details)";
+}
 
 export function CreatePlaylistPanel() {
   const playlist = usePlaylistStore((state) => state.playlist);
@@ -91,15 +132,10 @@ export function CreatePlaylistPanel() {
       void useSpotifyStore.getState().loadPlaylists(clientId);
     } catch (error) {
       console.error("publishPlaylist failed", error);
-      if (error instanceof EmptyReplaceError) {
-        pushToast({
-          kind: "error",
-          message:
-            "Draft has no Spotify-matched tracks — refusing to replace existing playlist with an empty one",
-        });
-      } else {
-        pushToast({ kind: "error", message: "Publish failed" });
-      }
+      pushToast({
+        kind: "error",
+        message: describePublishError(error),
+      });
     } finally {
       setPublishing(false);
       setProgressLabel("");

@@ -48,6 +48,31 @@ describe("normalizeForMatching", () => {
     expect(normalizeForMatching(undefined)).toBe("");
     expect(normalizeForMatching("")).toBe("");
   });
+
+  it("strips combining diacritics", () => {
+    // NFKD decomposes "é" → "e" + U+0301; the combining mark gets dropped.
+    expect(normalizeForMatching("café")).toBe("cafe");
+    expect(normalizeForMatching("Beyoncé")).toBe("beyonce");
+    expect(normalizeForMatching("Mötley Crüe")).toBe("motley crue");
+  });
+
+  it("strips zero-width characters and BOM", () => {
+    expect(normalizeForMatching("﻿Radiohead")).toBe("radiohead");
+    expect(normalizeForMatching("​Foo‌Bar")).toBe("foobar");
+  });
+
+  it("strips Unicode bidi marks", () => {
+    expect(normalizeForMatching("‎Song‏")).toBe("song");
+  });
+
+  it("folds smart/curly quotes to ASCII", () => {
+    expect(normalizeForMatching("Don’t Stop")).toBe("don't stop");
+    expect(normalizeForMatching("“Hello”")).toBe('"hello"');
+  });
+
+  it("normalizes non-breaking space to plain space", () => {
+    expect(normalizeForMatching("Pink Floyd")).toBe("pink floyd");
+  });
 });
 
 describe("normalizeForLuceneLiteral", () => {

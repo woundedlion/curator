@@ -7,8 +7,16 @@ import { bootstrapSpotify } from "../services/spotifyBootstrap";
 import { promoteSingleCandidateMatches } from "../services/spotifyMatchRunner";
 import { shutdownAudioParserPool } from "../workers/audioParserPool";
 
+// Browsers will not await promises during `pagehide`, but they DO let an
+// IndexedDB transaction whose requests are already in flight complete
+// (subject to a short grace period). flushPendingPersist() issues those
+// requests synchronously — the await on tx.done that follows is fine to
+// abandon. We log the rejection so a stuck transaction is observable in
+// developer tools, but otherwise drop it.
 function flushOnHide(): void {
-  void flushPendingPersist();
+  flushPendingPersist().catch((error) => {
+    console.warn("flushPendingPersist on hide failed", error);
+  });
 }
 
 function flushIfHidden(): void {

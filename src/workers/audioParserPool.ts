@@ -34,13 +34,35 @@ class AudioParserPool {
     if (this.started) return;
     this.started = true;
     const size = decidePoolSize();
+    let spawned = 0;
     for (let i = 0; i < size; i++) {
-      this.spawnWorker();
+      if (this.spawnWorker() !== null) spawned++;
+    }
+    if (spawned === 0) {
+      // CSP-blocked workers, sandboxed iframes, or unsupported browsers
+      // surface here as zero successful spawns. Reset `started` so a
+      // future parse() retries the spawn; queued pending requests are
+      // failed below so callers see a real error instead of hanging.
+      this.started = false;
+      this.failQueuedRequests("Audio parser workers are unavailable in this browser");
     }
   }
 
-  private spawnWorker(): Worker {
-    const worker = new AudioParserWorker();
+  private failQueuedRequests(message: string): void {
+    while (this.queue.length > 0) {
+      const next = this.queue.shift()!;
+      next.pending.reject(new Error(message));
+    }
+  }
+
+  private spawnWorker(): Worker | null {
+    let worker: Worker;
+    try {
+      worker = new AudioParserWorker();
+    } catch (error) {
+      console.error("AudioParserPool: failed to spawn worker", error);
+      return null;
+    }
     worker.addEventListener("message", (event) =>
       this.onMessage(worker, event as MessageEvent<ParseResponse>),
     );
@@ -52,11 +74,29 @@ class AudioParserPool {
 
   private onMessage(worker: Worker, event: MessageEvent<ParseResponse>): void {
     const pending = this.pendingByWorker.get(worker);
-    if (!pending || pending.id !== event.data.id) return;
+    // A worker is always returned to the available pool when it sends a
+    // message, even if the message refers to a request id we no longer
+    // recognize (e.g. a late reply after a timeout/terminate). Without
+    // this the worker would be silently stuck off the pool forever.
     this.pendingByWorker.delete(worker);
     this.availableWorkers.push(worker);
-    if (event.data.ok) pending.resolve(event.data.fields);
-    else pending.reject(new Error(event.data.error));
+
+    if (!pending) {
+      console.warn(
+        "AudioParserPool: message from worker with no pending request",
+        event.data,
+      );
+    } else if (pending.id !== event.data.id) {
+      console.warn(
+        "AudioParserPool: response id mismatch",
+        { expected: pending.id, got: event.data.id },
+      );
+      pending.reject(new Error("Audio parser worker desynchronized"));
+    } else if (event.data.ok) {
+      pending.resolve(event.data.fields);
+    } else {
+      pending.reject(new Error(event.data.error));
+    }
     this.drain();
   }
 
@@ -70,7 +110,13 @@ class AudioParserPool {
       pending.reject(new Error("Audio parser worker crashed"));
     }
     this.discardWorker(worker);
-    if (this.started) this.spawnWorker();
+    if (this.started && this.workers.length === 0) {
+      // The pool just lost its last worker. Try to bring one back; if
+      // even one spawn succeeds the queue can resume draining.
+      this.spawnWorker();
+    } else if (this.started) {
+      this.spawnWorker();
+    }
     this.drain();
   }
 

@@ -117,10 +117,11 @@ A browser-based playlist builder that ingests local music files or song lists, e
 
 ### 4.2 Playlist Display (req §2)
 
-**Table columns**: `Idx | ▶ | Artist | Year | Album | # | Title | MB | ♫ | [Actions]`
+**Table columns**: `Idx | ▶ | Artist | Title (length) | Year | Album | # | MB | ♫ | [Actions]`
 - Virtualized via `@tanstack/react-virtual` (1,000+ rows must scroll smoothly).
 - Row height fixed (44px) so virtualization stays simple.
 - `Idx` is 1-based and reflects current order, not insertion order — it updates live on reorder/sort.
+- **Title cell trails the song length** as a muted `mm:ss` value right after the title text (shares the same `formatDuration` helper used by the candidate picker and the now-playing bar, so all three places format the same way). Hidden when `durationMs` is unknown — text-source tracks pre-enrichment fall into this case. Not its own sortable column: it lives inline so the table doesn't grow another axis for a value that's secondary to identity.
 - Album track `#` displayed as `track.no/track.of` if both known, else just `track.no`.
 - Missing fields render as `—` in a muted color; clicking enters an inline edit.
 - The **MB** column shows the per-row MusicBrainz enrichment status. Glyphs mirror the Spotify column so the table reads consistently — `·` idle, `…` pending, `●` matched, `◐` ambiguous (clickable picker), `✗` failed. Each glyph carries an `aria-label` for screen readers.
@@ -155,9 +156,16 @@ When a user starts a drag, dnd-kit reports the `active` row. We interpret it as:
 - If `active.id` is **not** in `selectedTrackIds` → the selection is replaced with just that id (so a drag of an unrelated row works the obvious way: it drags only itself, and the row visibly becomes the new selection).
 - If `active.id` **is** in `selectedTrackIds` → the entire selection is the moving block.
 
-On drop, the moving ids are extracted from `trackIds` (preserving their relative order in the source) and re-inserted as a single contiguous block at the position of the drop target. Non-contiguous selections collapse into a contiguous block at the drop position — gaps between them are closed. If the drop target is itself part of the selection, no move occurs (avoids the "drop on self" ambiguity). One reorder undo entry is pushed for the whole move.
+On drop, the moving ids are placed via `moveSelectionMaintainingShape(visibleIds, selection, activeId, overId)`. The semantics: the **internal shape of the selection is preserved** — every selected row keeps its original offset from the grabbed (active) row as long as the array's bounds allow. Surrounding unselected rows fill the remaining slots in their original relative order. Worked examples for `[A, B, C, D]`, selection `{A, C}`:
 
-The visual drag preview renders the leader row at the cursor; a small `+N more` badge appears beside it when the selection has more than one row, so the user can see how many tracks they're carrying.
+- Grab A, drop on B → A lands at index 1, C maintains its +2 offset to index 3, `[B, D]` fill `[0, 2]` → **`[B, A, D, C]`**.
+- Grab A, drop on D → A's slot wants index 3 but that leaves no room for C; A is clamped left to 2, C lands at 3, the +2 gap collapses to +1 because the array has nothing left between them → **`[B, D, A, C]`**.
+
+So the selection only collapses to contiguous when there are no unselected rows left to interleave. If the drop target is itself part of the selection, no move occurs (the "drop on self" guard, also used for stability — see the live preview note below). One reorder undo entry is pushed for the whole move.
+
+**Live preview during the drag** — the reflow the user will get on release is rendered *while* they're dragging, not just after mouseup. On each `dnd-kit` `onDragOver` event the table recomputes the visible-id order with the same `moveSelectionMaintainingShape` call the drop path uses (so what you see is what you get) and feeds that order into both the `SortableContext.items` and the virtualizer's per-row track lookup. The effect: unselected rows slide out of the way and the non-active selected rows visibly slot into their landing positions — the post-drop layout assembles under the cursor. The grabbed row continues to follow the pointer via dnd-kit's normal transform; the other selected rows fade to 60% opacity (matching the active row's `isDragging` styling via the `partOfActiveMultiDrag` prop) so the whole moving block reads as one group.
+
+**`lastUnselectedOverIdRef` — why the drop doesn't no-op when the cursor settles on a selected row.** The live reorder can scoot a non-active selected row directly under the cursor's screen position, which makes dnd-kit's `over.id` flip to that selected row. The drop semantics treat "over a selected row" as a no-op (drop-on-self), which would silently abort the move the user just spent the drag building up. To fix that, `handleDragOver` records the last UNSELECTED `over.id` it saw in a ref; `handleDragEnd` consults that ref whenever the live `over.id` lands on a selected row, and uses it as the drop anchor. The result: even if dnd-kit's final hover oscillates onto C or E because of the preview shifting, the move still commits against the last real drop target the user crossed. The ref is cleared on drag start, end, and cancel.
 
 **Sort** (§2c):
 - Click a column header to sort ascending; click again for descending; click a third time to clear.
@@ -262,6 +270,12 @@ Every row in the playlist can be played in-app from one of three backends, picke
 **Player UI**:
 - A green ▶/⏸ SVG button is the leftmost cell of each row (after the drag handle); it toggles to ⏸ for the currently-playing row.
 - A persistent **now-playing bar** at the bottom of the window shows the title/artist of the current track, the source label (`Local file` / `Spotify (full track)` / `Spotify preview (30s)`), and play/pause + stop controls — also SVG icons, monotone-green, no background.
+- **Progress slider with seek** sits below the title row in the now-playing bar: `mm:ss` elapsed · range input · `mm:ss` total. The slider's `accent-matched` thumb tracks the live playhead and lets the user scrub backward or forward. While the user is dragging, the visible thumb is driven by a local `dragValue` state rather than the live `positionMs` — so the audio's `timeupdate` (or the SDK's poll) can't snake the thumb out from under the cursor. The seek is committed on `pointerup` (and on `keyup` for ArrowLeft/Right/PageUp/Down/Home/End to keep keyboard scrubbing responsive). The slider is disabled until duration is known (HTMLAudio: pre-`loadedmetadata`; SDK: before the first state event), and resets to inert when playback stops or the current track changes mid-drag.
+- **Position/duration sourcing**:
+  - HTMLAudio-backed sources (`local`, `spotify-preview`) drive `positionMs` from `timeupdate`/`seeked` and `durationMs` from `loadedmetadata`/`durationchange`. Non-finite or `Infinity` durations (some live streams) are clamped to 0 so the slider stays disabled rather than showing a garbage range.
+  - The Spotify SDK doesn't fire a continuous progress event, so we subscribe to `player_state_changed` for transitions **and** poll `player.getCurrentState()` every 500ms while SDK is the current source. Both pumps write into the same `positionMs`/`durationMs`/`isPlaying` fields; the poll handle and the listener are torn down on `stop()`, source switch, or candidate-dialog close so we don't leak intervals when the user navigates between tracks.
+  - On switch into a new track, the store seeds `durationMs` from the Track's `durationMs` field (when known) so the slider has a sensible range before the first event lands. The live source then overwrites it as soon as real metadata arrives.
+- **Seek semantics**: HTMLAudio sets `audio.currentTime = ms/1000`. SDK calls `player.seek(ms)`. SDK seeks are optimistically reflected in `positionMs` so the thumb doesn't snap back to the old value during the SDK's ~ms round-trip; the next `player_state_changed` reconciles. A seek before duration is known clamps only the lower bound (≥0); once duration is known it clamps to `[0, durationMs]`.
 - Only one track plays at a time. Starting a new track stops the previous one. The store's `currentTrackId` and `currentSource` track the live playback target.
 - Error surfacing: `audio.play()` rejections (other than benign `AbortError`) and `MediaError` events both surface a toast with a human-readable cause (decode error / network / format-not-supported). No more silent failures.
 

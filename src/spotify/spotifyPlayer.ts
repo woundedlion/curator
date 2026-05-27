@@ -4,12 +4,24 @@ import { getValidAccessToken } from "./authFlow";
 
 const SDK_INIT_TIMEOUT_MS = 10_000;
 
+type SpotifyPlayerListener = (data: unknown) => void;
+
 type SpotifyPlayerInstance = {
   connect: () => Promise<boolean>;
   disconnect: () => void;
-  addListener: (event: string, callback: (data: unknown) => void) => boolean;
+  addListener: (event: string, callback: SpotifyPlayerListener) => boolean;
+  removeListener: (event: string, callback?: SpotifyPlayerListener) => boolean;
   pause: () => Promise<void>;
   resume: () => Promise<void>;
+  seek: (positionMs: number) => Promise<void>;
+  getCurrentState: () => Promise<SpotifyPlayerSdkState | null>;
+};
+
+// Subset of the SDK's `player_state_changed` payload that we read.
+export type SpotifyPlayerSdkState = {
+  paused: boolean;
+  position: number;
+  duration: number;
 };
 
 type SpotifyPlayerConstructor = new (options: {
@@ -38,7 +50,13 @@ function loadSdk(): Promise<void> {
     const script = document.createElement("script");
     script.src = SPOTIFY_PLAYBACK_SDK_URL;
     script.async = true;
-    script.onerror = () => reject(new Error("Failed to load Spotify SDK"));
+    script.onerror = () => {
+      // Clear the cached promise so a future call can retry the script
+      // load — otherwise every subsequent attempt sees the rejected
+      // promise and never tries again.
+      sdkLoadPromise = null;
+      reject(new Error("Failed to load Spotify SDK"));
+    };
     document.head.appendChild(script);
   });
   return sdkLoadPromise;
@@ -48,7 +66,63 @@ export type PlayerInitResult =
   | { ok: true; deviceId: string; player: SpotifyPlayerInstance }
   | { ok: false; reason: "not-premium" | "auth" | "unknown"; message: string };
 
-export async function initializeSpotifyPlayer(
+// Cache the in-flight init promise + resolved success result. Every
+// caller that asks for a Player gets the same instance — re-instantiating
+// would create a duplicate Spotify Connect device and waste a WebSocket
+// connection per call.
+let activeInitPromise: Promise<PlayerInitResult> | null = null;
+let activeOkPlayer: SpotifyPlayerInstance | null = null;
+let activeOkDeviceId: string | null = null;
+let playerNotReadyHandler: (() => void) | null = null;
+let playerErrorHandler: ((message: string) => void) | null = null;
+
+export function setSpotifyPlayerHandlers(handlers: {
+  onNotReady?: () => void;
+  onError?: (message: string) => void;
+}): void {
+  playerNotReadyHandler = handlers.onNotReady ?? null;
+  playerErrorHandler = handlers.onError ?? null;
+}
+
+export async function destroySpotifyPlayer(): Promise<void> {
+  if (activeOkPlayer) {
+    try {
+      activeOkPlayer.disconnect();
+    } catch (error) {
+      console.warn("destroySpotifyPlayer: disconnect threw", error);
+    }
+  }
+  activeOkPlayer = null;
+  activeOkDeviceId = null;
+  activeInitPromise = null;
+}
+
+export function initializeSpotifyPlayer(
+  clientId: string,
+): Promise<PlayerInitResult> {
+  if (activeOkPlayer && activeOkDeviceId) {
+    return Promise.resolve({
+      ok: true,
+      deviceId: activeOkDeviceId,
+      player: activeOkPlayer,
+    });
+  }
+  if (activeInitPromise) return activeInitPromise;
+  activeInitPromise = doInitializeSpotifyPlayer(clientId).then((result) => {
+    if (result.ok) {
+      activeOkPlayer = result.player;
+      activeOkDeviceId = result.deviceId;
+    } else {
+      // Failure — drop the cached promise so a follow-up call can retry
+      // (e.g. user toggles preferFullPlayback off and on).
+      activeInitPromise = null;
+    }
+    return result;
+  });
+  return activeInitPromise;
+}
+
+async function doInitializeSpotifyPlayer(
   clientId: string,
 ): Promise<PlayerInitResult> {
   await loadSdk();
@@ -92,6 +166,22 @@ export async function initializeSpotifyPlayer(
       if (deviceId) settle({ ok: true, deviceId, player });
     });
 
+    // Device dropped out after init (sleep, network drop, taken over by
+    // another tab). Notify so the playback store can reset to "idle"
+    // instead of issuing play commands against a dead device id.
+    player.addListener("not_ready", () => {
+      if (playerNotReadyHandler) playerNotReadyHandler();
+    });
+
+    // Generic playback error from the SDK (DRM failures, codec issues,
+    // etc.) — bubble to the playback store for a toast. These fire AFTER
+    // init, so they don't interact with the settle() guard.
+    player.addListener("playback_error", (data) => {
+      const message =
+        (data as { message?: string }).message ?? "playback failed";
+      if (playerErrorHandler) playerErrorHandler(message);
+    });
+
     player.addListener("initialization_error", (data) => {
       const message =
         (data as { message?: string }).message ?? "initialization failed";
@@ -111,7 +201,13 @@ export async function initializeSpotifyPlayer(
       settle({ ok: false, reason: "not-premium", message });
     });
 
-    void player.connect();
+    // connect() may reject synchronously (e.g. EME unavailable). Surface
+    // that through settle() instead of letting the rejection float until
+    // the 10s timeout — users get a faster, more accurate error message.
+    player.connect().catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      settle({ ok: false, reason: "unknown", message });
+    });
   });
 }
 
@@ -143,4 +239,11 @@ export async function resumeSpotifyPlayback(
   await player.resume();
 }
 
-export type { SpotifyPlayerInstance };
+export async function seekSpotifyPlayback(
+  player: SpotifyPlayerInstance,
+  positionMs: number,
+): Promise<void> {
+  await player.seek(Math.max(0, Math.floor(positionMs)));
+}
+
+export type { SpotifyPlayerInstance, SpotifyPlayerListener };

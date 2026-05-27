@@ -1,7 +1,6 @@
 import Fuse from "fuse.js";
 import {
   DEFAULT_ACCEPT_SPOTIFY_HIGH,
-  DEFAULT_ACCEPT_SPOTIFY_LOW,
   SPOTIFY_AUTOPICK_GAP,
   SPOTIFY_SEARCH_LIMIT,
 } from "../constants";
@@ -124,6 +123,13 @@ function scoreSpotifyCandidates(
 }
 
 function classifyMatch(scored: SpotifyCandidate[]): SpotifyMatch {
+  // `missing` means Spotify returned zero candidates — the user has
+  // nothing to pick from. When Spotify returned candidates but none
+  // cleared the auto-pick threshold, the row is `ambiguous`: the user
+  // can still pick one from the dialog. Conflating the two as "missing"
+  // is misleading in the UI (the glyph implies a dead-end) and in the
+  // filter (hideUnmatched would hide rows the user could resolve with
+  // one click).
   if (scored.length === 0) return { status: "missing" };
   const [best, runnerUp] = scored;
   const onlyCandidate = scored.length === 1;
@@ -140,10 +146,7 @@ function classifyMatch(scored: SpotifyCandidate[]): SpotifyMatch {
       previewUrl: best.previewUrl,
     };
   }
-  if (best.score >= DEFAULT_ACCEPT_SPOTIFY_LOW) {
-    return { status: "ambiguous", candidates: scored, score: best.score };
-  }
-  return { status: "missing", candidates: scored, score: best.score };
+  return { status: "ambiguous", candidates: scored, score: best.score };
 }
 
 function mergeCandidatesPreferringPrimary(

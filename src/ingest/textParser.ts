@@ -35,8 +35,17 @@ function buildTrackFromLine(line: string): Track {
   return { ...base, title: first };
 }
 
+function stripBom(text: string): string {
+  // Notepad on Windows saves UTF-8 with a leading BOM (U+FEFF). Without
+  // stripping, the first track's artist becomes `"﻿Artist"` which
+  // breaks all downstream matching.
+  return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+}
+
 export function parseTextContent(text: string): Track[] {
-  const normalized = text.replace(/\r\n?/g, "\n");
+  // Normalize CRLF (Windows) and lone CR (classic Mac) into LF.
+  // Existing LFs are untouched.
+  const normalized = stripBom(text).replace(/\r\n|\r/g, "\n");
   return normalized.split("\n").filter(isMeaningfulLine).map(buildTrackFromLine);
 }
 

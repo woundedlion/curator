@@ -29,6 +29,19 @@ describe("pushBounded", () => {
     expect(stack[0]).toMatchObject({ kind: "add", addedTrackIds: ["t5"] });
     expect(stack.at(-1)).toMatchObject({ kind: "add", addedTrackIds: ["t14"] });
   });
+
+  it("preserves a stack at exactly MAX_UNDO_DEPTH without trimming early", () => {
+    let stack: UndoEntry[] = [];
+    for (let i = 0; i < 10; i++) stack = pushBounded(stack, buildAddEntry(i));
+    expect(stack).toHaveLength(10);
+    expect(stack[0]).toMatchObject({ kind: "add", addedTrackIds: ["t0"] });
+
+    // 11th push trims the oldest, keeping length at 10.
+    stack = pushBounded(stack, buildAddEntry(10));
+    expect(stack).toHaveLength(10);
+    expect(stack[0]).toMatchObject({ kind: "add", addedTrackIds: ["t1"] });
+    expect(stack.at(-1)).toMatchObject({ kind: "add", addedTrackIds: ["t10"] });
+  });
 });
 
 describe("captureSelection", () => {
@@ -69,10 +82,21 @@ describe("snapshot helpers", () => {
         spotify: { status: "idle" },
       },
     };
-    const entry = snapshotReplaceEntry(["a"], map, NO_SELECTION);
+    const entry = snapshotReplaceEntry(["a"], map, null, NO_SELECTION);
     if (entry.kind !== "replace") throw new Error("expected replace");
     expect(entry.priorTracksById).toEqual(map);
     expect(entry.priorTracksById).not.toBe(map);
+  });
+
+  it("captures the prior sort for replace snapshots so undo restores it", () => {
+    const entry = snapshotReplaceEntry(
+      ["a"],
+      {},
+      { field: "artist", dir: "desc" },
+      NO_SELECTION,
+    );
+    if (entry.kind !== "replace") throw new Error("expected replace");
+    expect(entry.priorSort).toEqual({ field: "artist", dir: "desc" });
   });
 
   it("captures full Track objects for delete snapshots", () => {
@@ -95,7 +119,7 @@ describe("snapshot helpers", () => {
     const sel = captureSelection(new Set(["a", "b"]), "a");
     expect(snapshotAddEntry(["x"], sel)).toMatchObject(sel);
     expect(snapshotReorderEntry(["a"], null, sel)).toMatchObject(sel);
-    expect(snapshotReplaceEntry(["a"], {}, sel)).toMatchObject(sel);
+    expect(snapshotReplaceEntry(["a"], {}, null, sel)).toMatchObject(sel);
     expect(snapshotDeleteEntry(["a"], [], sel)).toMatchObject(sel);
   });
 });

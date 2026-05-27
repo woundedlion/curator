@@ -11,6 +11,7 @@ import { useSettingsStore } from "../store/settingsStore";
 import { useSpotifyStore } from "../store/spotifyStore";
 import { useUiStore } from "../store/uiStore";
 import type { SpotifyCandidate } from "../types";
+import { formatDuration } from "../util/duration";
 import { ExternalLinkIcon, PauseIcon, PlayIcon } from "./icons";
 import { Spinner } from "./Spinner";
 
@@ -20,14 +21,6 @@ type Props = {
 };
 
 type PreviewMode = "preview" | "sdk" | "external";
-
-function formatDuration(ms: number | undefined): string {
-  if (typeof ms !== "number") return "—";
-  const totalSeconds = Math.round(ms / 1000);
-  const minutes = Math.floor(totalSeconds / 60);
-  const seconds = totalSeconds % 60;
-  return `${minutes}:${seconds.toString().padStart(2, "0")}`;
-}
 
 function previewModeFor(
   candidate: SpotifyCandidate,

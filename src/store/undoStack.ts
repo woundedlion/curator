@@ -18,6 +18,7 @@ export type UndoEntry =
       kind: "replace";
       priorTrackIds: string[];
       priorTracksById: Record<string, Track>;
+      priorSort: SortSpec;
     } & SelectionSnapshot)
   | ({
       kind: "reorder";
@@ -52,12 +53,14 @@ export function captureSelection(
 export function snapshotReplaceEntry(
   priorTrackIds: string[],
   priorTracksById: Record<string, Track>,
+  priorSort: SortSpec,
   selection: SelectionSnapshot,
 ): UndoEntry {
   return {
     kind: "replace",
     priorTrackIds: [...priorTrackIds],
     priorTracksById: { ...priorTracksById },
+    priorSort: priorSort ? { ...priorSort } : null,
     ...selection,
   };
 }
@@ -83,8 +86,9 @@ export function snapshotDeleteEntry(
   return {
     kind: "delete",
     priorTrackIds: [...priorTrackIds],
-    // Shallow copy is enough — Tracks themselves are immutable in the store
-    // (updates always create a new object via spread).
+    // Tracks are replaced (not mutated) on update — every updateTrack
+    // writes `{ ...existing, ...patch }` — so a shallow array copy is
+    // enough to freeze the reference set at delete time.
     deletedTracks: [...deletedTracks],
     ...selection,
   };

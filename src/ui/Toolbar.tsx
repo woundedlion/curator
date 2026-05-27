@@ -1,9 +1,11 @@
+import { useState } from "react";
 import { useEnrichmentRemaining } from "../hooks/useEnrichmentRemaining";
 import { reenrichAll } from "../services/enrichmentRunner";
 import { useSettingsStore } from "../store/settingsStore";
 import { usePlaylistStore } from "../store/playlistStore";
 import { useUiStore } from "../store/uiStore";
 import { BusySpinner } from "./BusySpinner";
+import { ConfirmDialog } from "./ConfirmDialog";
 import { ConnectionBadge } from "./ConnectionBadge";
 import { FilterIcon, GearIcon, TrashIcon, TreeIcon } from "./icons";
 import { IconButton } from "./IconButton";
@@ -13,12 +15,6 @@ type Props = {
   hiddenCount: number;
   onPickFolder: () => void;
 };
-
-function confirmClear(): boolean {
-  return window.confirm(
-    "Clear the entire playlist? You can undo this while the tab is open.",
-  );
-}
 
 export function Toolbar({ hiddenCount, onPickFolder }: Props) {
   const settings = useSettingsStore((state) => state.settings);
@@ -33,12 +29,22 @@ export function Toolbar({ hiddenCount, onPickFolder }: Props) {
   const clearPlaylist = usePlaylistStore((state) => state.clearPlaylist);
   const enrichmentRemaining = useEnrichmentRemaining();
   const queueDepth = useUiStore((state) => state.enrichmentQueueDepth);
-  const isEnriching = queueDepth > 0 && enrichmentRemaining > 0;
+  // Show the "Enriching" badge whenever EITHER signal says work is in
+  // flight. They can race during shutdown (queue cleared before the row
+  // count drops, or vice versa); requiring both would hide ongoing work
+  // for a brief but visible window. Each signal alone is a reliable
+  // "work in progress" indicator, so the OR is correct.
+  const isEnriching = queueDepth > 0 || enrichmentRemaining > 0;
   const openSettings = useUiStore((state) => state.setShowSettings);
+  const [showClearConfirm, setShowClearConfirm] = useState(false);
 
   function handleClear() {
     if (trackCount === 0) return;
-    if (!confirmClear()) return;
+    setShowClearConfirm(true);
+  }
+
+  function confirmClearPlaylist() {
+    setShowClearConfirm(false);
     clearPlaylist();
   }
 
@@ -116,6 +122,15 @@ export function Toolbar({ hiddenCount, onPickFolder }: Props) {
           onClick={() => openSettings(true)}
         />
       </div>
+      <ConfirmDialog
+        open={showClearConfirm}
+        title="Clear playlist?"
+        message="All tracks will be removed from the current draft. You can undo this while the tab is open."
+        confirmLabel="Clear"
+        kind="danger"
+        onConfirm={confirmClearPlaylist}
+        onCancel={() => setShowClearConfirm(false)}
+      />
     </header>
   );
 }

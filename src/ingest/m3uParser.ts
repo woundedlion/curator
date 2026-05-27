@@ -34,8 +34,18 @@ function buildTrack(rawLine: string, hint: ExtInfHint): Track {
   };
 }
 
+function stripBom(text: string): string {
+  return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
+}
+
 export function parseM3uContent(text: string): Track[] {
-  const lines = text.replace(/\r\n?/g, "\n").split("\n");
+  // VLC/iTunes export .m3u8 with a UTF-8 BOM. Without stripping, the
+  // `#EXTM3U` header becomes `﻿#EXTM3U` (still ignorable as a
+  // comment), but more importantly a BOM-prefixed file's first non-
+  // comment line lands prepended with U+FEFF in `rawLine`.
+  const lines = stripBom(text)
+    .replace(/\r\n|\r/g, "\n")
+    .split("\n");
   const tracks: Track[] = [];
   let pendingHint: ExtInfHint = {};
 

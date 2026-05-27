@@ -12,10 +12,21 @@ function stripExtension(fileName: string): string {
   return dot === -1 ? fileName : fileName.slice(0, dot);
 }
 
+// A "track number" is at most 3 digits AND at most this value. 4-digit
+// numbers are years (1999, 2017) and never track positions. 200+ would
+// be unusual enough that we'd rather under-classify than treat a year
+// embedded in a title as a track number.
+const MAX_TRACK_NUMBER = 199;
+
+function isValidTrackNumber(value: number): boolean {
+  return Number.isFinite(value) && value > 0 && value <= MAX_TRACK_NUMBER;
+}
+
 function parseTrackNumberSegment(segment: string): number | undefined {
   const trimmed = segment.trim();
   if (!/^\d{1,3}$/.test(trimmed)) return undefined;
-  return parseInt(trimmed, 10);
+  const value = parseInt(trimmed, 10);
+  return isValidTrackNumber(value) ? value : undefined;
 }
 
 function parseLeadingTrackNumber(segment: string): {
@@ -24,7 +35,9 @@ function parseLeadingTrackNumber(segment: string): {
 } {
   const match = segment.match(/^\s*(\d{1,3})\s*[-.\s]\s*(.*)$/);
   if (!match) return { remainder: segment };
-  return { trackNo: parseInt(match[1], 10), remainder: match[2] };
+  const value = parseInt(match[1], 10);
+  if (!isValidTrackNumber(value)) return { remainder: segment };
+  return { trackNo: value, remainder: match[2] };
 }
 
 function hintFromTwoSegments(segments: string[]): FilenameHint {
@@ -54,21 +67,44 @@ function hintFromThreeSegments(segments: string[]): FilenameHint {
 }
 
 function hintFromFourOrMoreSegments(segments: string[]): FilenameHint {
+  // Two common 4-segment ripper conventions:
+  //   A) `Artist - Album - 03 - Title`   (track number at index -2)
+  //   B) `Album - 15 - Artist - Title`   (track number at index -3)
+  // Detect by looking for a track-number-looking segment. Without this
+  // shape detection, "Radiohead - In Rainbows - 03 - Nude" parses as
+  // `album="Radiohead - In Rainbows", artist="03", title="Nude"`.
   const title = segments[segments.length - 1];
-  const artist = segments[segments.length - 2];
-  const possibleTrackNo = parseTrackNumberSegment(segments[segments.length - 3]);
-  if (possibleTrackNo !== undefined) {
+
+  const trackNoAtMinus2 = parseTrackNumberSegment(segments[segments.length - 2]);
+  if (trackNoAtMinus2 !== undefined) {
+    // Pattern A: …Artist… - Album - Track# - Title.
+    // Treat segment[-3] alone as album, everything before as artist.
+    const head = segments.slice(0, segments.length - 2);
+    return {
+      trackNo: trackNoAtMinus2,
+      title,
+      artist: head.slice(0, -1).join(ARTIST_TITLE_SEPARATOR) || undefined,
+      album: head[head.length - 1],
+    };
+  }
+
+  const trackNoAtMinus3 = parseTrackNumberSegment(segments[segments.length - 3]);
+  if (trackNoAtMinus3 !== undefined) {
+    // Pattern B: …Album… - Track# - Artist - Title.
     const albumSegments = segments.slice(0, segments.length - 3);
     return {
-      trackNo: possibleTrackNo,
+      trackNo: trackNoAtMinus3,
       title,
-      artist,
+      artist: segments[segments.length - 2],
       album:
         albumSegments.length > 0
           ? albumSegments.join(ARTIST_TITLE_SEPARATOR)
           : undefined,
     };
   }
+
+  // No track number found — fall back to `[…album] - artist - title`.
+  const artist = segments[segments.length - 2];
   const albumSegments = segments.slice(0, segments.length - 2);
   return {
     title,
@@ -80,10 +116,10 @@ function hintFromFourOrMoreSegments(segments: string[]): FilenameHint {
   };
 }
 
-function hintFromSingleSegment(base: string): FilenameHint {
-  const { trackNo, remainder } = parseLeadingTrackNumber(base);
+function hintFromSingleSegment(segment: string): FilenameHint {
+  const { trackNo, remainder } = parseLeadingTrackNumber(segment);
   if (trackNo !== undefined) return { trackNo, title: remainder };
-  return { title: base };
+  return { title: segment };
 }
 
 export function deriveHintsFromFileName(fileName: string): FilenameHint {
@@ -95,5 +131,5 @@ export function deriveHintsFromFileName(fileName: string): FilenameHint {
   if (segments.length >= 4) return hintFromFourOrMoreSegments(segments);
   if (segments.length === 3) return hintFromThreeSegments(segments);
   if (segments.length === 2) return hintFromTwoSegments(segments);
-  return hintFromSingleSegment(base);
+  return hintFromSingleSegment(segments[0]);
 }

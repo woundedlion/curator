@@ -15,8 +15,25 @@ export type MBCacheEntry = {
   version?: number;
 };
 
+// Unit-separator delimiter (U+001F) — a control character that cannot
+// appear in normalized text. Joining with this avoids the collision class
+// where `("A B", "C", "D")` and `("A", "B C", "D")` would both map to
+// `"A B C D"` if delimited by a space.
+const KEY_DELIMITER = "";
+
+// Reserved key namespace for entries that aren't normal MB cache rows
+// (currently the CAA negative cache). The prefix uses ASCII characters
+// only — the unit-separator above would never appear here, so namespace
+// values can never collide with content keys.
+const COVER_ART_NEGATIVE_KEY = "__cover-art-negative__";
+
+type CoverArtNegativeEntry = {
+  key: typeof COVER_ART_NEGATIVE_KEY;
+  mbids: string[];
+};
+
 export function buildCacheKey({ title, artist, album }: MBCacheKey): string {
-  return `${title} ${artist} ${album}`;
+  return `${title}${KEY_DELIMITER}${artist}${KEY_DELIMITER}${album}`;
 }
 
 function isCurrentVersion(entry: MBCacheEntry | undefined): boolean {
@@ -61,4 +78,31 @@ export async function deleteCachedCandidates(key: MBCacheKey): Promise<void> {
 export async function getCacheSize(): Promise<number> {
   const db = await getDatabase();
   return db.count(STORE_MB_CACHE);
+}
+
+export async function loadCoverArtNegativeCache(): Promise<string[]> {
+  const db = await getDatabase();
+  const entry = (await db.get(STORE_MB_CACHE, COVER_ART_NEGATIVE_KEY)) as
+    | CoverArtNegativeEntry
+    | undefined;
+  return entry?.mbids ?? [];
+}
+
+export async function saveCoverArtNegativeMbids(
+  newMbids: string[],
+): Promise<void> {
+  if (newMbids.length === 0) return;
+  const db = await getDatabase();
+  const tx = db.transaction(STORE_MB_CACHE, "readwrite");
+  const existing = (await tx.store.get(COVER_ART_NEGATIVE_KEY)) as
+    | CoverArtNegativeEntry
+    | undefined;
+  const merged = new Set(existing?.mbids ?? []);
+  for (const mbid of newMbids) merged.add(mbid);
+  const entry: CoverArtNegativeEntry = {
+    key: COVER_ART_NEGATIVE_KEY,
+    mbids: Array.from(merged),
+  };
+  await tx.store.put(entry);
+  await tx.done;
 }

@@ -25,6 +25,11 @@ type SpotifyStore = {
   disconnect: () => void;
 };
 
+// Inflight dedup for loadPlaylists. Concurrent calls (e.g. bootstrap +
+// user opens the panel) would each set loadingPlaylists/playlists in an
+// unpredictable order. Share the promise so all callers observe one run.
+let loadPlaylistsInflight: Promise<void> | null = null;
+
 export const useSpotifyStore = create<SpotifyStore>((set) => ({
   user: null,
   playlists: [],
@@ -47,33 +52,22 @@ export const useSpotifyStore = create<SpotifyStore>((set) => ({
           country: user.country,
         },
       });
-    } catch {
+    } catch (error) {
+      // Auth expiry and network errors are expected; anything else is a
+      // programmer bug worth logging. Either way reset to disconnected.
+      if (!(error instanceof SpotifyAuthExpiredError)) {
+        console.warn("refreshConnection failed", error);
+      }
       set({ connected: false, user: null });
     }
   },
 
   async loadPlaylists(clientId) {
-    set({ loadingPlaylists: true });
-    try {
-      const playlists = await fetchAllPlaylists(clientId);
-      set({ playlists });
-    } catch (error) {
-      console.error("loadPlaylists failed", error);
-      if (error instanceof SpotifyAuthExpiredError) {
-        set({ connected: false, user: null });
-        useUiStore.getState().pushToast({
-          kind: "error",
-          message: "Spotify session expired — reconnect in Settings",
-        });
-      } else {
-        useUiStore.getState().pushToast({
-          kind: "error",
-          message: "Couldn't load Spotify playlists",
-        });
-      }
-    } finally {
-      set({ loadingPlaylists: false });
-    }
+    if (loadPlaylistsInflight) return loadPlaylistsInflight;
+    loadPlaylistsInflight = doLoadPlaylists(clientId, set).finally(() => {
+      loadPlaylistsInflight = null;
+    });
+    return loadPlaylistsInflight;
   },
 
   disconnect() {
@@ -81,3 +75,34 @@ export const useSpotifyStore = create<SpotifyStore>((set) => ({
     set({ connected: false, user: null, playlists: [] });
   },
 }));
+
+async function doLoadPlaylists(
+  clientId: string,
+  set: (
+    patch:
+      | Partial<SpotifyStore>
+      | ((state: SpotifyStore) => Partial<SpotifyStore>),
+  ) => void,
+): Promise<void> {
+  set({ loadingPlaylists: true });
+  try {
+    const playlists = await fetchAllPlaylists(clientId);
+    set({ playlists });
+  } catch (error) {
+    console.error("loadPlaylists failed", error);
+    if (error instanceof SpotifyAuthExpiredError) {
+      set({ connected: false, user: null });
+      useUiStore.getState().pushToast({
+        kind: "error",
+        message: "Spotify session expired — reconnect in Settings",
+      });
+    } else {
+      useUiStore.getState().pushToast({
+        kind: "error",
+        message: "Couldn't load Spotify playlists",
+      });
+    }
+  } finally {
+    set({ loadingPlaylists: false });
+  }
+}
