@@ -5,7 +5,7 @@ import {
 } from "../constants";
 import type { MBCandidate } from "../types";
 import { parseRetryAfter } from "../spotify/apiClient";
-import { RateLimitedQueue } from "./rateLimitedQueue";
+import { IntervalQueue } from "../util/intervalQueue";
 
 const SEARCH_LIMIT = 5;
 const SEARCH_TIMEOUT_MS = 10_000;
@@ -27,9 +27,12 @@ type MBSearchResponse = {
   recordings?: MBRecording[];
 };
 
-const queue = new RateLimitedQueue(MUSICBRAINZ_RATE_INTERVAL_MS);
+// MB has a rigid 1 req/sec contract; no rolling window, no escalating
+// penalty, so we don't persist `nextRunAt` across reloads (a fresh tab
+// is fine to start at t=0 against MB's per-IP gate).
+const queue = new IntervalQueue({ intervalMs: MUSICBRAINZ_RATE_INTERVAL_MS });
 
-export function getMusicbrainzQueue(): RateLimitedQueue {
+export function getMusicbrainzQueue(): IntervalQueue {
   return queue;
 }
 
@@ -157,6 +160,8 @@ async function runOneSearch(
   query: string,
   contactEmail: string,
   dismax: boolean,
+  tag: string | undefined,
+  guard: (() => boolean) | undefined,
 ): Promise<MBCandidate[]> {
   return queue.enqueue(async () => {
     const url = buildSearchUrl(query, contactEmail, dismax);
@@ -211,7 +216,7 @@ async function runOneSearch(
         );
       }
     }
-  });
+  }, { tag, guard });
 }
 
 // Match Lucene's escape pair (`\"` or `\\`). We must remove these BEFORE
@@ -241,12 +246,36 @@ export function buildPermissiveQuery(strictQuery: string): string {
     .trim();
 }
 
+export type SearchOptions = {
+  /**
+   * Caller-supplied tag (typically a trackId) used by
+   * `cancelMusicbrainzRequestsByTag` to drop still-pending MB
+   * lookups when the track is deleted. Both the strict and the
+   * permissive query for one trackId share the same tag.
+   */
+  tag?: string;
+  /**
+   * Defense-in-depth guard evaluated when the queued search pops.
+   * If it returns false the search is treated as cancelled — no
+   * HTTP call, no rate-limit slot consumed.
+   */
+  guard?: () => boolean;
+};
+
 export async function searchRecordings(
   strictQuery: string,
   contactEmail: string,
+  options: SearchOptions = {},
 ): Promise<MBCandidate[]> {
   if (!strictQuery) return [];
-  const strictResults = await runOneSearch(strictQuery, contactEmail, false);
+  const { tag, guard } = options;
+  const strictResults = await runOneSearch(
+    strictQuery,
+    contactEmail,
+    false,
+    tag,
+    guard,
+  );
   if (strictResults.length > 0) return strictResults;
 
   const permissiveQuery = buildPermissiveQuery(strictQuery);
@@ -261,6 +290,8 @@ export async function searchRecordings(
     permissiveQuery,
     contactEmail,
     true,
+    tag,
+    guard,
   );
   if (permissiveResults.length === 0) {
     console.warn(
@@ -271,4 +302,14 @@ export async function searchRecordings(
     );
   }
   return permissiveResults;
+}
+
+/**
+ * Remove every pending MusicBrainz request tagged with `tag` from
+ * the queue, rejecting their promises with RequestCancelledError.
+ * In-flight requests complete normally; the caller (enrichmentRunner)
+ * is responsible for discarding the result when the track is gone.
+ */
+export function cancelMusicbrainzRequestsByTag(tag: string): number {
+  return queue.cancelByTag(tag);
 }

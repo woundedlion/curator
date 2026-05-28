@@ -82,4 +82,14 @@ describe("dedupeFiles", () => {
     ];
     expect(dedupeFiles(files)).toHaveLength(1);
   });
+
+  it("does not collide across field boundaries (cross-field key safety)", () => {
+    // Without a delimiter byte, ("a.mp3", 12, 345) and ("a.mp", 312, 345)
+    // would both serialize to "a.mp312345". Regression guard.
+    const files = [
+      makeFile("a.mp3", 12, 345),
+      makeFile("a.mp", 312, 345),
+    ];
+    expect(dedupeFiles(files)).toHaveLength(2);
+  });
 });

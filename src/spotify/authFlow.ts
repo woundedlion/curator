@@ -90,12 +90,14 @@ export async function beginAuthFlow(
 // circuit breaker. This stops a 429 storm from triggering an unguarded burst
 // of refresh attempts that would deepen the lockout.
 function postToTokenEndpoint(body: URLSearchParams): Promise<Response> {
-  return runWithRateLimitPolicy(() =>
-    fetch(SPOTIFY_TOKEN_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body,
-    }),
+  return runWithRateLimitPolicy(
+    () =>
+      fetch(SPOTIFY_TOKEN_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body,
+      }),
+    "/api/token",
   );
 }
 
@@ -179,7 +181,7 @@ export async function completeAuthFlow(
     throw new Error("Missing PKCE state");
   }
   if (expectedState !== callback.state) {
-    // CSRF defence: a state mismatch may indicate a forged callback. Drop
+    // CSRF defense: a state mismatch may indicate a forged callback. Drop
     // both keys so a follow-up legitimate flow starts fresh, and never
     // reuse a verifier that was bound to a now-suspect state.
     clearPkceKeys();

@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { DEFAULT_PLAYLIST_NAME, DRAFT_PLAYLIST_ID } from "../constants";
 import { loadDraft, saveDraft } from "../db/draftRepository";
+import { cancelTrackRequests } from "../services/cancelTrackRequests";
 import {
   moveSelectionBlock,
   moveSelectionBlockToEnd,
@@ -50,7 +51,13 @@ type PlaylistStore = {
     fillIns: Partial<
       Pick<
         Track,
-        "title" | "artist" | "album" | "year" | "originalYear" | "coverUrl"
+        | "title"
+        | "artist"
+        | "album"
+        | "year"
+        | "originalYear"
+        | "durationMs"
+        | "coverUrl"
       >
     >,
   ) => void;
@@ -71,6 +78,15 @@ type PlaylistStore = {
   ) => void;
   replaceAll: (tracks: Track[]) => void;
   clearPlaylist: () => void;
+  /**
+   * Reset every track's Spotify + MusicBrainz state to `idle`,
+   * cancelling any in-flight queue work first. Track identity
+   * (title/artist/album/local file/etc.) is preserved — this is
+   * NOT a clear; it's a "redo from scratch" gesture for the user
+   * who wants every row re-searched without rebuilding the
+   * playlist. Snapshots the prior state for undo.
+   */
+  nukeEnrichmentState: () => void;
   undo: () => void;
 
   // Selection actions.
@@ -296,6 +312,10 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => ({
 
   removeTracks(ids) {
     if (ids.length === 0) return;
+    // Collect the ids that actually existed at delete time so we
+    // only cancel for them. (Calling cancel for ids that were never
+    // queued is harmless but logging the count would be misleading.)
+    const actuallyRemoved: string[] = [];
     set((state) => {
       const removeSet = new Set(ids);
       const nextById = { ...state.tracksById };
@@ -304,6 +324,7 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => ({
         const existing = nextById[id];
         if (existing !== undefined) {
           deletedTracks.push(existing);
+          actuallyRemoved.push(id);
           delete nextById[id];
         }
       }
@@ -333,6 +354,11 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => ({
         ),
       };
     });
+    // Cancellation is a side effect — runs AFTER the store update so
+    // the guard predicates (which check tracksById) see the post-
+    // delete state. Calling it before set() would race with any
+    // already-popped task that re-checks the store at run time.
+    if (actuallyRemoved.length > 0) cancelTrackRequests(actuallyRemoved);
     schedulePersist();
   },
 
@@ -447,34 +473,21 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => ({
   },
 
   replaceAll(tracks) {
-    set((state) => ({
-      tracksById: buildTracksById(tracks),
-      playlist: {
-        ...state.playlist,
-        trackIds: tracks.map((t) => t.id),
-        sort: null,
-      },
-      undoStack: pushBounded(
-        state.undoStack,
-        snapshotReplaceEntry(
-          state.playlist.trackIds,
-          state.tracksById,
-          state.playlist.sort,
-          captureSelection(state.selectedTrackIds, state.selectionAnchorId),
-        ),
-      ),
-      selectedTrackIds: new Set<string>(),
-      selectionAnchorId: null,
-    }));
-    schedulePersist();
-  },
-
-  clearPlaylist() {
+    // Capture the ids being displaced so we can cancel their queued
+    // requests after the swap. The keep-set is anything also present
+    // in the incoming tracks — those tracks survive the swap (their
+    // payload is overwritten but the id continues to exist).
+    let removedIds: string[] = [];
     set((state) => {
-      if (state.playlist.trackIds.length === 0) return state;
+      const incoming = new Set(tracks.map((t) => t.id));
+      removedIds = state.playlist.trackIds.filter((id) => !incoming.has(id));
       return {
-        tracksById: {},
-        playlist: { ...state.playlist, trackIds: [], sort: null },
+        tracksById: buildTracksById(tracks),
+        playlist: {
+          ...state.playlist,
+          trackIds: tracks.map((t) => t.id),
+          sort: null,
+        },
         undoStack: pushBounded(
           state.undoStack,
           snapshotReplaceEntry(
@@ -486,6 +499,54 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => ({
         ),
         selectedTrackIds: new Set<string>(),
         selectionAnchorId: null,
+      };
+    });
+    if (removedIds.length > 0) cancelTrackRequests(removedIds);
+    schedulePersist();
+  },
+
+  clearPlaylist() {
+    // Clear is just replaceAll with an empty list — same undo shape
+    // (snapshotReplaceEntry), same selection wipe, same cancellation
+    // of every queued request. Delegating keeps the two paths from
+    // drifting apart.
+    if (get().playlist.trackIds.length === 0) return;
+    get().replaceAll([]);
+  },
+
+  nukeEnrichmentState() {
+    const state = get();
+    if (state.playlist.trackIds.length === 0) return;
+    const allIds = [...state.playlist.trackIds];
+
+    // Cancel every queued request first. The store update below
+    // resets statuses to idle; if we left in-flight tasks
+    // un-cancelled they could land AFTER the reset and rewrite
+    // some rows back to matched/missing mid-undo-window.
+    cancelTrackRequests(allIds);
+
+    set((s) => {
+      const nextById: Record<string, Track> = {};
+      for (const [id, t] of Object.entries(s.tracksById)) {
+        nextById[id] = {
+          ...t,
+          spotify: { status: "idle" },
+          enrichment: { status: "idle" },
+        };
+      }
+      return {
+        tracksById: nextById,
+        // replace-style undo entry — restores prior tracksById in
+        // full, which includes every row's prior spotify + MB state.
+        undoStack: pushBounded(
+          s.undoStack,
+          snapshotReplaceEntry(
+            s.playlist.trackIds,
+            s.tracksById,
+            s.playlist.sort,
+            captureSelection(s.selectedTrackIds, s.selectionAnchorId),
+          ),
+        ),
       };
     });
     schedulePersist();
@@ -573,7 +634,13 @@ function isFieldMissing(value: unknown): boolean {
 
 type FillableTrackFields = Pick<
   Track,
-  "title" | "artist" | "album" | "year" | "originalYear" | "coverUrl"
+  | "title"
+  | "artist"
+  | "album"
+  | "year"
+  | "originalYear"
+  | "durationMs"
+  | "coverUrl"
 >;
 
 function mergeOnlyMissing(

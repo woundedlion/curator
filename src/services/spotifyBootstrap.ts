@@ -1,4 +1,6 @@
+import { SPOTIFY_AUTO_RECONNECT_SUPPRESSED_KEY } from "../constants";
 import {
+  beginAuthFlow,
   clearCallbackParams,
   completeAuthFlow,
   disconnectFromSpotify,
@@ -9,6 +11,18 @@ import { readTokens } from "../spotify/tokenStorage";
 import { useSettingsStore } from "../store/settingsStore";
 import { useSpotifyStore } from "../store/spotifyStore";
 import { useUiStore } from "../store/uiStore";
+
+export function markAutoReconnectSuppressed(): void {
+  sessionStorage.setItem(SPOTIFY_AUTO_RECONNECT_SUPPRESSED_KEY, "1");
+}
+
+export function clearAutoReconnectSuppression(): void {
+  sessionStorage.removeItem(SPOTIFY_AUTO_RECONNECT_SUPPRESSED_KEY);
+}
+
+function isAutoReconnectSuppressed(): boolean {
+  return sessionStorage.getItem(SPOTIFY_AUTO_RECONNECT_SUPPRESSED_KEY) === "1";
+}
 
 function describeAuthError(error: string): string {
   switch (error) {
@@ -41,8 +55,11 @@ async function doBootstrap(): Promise<void> {
     if (callback.kind === "error") {
       // User denied consent or Spotify rejected the request. Reset any
       // partially-stored PKCE keys so a future Connect button starts
-      // fresh, and tell the user what happened.
+      // fresh, and tell the user what happened. Also suppress
+      // auto-reconnect this session — without it, the bootstrap would
+      // immediately redirect the user back to Spotify on every refresh.
       disconnectFromSpotify();
+      markAutoReconnectSuppressed();
       useUiStore.getState().pushToast({
         kind: "error",
         message: describeAuthError(callback.error),
@@ -60,7 +77,7 @@ async function doBootstrap(): Promise<void> {
         if (!readTokens()) {
           console.error("Spotify connect failed", error);
           // completeAuthFlow already clears PKCE keys on failure, but
-          // also drop any cached tokens (defence in depth) and emit a
+          // also drop any cached tokens (defense in depth) and emit a
           // clear toast.
           disconnectFromSpotify();
           useUiStore.getState().pushToast({
@@ -74,10 +91,9 @@ async function doBootstrap(): Promise<void> {
   }
 
   // Tokens cached from an earlier authorize call may pre-date a newly
-  // added scope (e.g. playlist-modify-public). Their access tokens will
-  // succeed on GET endpoints but 403 on the first publish — a confusing
-  // failure mode for the user. Detect this proactively and prompt
-  // reconnect with a clear message instead of waiting for the publish 403.
+  // added scope (e.g. playlist-modify-public). Drop them so the
+  // auto-reconnect below picks the user up with the current scope set
+  // instead of waiting for the eventual 403 on first publish.
   const existingTokens = readTokens();
   if (existingTokens) {
     const missing = missingScopes(existingTokens);
@@ -87,18 +103,33 @@ async function doBootstrap(): Promise<void> {
         missing,
       );
       disconnectFromSpotify();
-      useUiStore.getState().pushToast({
-        kind: "error",
-        message: `Spotify scopes updated — reconnect in Settings to enable: ${missing.join(", ")}`,
-      });
-      return;
     }
   }
 
   await useSpotifyStore.getState().refreshConnection(clientId);
-  if (useSpotifyStore.getState().connected) {
+  const { connected, status } = useSpotifyStore.getState();
+  if (connected) {
     await useSpotifyStore.getState().loadPlaylists(clientId);
+    return;
   }
+
+  // Skip auto-reconnect when we're rate-limited rather than
+  // legitimately disconnected. The OAuth redirect itself can't
+  // proceed (token exchange shares the same per-app quota that just
+  // 429'd us), and dropping the user on the Spotify authorize page
+  // mid-rate-limit is confusing. The Settings dialog surfaces the
+  // breaker countdown so the user knows what's happening; once the
+  // breaker closes a refresh will auto-reconnect them.
+  if (status === "rate-limited") return;
+
+  // Auto-reconnect: clientId is configured but we couldn't establish a
+  // session (no tokens, refresh expired, or scopes were stripped above).
+  // Redirect to Spotify immediately so the user lands back connected.
+  // Suppressed for the rest of the tab if a prior callback returned
+  // ?error= (see markAutoReconnectSuppressed above) — without that
+  // guard, denial would loop back to Spotify on every refresh.
+  if (isAutoReconnectSuppressed()) return;
+  await beginAuthFlow(clientId, settings.spotifyRedirectUri);
 }
 
 export function bootstrapSpotify(): Promise<void> {

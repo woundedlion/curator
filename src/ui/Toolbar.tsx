@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useEnrichmentRemaining } from "../hooks/useEnrichmentRemaining";
+import { useSpotifyQueueDepth } from "../hooks/useSpotifyQueueDepth";
 import { reenrichAll } from "../services/enrichmentRunner";
 import { useSettingsStore } from "../store/settingsStore";
 import { usePlaylistStore } from "../store/playlistStore";
@@ -7,7 +8,13 @@ import { useUiStore } from "../store/uiStore";
 import { BusySpinner } from "./BusySpinner";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { ConnectionBadge } from "./ConnectionBadge";
-import { FilterIcon, GearIcon, TrashIcon, TreeIcon } from "./icons";
+import {
+  FilterIcon,
+  GearIcon,
+  MushroomCloudIcon,
+  TrashIcon,
+  TreeIcon,
+} from "./icons";
 import { IconButton } from "./IconButton";
 import { ToggleIconButton } from "./ToggleIconButton";
 
@@ -27,8 +34,12 @@ export function Toolbar({ hiddenCount, onPickFolder }: Props) {
   const canUndo = usePlaylistStore((state) => state.undoStack.length > 0);
   const undo = usePlaylistStore((state) => state.undo);
   const clearPlaylist = usePlaylistStore((state) => state.clearPlaylist);
+  const nukeEnrichmentState = usePlaylistStore(
+    (state) => state.nukeEnrichmentState,
+  );
   const enrichmentRemaining = useEnrichmentRemaining();
   const queueDepth = useUiStore((state) => state.enrichmentQueueDepth);
+  const spotifyQueueDepth = useSpotifyQueueDepth();
   // Show the "Enriching" badge whenever EITHER signal says work is in
   // flight. They can race during shutdown (queue cleared before the row
   // count drops, or vice versa); requiring both would hide ongoing work
@@ -37,6 +48,7 @@ export function Toolbar({ hiddenCount, onPickFolder }: Props) {
   const isEnriching = queueDepth > 0 || enrichmentRemaining > 0;
   const openSettings = useUiStore((state) => state.setShowSettings);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
+  const [showNukeConfirm, setShowNukeConfirm] = useState(false);
 
   function handleClear() {
     if (trackCount === 0) return;
@@ -46,6 +58,16 @@ export function Toolbar({ hiddenCount, onPickFolder }: Props) {
   function confirmClearPlaylist() {
     setShowClearConfirm(false);
     clearPlaylist();
+  }
+
+  function handleNuke() {
+    if (trackCount === 0) return;
+    setShowNukeConfirm(true);
+  }
+
+  function confirmNuke() {
+    setShowNukeConfirm(false);
+    nukeEnrichmentState();
   }
 
   return (
@@ -97,11 +119,21 @@ export function Toolbar({ hiddenCount, onPickFolder }: Props) {
       <IconButton
         label={
           trackCount === 0
-            ? "Nothing to re-enrich"
-            : "Re-enrich all tracks (clears MusicBrainz cache for the playlist)"
+            ? "Nothing to look up"
+            : "Resume lookups for tracks not yet looked up (Spotify or MusicBrainz)"
         }
         icon="↻"
         onClick={() => void reenrichAll()}
+        disabled={trackCount === 0}
+      />
+      <IconButton
+        label={
+          trackCount === 0
+            ? "Nothing to reset"
+            : "Reset all Spotify and MusicBrainz state back to idle"
+        }
+        icon={<MushroomCloudIcon />}
+        onClick={handleNuke}
         disabled={trackCount === 0}
       />
 
@@ -112,6 +144,15 @@ export function Toolbar({ hiddenCount, onPickFolder }: Props) {
             aria-live="polite"
           >
             Enriching · {enrichmentRemaining} remaining
+          </span>
+        )}
+        {spotifyQueueDepth > 0 && (
+          <span
+            className="text-xs text-neutral-400 tabular-nums"
+            aria-live="polite"
+            title="Spotify requests waiting on the rate-limit queue"
+          >
+            Spotify · {spotifyQueueDepth} queued
           </span>
         )}
         <BusySpinner />
@@ -130,6 +171,15 @@ export function Toolbar({ hiddenCount, onPickFolder }: Props) {
         kind="danger"
         onConfirm={confirmClearPlaylist}
         onCancel={() => setShowClearConfirm(false)}
+      />
+      <ConfirmDialog
+        open={showNukeConfirm}
+        title="Reset all enrichment state?"
+        message="Every track's Spotify and MusicBrainz state will be reset to idle. Tracks themselves stay in the playlist — but their match status, candidate lists, and selected URIs are wiped. The toolbar's resume button will re-search all of them. You can undo this while the tab is open."
+        confirmLabel="Reset"
+        kind="danger"
+        onConfirm={confirmNuke}
+        onCancel={() => setShowNukeConfirm(false)}
       />
     </header>
   );

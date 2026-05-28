@@ -3,10 +3,9 @@ import type { MBCandidate, Track } from "../types";
 
 const OPEN_END_YEAR = Number.POSITIVE_INFINITY;
 // Unit-separator (U+001F) — a control character normalizeForMatching can
-// never produce, so it never collides with content. `"a|b" + "c"` and
-// `"a" + "b|c"` had been mapping to the same dedup group under the old
-// pipe delimiter.
-const IDENTITY_DELIMITER = "";
+// never produce, so it never collides with content. Without a delimiter
+// `("ab", "cd")` and `("a", "bcd")` would map to the same dedup key.
+const IDENTITY_DELIMITER = "";
 
 function songIdentityKey(candidate: MBCandidate): string {
   return `${normalizeForMatching(candidate.title)}${IDENTITY_DELIMITER}${normalizeForMatching(candidate.artist)}`;

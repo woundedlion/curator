@@ -5,7 +5,7 @@ import { usePlaylistStore } from "../store/playlistStore";
 import { useSettingsStore } from "../store/settingsStore";
 import { useUiStore } from "../store/uiStore";
 import type { SpotifyCandidate, Track } from "../types";
-import { reenrichTrack } from "./enrichmentRunner";
+import { enrichOneTrackMb } from "./enrichmentRunner";
 
 function cacheKeyFor(track: Track) {
   return {
@@ -57,7 +57,11 @@ export async function pickSpotifyCandidate(
     useSettingsStore.getState().settings.musicbrainzContact.trim(),
   );
   if (!hasContact) return;
+  // MB-only re-run: never re-search Spotify here — the URI we just wrote
+  // IS the user's chosen identity. A re-search would either auto-pick a
+  // different candidate or land back on `ambiguous` (the exact state the
+  // picker was opened to escape), silently reverting the user's pick.
   void useUiStore.getState().withBusy(async () => {
-    await reenrichTrack(trackId);
+    await enrichOneTrackMb(trackId, { bypassCache: true });
   });
 }

@@ -217,9 +217,9 @@ function SortableTrackRowImpl({
         <button
           type="button"
           onClick={handleReEnrich}
-          aria-label="Re-enrich (clears cached MusicBrainz result)"
-          title="Re-enrich (clears cached MusicBrainz result)"
-          className="inline-flex items-center justify-center bg-transparent px-1 py-0.5 text-sm text-neutral-100 transition-opacity hover:opacity-70"
+          aria-label="Re-search Spotify and re-enrich from MusicBrainz"
+          title="Re-search Spotify and re-enrich from MusicBrainz"
+          className="inline-flex items-center justify-center bg-transparent px-1 py-0.5 text-sm text-matched transition-opacity hover:opacity-70"
         >
           ↻
         </button>

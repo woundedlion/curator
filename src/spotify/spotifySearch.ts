@@ -167,6 +167,8 @@ async function fetchCandidatesForQuery(
   queryString: string,
   clientId: string,
   marketCountry: string | undefined,
+  tag: string | undefined,
+  guard: (() => boolean) | undefined,
 ): Promise<SpotifyCandidate[]> {
   if (!queryString) return [];
   const response = await callSpotify<SpotifySearchResponse>(
@@ -180,23 +182,43 @@ async function fetchCandidatesForQuery(
       },
     },
     clientId,
+    { tag, guard },
   );
   return (response.tracks?.items ?? []).map(toSpotifyCandidate);
 }
+
+export type SearchOptions = {
+  /**
+   * Defense-in-depth predicate evaluated when the queued search
+   * actually starts. Returning false aborts with
+   * RequestCancelledError — no HTTP call, no rate-limit consumption.
+   * Pair with `cancelSpotifyRequestsByTag(track.id)` on deletion
+   * paths for layered protection: the cancel sweep removes the
+   * task from `pending` synchronously; the guard catches any tasks
+   * the cancel missed (e.g. fired after the task already shifted
+   * out of pending but before send went out).
+   */
+  guard?: () => boolean;
+};
 
 export async function searchSpotifyForTrack(
   track: Track,
   clientId: string,
   marketCountry?: string,
+  options: SearchOptions = {},
 ): Promise<SpotifyMatch> {
   const primaryFields = primaryFieldsFromTrack(track);
   const primaryQuery = buildQueryString(primaryFields);
   if (!primaryQuery && !track.altQuery) return { status: "missing" };
 
+  // Tag every outbound search with the trackId so deleting the track
+  // can cancel any of its still-pending Spotify queries.
   const primaryCandidates = await fetchCandidatesForQuery(
     primaryQuery,
     clientId,
     marketCountry,
+    track.id,
+    options.guard,
   );
 
   let candidates = primaryCandidates;
@@ -210,6 +232,8 @@ export async function searchSpotifyForTrack(
         altQuery,
         clientId,
         marketCountry,
+        track.id,
+        options.guard,
       );
       candidates = mergeCandidatesPreferringPrimary(
         primaryCandidates,
@@ -226,8 +250,15 @@ export async function searchSpotifyCandidatesByFields(
   fields: IdentifyingFields,
   clientId: string,
   marketCountry?: string,
+  tag?: string,
 ): Promise<SpotifyCandidate[]> {
   const queryString = buildQueryString(fields);
   if (!queryString) return [];
-  return fetchCandidatesForQuery(queryString, clientId, marketCountry);
+  return fetchCandidatesForQuery(
+    queryString,
+    clientId,
+    marketCountry,
+    tag,
+    undefined,
+  );
 }

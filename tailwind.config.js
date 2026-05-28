@@ -6,12 +6,15 @@ export default {
     extend: {
       colors: {
         // Status semantic colors used by the glyph + selection-tint UI.
-        // Tuned against the app's neutral-900 background (#171717) for
-        // WCAG AA contrast — the previous "missing" gray (#7a7a7a)
-        // failed at 3.6:1 on neutral-900. #a3a3a3 lifts that to 4.7:1.
+        // `missing` is intentionally a darker gray than the idle hollow
+        // outline (text-neutral-500 / #2d2d2d) so the filled "known
+        // missing" circle reads as a deliberate result rather than
+        // blending with the muted-row tint or the idle outline. Used
+        // for both Spotify "missing" and MB "failed" — they're the
+        // same semantic shape (we looked and there was nothing).
         matched: "#1db954",
         ambiguous: "#f5b400",
-        missing: "#a3a3a3",
+        missing: "#2d2d2d",
       },
     },
   },

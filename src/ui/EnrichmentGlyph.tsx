@@ -1,4 +1,5 @@
 import type { EnrichmentStatus } from "../types";
+import { CircleGlyphIcon } from "./icons";
 
 type Props = {
   status: EnrichmentStatus;
@@ -6,34 +7,37 @@ type Props = {
 };
 
 const STATUS_LABELS: Record<EnrichmentStatus, string> = {
-  idle: "MusicBrainz enrichment pending",
+  idle: "MusicBrainz enrichment not yet looked up",
   pending: "Looking up MusicBrainz…",
-  matched: "Enriched from MusicBrainz",
+  matched: "Enriched from MusicBrainz (click to pick a different candidate)",
   ambiguous: "Ambiguous MusicBrainz match — click to pick",
-  failed: "MusicBrainz lookup failed",
-};
-
-// Glyphs picked for distinct silhouettes so colorblind users (and anyone
-// glancing at the column) can read status from shape, not just hue.
-const STATUS_GLYPHS: Record<EnrichmentStatus, string> = {
-  idle: "–",
-  pending: "…",
-  matched: "✓",
-  ambiguous: "?",
-  failed: "✕",
+  failed: "No MusicBrainz match found (click to re-pick from candidates)",
 };
 
 const STATUS_COLORS: Record<EnrichmentStatus, string> = {
   idle: "text-neutral-500",
   pending: "text-neutral-400 animate-pulse",
-  matched: "text-matched",
+  matched: "text-matched cursor-pointer",
   ambiguous: "text-ambiguous cursor-pointer",
-  failed: "text-red-500",
+  failed: "text-missing cursor-pointer",
 };
 
+const INTERACTIVE_STATUSES: EnrichmentStatus[] = [
+  "matched",
+  "ambiguous",
+  "failed",
+];
+
+function renderGlyphBody(status: EnrichmentStatus) {
+  if (status === "pending") return "…";
+  return <CircleGlyphIcon filled={status !== "idle"} />;
+}
+
 export function EnrichmentGlyph({ status, onPick }: Props) {
-  const isInteractive = status === "ambiguous" && Boolean(onPick);
+  const isInteractive =
+    INTERACTIVE_STATUSES.includes(status) && Boolean(onPick);
   const className = `inline-flex items-center justify-center text-base ${STATUS_COLORS[status]}`;
+  const body = renderGlyphBody(status);
   if (isInteractive) {
     return (
       <button
@@ -43,7 +47,7 @@ export function EnrichmentGlyph({ status, onPick }: Props) {
         onClick={onPick}
         className={className}
       >
-        {STATUS_GLYPHS[status]}
+        {body}
       </button>
     );
   }
@@ -53,7 +57,7 @@ export function EnrichmentGlyph({ status, onPick }: Props) {
       title={STATUS_LABELS[status]}
       className={className}
     >
-      {STATUS_GLYPHS[status]}
+      {body}
     </span>
   );
 }

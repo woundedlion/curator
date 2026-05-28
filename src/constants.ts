@@ -63,6 +63,12 @@ export const SETTINGS_STORAGE_KEY = "curator.settings.v1";
 export const TOKENS_STORAGE_KEY = "curator.spotify.tokens.v1";
 export const PKCE_VERIFIER_KEY = "curator.spotify.pkce_verifier";
 export const PKCE_STATE_KEY = "curator.spotify.pkce_state";
+// Set when an auth callback returns ?error= (user denied, scope rejected,
+// etc.). Suppresses the bootstrap's auto-reconnect for the rest of the
+// tab session so a denial doesn't loop the user straight back to Spotify
+// on every refresh. Cleared when the user explicitly clicks Connect.
+export const SPOTIFY_AUTO_RECONNECT_SUPPRESSED_KEY =
+  "curator.spotify.autoReconnectSuppressed";
 // Per-tab playlist scroll position. sessionStorage scope: survives reloads,
 // clears on tab close — matches DESIGN §5 "fresh tab should start clean."
 export const PLAYLIST_SCROLL_KEY = "curator.playlist.scrollTop";
@@ -73,3 +79,12 @@ export const PLAYLIST_SCROLL_KEY = "curator.playlist.scrollTop";
 // would otherwise re-burn the quota immediately.
 export const SPOTIFY_CIRCUIT_OPEN_UNTIL_KEY =
   "curator.spotify.circuitOpenUntil.v1";
+
+// Proactive spacing window. Persisted for the same reason as the
+// circuit breaker: Spotify's rolling-30s quota counts requests from the
+// previous page session, but the in-memory `nextAllowedAt` resets on
+// reload. Without persistence, a refresh that follows a heavy burst
+// (re-enrich-all, playlist import) lets the new tab fire immediately
+// and 429 into the unfinished window.
+export const SPOTIFY_NEXT_ALLOWED_AT_KEY =
+  "curator.spotify.nextAllowedAt.v1";

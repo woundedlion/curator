@@ -1,4 +1,5 @@
 import type { SpotifyMatchStatus } from "../types";
+import { CircleGlyphIcon } from "./icons";
 
 type Props = {
   status: SpotifyMatchStatus;
@@ -6,26 +7,11 @@ type Props = {
 };
 
 const STATUS_LABELS: Record<SpotifyMatchStatus, string> = {
-  idle: "Spotify match pending",
+  idle: "Spotify match not yet looked up",
   pending: "Searching Spotify…",
   matched: "Matched on Spotify (click to pick a different version)",
   ambiguous: "Ambiguous — click to pick a Spotify version",
-  missing: "Not available on Spotify (click to re-search)",
-};
-
-// Distinct shapes — not just filled/half/open variants of the same
-// circle — so colorblind users (and anyone reading at a glance) can
-// tell the four states apart by silhouette alone:
-//   ✓ checkmark — matched
-//   ? question — ambiguous (user input needed)
-//   ✕ cross — missing
-//   – dash — idle (nothing has happened yet)
-const STATUS_GLYPHS: Record<SpotifyMatchStatus, string> = {
-  idle: "–",
-  pending: "…",
-  matched: "✓",
-  ambiguous: "?",
-  missing: "✕",
+  missing: "No match found on Spotify (click to re-search)",
 };
 
 const STATUS_COLORS: Record<SpotifyMatchStatus, string> = {
@@ -42,10 +28,16 @@ const INTERACTIVE_STATUSES: SpotifyMatchStatus[] = [
   "missing",
 ];
 
+function renderGlyphBody(status: SpotifyMatchStatus) {
+  if (status === "pending") return "…";
+  return <CircleGlyphIcon filled={status !== "idle"} />;
+}
+
 export function StatusGlyph({ status, onPick }: Props) {
   const isInteractive =
     INTERACTIVE_STATUSES.includes(status) && Boolean(onPick);
   const className = `inline-flex items-center justify-center text-base ${STATUS_COLORS[status]}`;
+  const body = renderGlyphBody(status);
   if (isInteractive) {
     return (
       <button
@@ -55,7 +47,7 @@ export function StatusGlyph({ status, onPick }: Props) {
         onClick={onPick}
         className={className}
       >
-        {STATUS_GLYPHS[status]}
+        {body}
       </button>
     );
   }
@@ -65,7 +57,7 @@ export function StatusGlyph({ status, onPick }: Props) {
       title={STATUS_LABELS[status]}
       className={className}
     >
-      {STATUS_GLYPHS[status]}
+      {body}
     </span>
   );
 }

@@ -2,10 +2,16 @@ import { deleteCachedCandidates } from "../db/musicbrainzCache";
 import { probeCoverArtUrl } from "../enrichment/coverArt";
 import { enrichTrack } from "../enrichment/enrichmentService";
 import { normalizeForMatching } from "../metadata/normalizers";
+import { RequestCancelledError } from "../util/intervalQueue";
 import { usePlaylistStore } from "../store/playlistStore";
 import { useSettingsStore } from "../store/settingsStore";
 import { useUiStore } from "../store/uiStore";
 import type { Track } from "../types";
+import {
+  matchAllOnSpotify,
+  rematchOnSpotify,
+  resetSpotifyStatusForRefresh,
+} from "./spotifyMatchRunner";
 
 type EnrichmentResult = "matched" | "ambiguous" | "failed";
 
@@ -52,12 +58,21 @@ async function runOneTrack(
 
   markPending(trackId);
 
+  // Defense-in-depth: re-checked when each queued MB request pops.
+  // The primary cancellation path is `cancelMusicbrainzRequestsByTag`
+  // wired into the playlist store's deletion actions; this guard
+  // catches the gap where the task already shifted out of pending
+  // before the cancel fired, or a deletion path that forgot to call
+  // the cancel hook entirely.
+  const stillAlive = () =>
+    Boolean(usePlaylistStore.getState().tracksById[trackId]);
+
   try {
     const outcome = await enrichTrack(
       track,
       settings.musicbrainzContact,
       settings.acceptThresholds.mb,
-      { bypassCache: options.bypassCache },
+      { bypassCache: options.bypassCache, guard: stillAlive },
     );
     const best = outcome.candidates[0];
 
@@ -108,6 +123,12 @@ async function runOneTrack(
     }
     return { result: outcome.status, failureReason: outcome.failureReason };
   } catch (error) {
+    // Track was deleted while the lookup was queued. The row no
+    // longer exists; updateTrack would be a no-op anyway, but the
+    // early return keeps the error reporting path silent.
+    if (error instanceof RequestCancelledError) {
+      return { result: "failed" };
+    }
     console.error("MusicBrainz enrichment failed", { trackId, error });
     usePlaylistStore.getState().updateTrack(trackId, {
       enrichment: { status: "failed" },
@@ -170,10 +191,14 @@ function warnMissingContactEmail(): void {
   );
 }
 
-export async function enrichAllPending(): Promise<void> {
-  const trackIds = usePlaylistStore.getState().playlist.trackIds.filter(
-    (id) => !shouldSkipTrack(id),
-  );
+export async function enrichAllPending(
+  scope?: ReadonlySet<string>,
+): Promise<void> {
+  const trackIds = usePlaylistStore
+    .getState()
+    .playlist.trackIds.filter(
+      (id) => !shouldSkipTrack(id) && (!scope || scope.has(id)),
+    );
   if (trackIds.length === 0) return;
 
   if (!hasContactEmail()) {
@@ -228,29 +253,36 @@ function clearTrackEnrichmentOverride(trackId: string): void {
   });
 }
 
-function isSpotifyImport(trackId: string): boolean {
-  const track = usePlaylistStore.getState().tracksById[trackId];
-  return Boolean(track && track.source.kind === "spotify-import");
-}
-
-// `reenrichAll` (toolbar ↻) is explicit but bulk — treat it as "automatic
-// enough" that user-picked rows are preserved. A user who picked a
-// specific MB candidate via the ambiguous-enrichment dialog had their
-// row set with `userOverride = true`; wiping that in a bulk pass would
-// silently destroy their choice. The per-row ↻ deliberately clears
-// `userOverride` and re-enriches a single row — that's the escape hatch.
-function isUserOverridden(trackId: string): boolean {
-  const track = usePlaylistStore.getState().tracksById[trackId];
-  return Boolean(track && track.enrichment.userOverride);
-}
-
-async function resetTrackForReenrichment(trackId: string): Promise<void> {
-  await clearTrackEnrichmentCache(trackId);
-  const track = usePlaylistStore.getState().tracksById[trackId];
-  if (!track) return;
-  usePlaylistStore.getState().updateTrack(trackId, {
-    enrichment: { status: "idle" },
-  });
+// Toolbar "re-enrich all" (↻) is a "resume unfinished work" button —
+// it picks up tracks whose Spotify lookup or MB lookup hasn't happened
+// yet, and leaves rows that have already been resolved (matched /
+// ambiguous / missing on Spotify; matched / ambiguous / failed on MB)
+// untouched. The per-row ↻ remains the escape hatch for "redo from
+// scratch" on a single row, since it explicitly clears state and
+// re-runs every step.
+function isTrackPendingLookup(track: Track, spotifyConfigured: boolean): boolean {
+  if (track.enrichment.userOverride) return false;
+  if (track.source.kind === "spotify-import") {
+    return track.enrichment.status === "idle";
+  }
+  if (!spotifyConfigured) {
+    return track.enrichment.status === "idle";
+  }
+  // With Spotify configured: only truly-unknown rows are eligible.
+  //   - Spotify idle  : needs a Spotify search (and MB will run after).
+  //   - Spotify matched + MB idle : MB never ran for this resolved row.
+  // Every other state is a resolved decision the user already saw
+  // (ambiguous = waiting on user picker; missing = Spotify said no;
+  // matched on both = done). Re-queueing those on every toolbar ↻
+  // burns the rate-limit budget on settled work.
+  if (track.spotify.status === "idle") return true;
+  if (
+    track.spotify.status === "matched" &&
+    track.enrichment.status === "idle"
+  ) {
+    return true;
+  }
+  return false;
 }
 
 export async function reenrichAll(): Promise<void> {
@@ -258,37 +290,49 @@ export async function reenrichAll(): Promise<void> {
     warnMissingContactEmail();
     return;
   }
-  const trackIds = usePlaylistStore
-    .getState()
-    .playlist.trackIds.filter(
-      (id) => !isSpotifyImport(id) && !isUserOverridden(id),
-    );
-  if (trackIds.length === 0) return;
-
-  await useUiStore.getState().withBusy(async () => {
-    for (const trackId of trackIds) {
-      await resetTrackForReenrichment(trackId);
-    }
-    const summary: BatchSummary = {
-      attempted: 0,
-      errorCount: 0,
-      firstError: null,
-      noResultCount: 0,
-      noQueryCount: 0,
-    };
-    for (const trackId of trackIds) {
-      const outcome = await runOneTrack(trackId, { bypassCache: true });
-      summary.attempted++;
-      if (outcome.error !== undefined) {
-        summary.errorCount++;
-        if (summary.firstError === null) summary.firstError = outcome.error;
-      } else if (outcome.result === "failed") {
-        if (outcome.failureReason === "no-query") summary.noQueryCount++;
-        else summary.noResultCount++;
-      }
-    }
-    reportBatchOutcome(summary);
+  const state = usePlaylistStore.getState();
+  const spotifyConfigured = Boolean(
+    useSettingsStore.getState().settings.spotifyClientId,
+  );
+  const pendingTrackIds = state.playlist.trackIds.filter((id) => {
+    const track = state.tracksById[id];
+    return Boolean(track) && isTrackPendingLookup(track, spotifyConfigured);
   });
+  if (pendingTrackIds.length === 0) return;
+
+  const scope = new Set(pendingTrackIds);
+  await useUiStore.getState().withBusy(async () => {
+    // Run match + enrich in parallel for the pending subset; second
+    // enrich pass picks up rows the Spotify search promoted to
+    // "matched". No state reset — the rows are already in `idle`, which
+    // is what the runners want to see.
+    await Promise.all([matchAllOnSpotify(scope), enrichAllPending(scope)]);
+    await enrichAllPending(scope);
+  });
+}
+
+// MB-only enrichment for a single track. Used after the user picks a
+// Spotify candidate via the disambiguation picker — the row's Spotify
+// identity is exactly what the user just chose, so we must NOT re-run
+// the Spotify search (it would clobber the user's pick with whatever
+// auto-pick decides this time, which is almost always "still ambiguous"
+// since that's why the picker was open in the first place). We only
+// need to fill any displayed fields Spotify didn't supply.
+export async function enrichOneTrackMb(
+  trackId: string,
+  options: { bypassCache?: boolean } = {},
+): Promise<EnrichmentResult> {
+  if (!hasContactEmail()) {
+    warnMissingContactEmail();
+    return "failed";
+  }
+  const outcome = await runOneTrack(trackId, options);
+  if (outcome.error !== undefined) {
+    pushErrorToast(
+      `MusicBrainz lookup failed: ${describeFirstError(outcome.error)}`,
+    );
+  }
+  return outcome.result;
 }
 
 export async function reenrichTrack(trackId: string): Promise<EnrichmentResult> {
@@ -298,6 +342,12 @@ export async function reenrichTrack(trackId: string): Promise<EnrichmentResult> 
   }
   await clearTrackEnrichmentCache(trackId);
   clearTrackEnrichmentOverride(trackId);
+  // Re-run Spotify search first (skipped for spotify-imports by matchOne
+  // itself, but we also leave their status alone via the reset helper so
+  // the URI from import is preserved). MB enrichment then runs against
+  // whatever identity the Spotify match settles on.
+  resetSpotifyStatusForRefresh(trackId);
+  await rematchOnSpotify(trackId);
   const outcome = await runOneTrack(trackId, { bypassCache: true });
   if (outcome.error !== undefined) {
     pushErrorToast(

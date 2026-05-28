@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useDialogFocus } from "../hooks/useDialogFocus";
 import { clearMusicbrainzCache } from "../db/musicbrainzCache";
 import { useSettingsStore } from "../store/settingsStore";
@@ -9,6 +9,7 @@ import {
   spotifyCircuitOpenMs,
 } from "../spotify/apiClient";
 import { beginAuthFlow } from "../spotify/authFlow";
+import { clearAutoReconnectSuppression } from "../services/spotifyBootstrap";
 import { ConfirmDialog } from "./ConfirmDialog";
 
 function emptyToUndefined(value: string): string | undefined {
@@ -29,10 +30,33 @@ export function SettingsDialog() {
   const dialogRef = useDialogFocus<HTMLDivElement>(open, closeDialog);
   const [pendingClearCache, setPendingClearCache] = useState(false);
 
+  // Live-tick the displayed circuit countdown. `spotifyCircuitOpenMs()` is
+  // a pure read (`circuitOpenUntil - Date.now()`) — no fetch, no token
+  // refresh, no probe — so polling it can never cost the user a request
+  // or extend a penalty. We still self-stop the interval the moment the
+  // remaining time hits zero (and avoid scheduling it at all when the
+  // breaker is closed) so an idle Settings dialog isn't re-rendering
+  // every second for nothing.
+  const [remainingMs, setRemainingMs] = useState(() => spotifyCircuitOpenMs());
+  useEffect(() => {
+    if (!open) return;
+    setRemainingMs(spotifyCircuitOpenMs());
+    if (spotifyCircuitOpenMs() <= 0) return;
+    const id = window.setInterval(() => {
+      const next = spotifyCircuitOpenMs();
+      setRemainingMs(next);
+      if (next <= 0) window.clearInterval(id);
+    }, 1000);
+    return () => window.clearInterval(id);
+  }, [open]);
+
   if (!open) return null;
 
   async function connect() {
     if (!settings.spotifyClientId) return;
+    // Explicit user action overrides the auto-reconnect suppression that
+    // a prior denial would have set.
+    clearAutoReconnectSuppression();
     await beginAuthFlow(settings.spotifyClientId, settings.spotifyRedirectUri);
   }
 
@@ -54,7 +78,7 @@ export function SettingsDialog() {
     });
   }
 
-  const circuitRemainingMs = spotifyCircuitOpenMs();
+  const circuitRemainingMs = remainingMs;
 
   return (
     <div

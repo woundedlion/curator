@@ -1,7 +1,11 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { RateLimitedQueue } from "./rateLimitedQueue";
+// Unit tests for the shared IntervalQueue. Both the Spotify api
+// client and the MusicBrainz client build on this primitive, so a
+// regression here would affect every rate-limited code path.
 
-describe("RateLimitedQueue", () => {
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { IntervalQueue } from "./intervalQueue";
+
+describe("IntervalQueue", () => {
   beforeEach(() => {
     vi.useFakeTimers();
   });
@@ -10,7 +14,7 @@ describe("RateLimitedQueue", () => {
   });
 
   it("runs the first task immediately and gates subsequent tasks by intervalMs", async () => {
-    const queue = new RateLimitedQueue(100);
+    const queue = new IntervalQueue({ intervalMs: 100 });
     const order: string[] = [];
 
     const p1 = queue.enqueue(async () => {
@@ -22,15 +26,12 @@ describe("RateLimitedQueue", () => {
       return "b";
     });
 
-    // Flush microtasks for the first immediate task.
     await vi.advanceTimersByTimeAsync(0);
     expect(order).toEqual(["a"]);
 
-    // Second task should still be waiting.
     await vi.advanceTimersByTimeAsync(50);
     expect(order).toEqual(["a"]);
 
-    // Once the interval elapses, the second task runs.
     await vi.advanceTimersByTimeAsync(60);
     expect(order).toEqual(["a", "b"]);
 
@@ -39,27 +40,26 @@ describe("RateLimitedQueue", () => {
   });
 
   it("resolves the promise returned by enqueue with the task's result", async () => {
-    const queue = new RateLimitedQueue(10);
+    const queue = new IntervalQueue({ intervalMs: 10 });
     const p = queue.enqueue(async () => 42);
     await vi.advanceTimersByTimeAsync(0);
     expect(await p).toBe(42);
   });
 
   it("rejects the promise when the task throws", async () => {
-    const queue = new RateLimitedQueue(10);
+    const queue = new IntervalQueue({ intervalMs: 10 });
     const p = queue.enqueue(async () => {
       throw new Error("boom");
     });
-    // Attach the rejection-expectation before advancing the timers, so the
-    // promise has a catch handler the moment the task's reject runs. Without
-    // this, the rejection fires unhandled and vitest flags it.
+    // Attach the rejection-expectation before advancing the timers
+    // so the promise has a catch handler when the task's reject runs.
     const expectation = expect(p).rejects.toThrow("boom");
     await vi.advanceTimersByTimeAsync(0);
     await expectation;
   });
 
   it("continues draining after a task throws", async () => {
-    const queue = new RateLimitedQueue(10);
+    const queue = new IntervalQueue({ intervalMs: 10 });
     const ran: string[] = [];
 
     const p1 = queue.enqueue(async () => {
@@ -81,20 +81,18 @@ describe("RateLimitedQueue", () => {
   });
 
   it("notifies the observer on subscribe and again as depth changes", async () => {
-    const queue = new RateLimitedQueue(50);
+    const queue = new IntervalQueue({ intervalMs: 50 });
     const depths: number[] = [];
     const unobserve = queue.observe((d) => depths.push(d));
 
-    // Initial notification on subscribe.
     expect(depths[0]).toBe(0);
 
     const p1 = queue.enqueue(async () => "a");
     const p2 = queue.enqueue(async () => "b");
 
-    // We don't assert a specific intermediate depth — enqueue notifies after
-    // push, but drain notifies again after shift, so the most-recent depth
-    // races between the synchronous calls. We DO know that at some point the
-    // observer saw a non-zero depth, and that after draining it returns to 0.
+    // At some point depth was non-zero (after push, before drain
+    // finishes). The exact intermediate values race between enqueue
+    // and drain notifications.
     expect(depths.some((d) => d > 0)).toBe(true);
 
     await vi.advanceTimersByTimeAsync(0);
@@ -106,7 +104,7 @@ describe("RateLimitedQueue", () => {
   });
 
   it("stops notifying after unobserve", async () => {
-    const queue = new RateLimitedQueue(50);
+    const queue = new IntervalQueue({ intervalMs: 50 });
     let calls = 0;
     const unobserve = queue.observe(() => calls++);
     unobserve();
@@ -115,5 +113,47 @@ describe("RateLimitedQueue", () => {
     await vi.advanceTimersByTimeAsync(0);
     await p;
     expect(calls).toBe(baseline);
+  });
+
+  it("counts in-flight tasks in depth (single task running is depth=1)", async () => {
+    const queue = new IntervalQueue({ intervalMs: 10 });
+    const depths: number[] = [];
+    queue.observe((d) => depths.push(d));
+
+    let resolveTask: (v: string) => void = () => undefined;
+    const taskPromise = new Promise<string>((resolve) => {
+      resolveTask = resolve;
+    });
+
+    const p = queue.enqueue(() => taskPromise);
+
+    // After enqueue, before resolving: task is in-flight, depth=1.
+    await vi.advanceTimersByTimeAsync(0);
+    expect(depths.some((d) => d === 1)).toBe(true);
+
+    resolveTask("done");
+    await p;
+    expect(depths.at(-1)).toBe(0);
+  });
+
+  it("respects nextRunAt when set via recordExternalPause (e.g. server Retry-After)", async () => {
+    const queue = new IntervalQueue({ intervalMs: 10 });
+    const ranAt: number[] = [];
+    const startedAt = Date.now();
+
+    queue.recordExternalPause(startedAt + 5_000);
+
+    const p = queue.enqueue(async () => {
+      ranAt.push(Date.now());
+      return "ok";
+    });
+
+    // Should NOT run before the pause expires.
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(ranAt).toEqual([]);
+
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(ranAt[0]).toBeGreaterThanOrEqual(startedAt + 5_000);
+    await p;
   });
 });

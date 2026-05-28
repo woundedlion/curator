@@ -1,6 +1,9 @@
 import { create } from "zustand";
 import type { SpotifyPlaylistSummary } from "../types";
-import { SpotifyAuthExpiredError } from "../spotify/apiClient";
+import {
+  SpotifyAuthExpiredError,
+  SpotifyRateLimitError,
+} from "../spotify/apiClient";
 import {
   disconnectFromSpotify,
   getValidAccessToken,
@@ -14,11 +17,38 @@ type SpotifyUser = {
   country?: string;
 };
 
+// Connection state machine:
+//
+//   unconfigured ──set clientId──▶  disconnected
+//                                       │
+//                                       │ refreshConnection success
+//                                       ▼
+//                                  connected ──disconnect──▶ disconnected
+//                                       │
+//                                       │ refreshConnection 401 / refresh failed
+//                                       ▼
+//                                  disconnected
+//
+//   Any state can transiently be "rate-limited": we couldn't even ASK
+//   Spotify whether we're connected. This is distinct from
+//   disconnected — the auto-reconnect bootstrap path must NOT redirect
+//   to OAuth on rate limit (the redirect itself doesn't help, just
+//   confuses the user).
+export type ConnectionStatus =
+  | "unconfigured"
+  | "disconnected"
+  | "connected"
+  | "rate-limited";
+
 type SpotifyStore = {
   user: SpotifyUser | null;
   playlists: SpotifyPlaylistSummary[];
   loadingPlaylists: boolean;
   connected: boolean;
+  // Distinguishes "we know we're not connected" from "we couldn't
+  // check because Spotify is rate-limiting us". The bootstrap reads
+  // this before deciding whether to trigger auto-reconnect.
+  status: ConnectionStatus;
 
   refreshConnection: (clientId: string | undefined) => Promise<void>;
   loadPlaylists: (clientId: string) => Promise<void>;
@@ -35,10 +65,11 @@ export const useSpotifyStore = create<SpotifyStore>((set) => ({
   playlists: [],
   loadingPlaylists: false,
   connected: false,
+  status: "unconfigured",
 
   async refreshConnection(clientId) {
     if (!clientId) {
-      set({ connected: false, user: null });
+      set({ connected: false, user: null, status: "unconfigured" });
       return;
     }
     try {
@@ -46,6 +77,7 @@ export const useSpotifyStore = create<SpotifyStore>((set) => ({
       const user = await fetchCurrentUser(clientId);
       set({
         connected: true,
+        status: "connected",
         user: {
           id: user.id,
           displayName: user.display_name,
@@ -53,12 +85,19 @@ export const useSpotifyStore = create<SpotifyStore>((set) => ({
         },
       });
     } catch (error) {
-      // Auth expiry and network errors are expected; anything else is a
-      // programmer bug worth logging. Either way reset to disconnected.
+      // Rate limit is distinct from auth-expired: we couldn't check.
+      // The bootstrap reads `status` and skips auto-reconnect when
+      // rate-limited (redirecting to OAuth doesn't help and just
+      // confuses the user — the OAuth flow itself can't proceed
+      // because token exchange shares the same quota).
+      if (error instanceof SpotifyRateLimitError) {
+        set({ connected: false, user: null, status: "rate-limited" });
+        return;
+      }
       if (!(error instanceof SpotifyAuthExpiredError)) {
         console.warn("refreshConnection failed", error);
       }
-      set({ connected: false, user: null });
+      set({ connected: false, user: null, status: "disconnected" });
     }
   },
 
@@ -72,7 +111,12 @@ export const useSpotifyStore = create<SpotifyStore>((set) => ({
 
   disconnect() {
     disconnectFromSpotify();
-    set({ connected: false, user: null, playlists: [] });
+    set({
+      connected: false,
+      user: null,
+      playlists: [],
+      status: "disconnected",
+    });
   },
 }));
 
@@ -91,11 +135,16 @@ async function doLoadPlaylists(
   } catch (error) {
     console.error("loadPlaylists failed", error);
     if (error instanceof SpotifyAuthExpiredError) {
-      set({ connected: false, user: null });
+      set({ connected: false, user: null, status: "disconnected" });
       useUiStore.getState().pushToast({
         kind: "error",
         message: "Spotify session expired — reconnect in Settings",
       });
+    } else if (error instanceof SpotifyRateLimitError) {
+      // Don't clobber `connected` on rate limit — we ARE connected,
+      // we just got throttled. The user can retry once the circuit
+      // closes. The rate-limit toast already fired from apiClient.
+      set({ status: "rate-limited" });
     } else {
       useUiStore.getState().pushToast({
         kind: "error",

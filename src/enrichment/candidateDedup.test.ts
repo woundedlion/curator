@@ -102,4 +102,15 @@ describe("dedupeBySongIdentity", () => {
   it("returns empty for empty input", () => {
     expect(dedupeBySongIdentity([], buildTrack())).toEqual([]);
   });
+
+  it("does not collide across title/artist boundary (cross-field key safety)", () => {
+    // Without a delimiter byte between fields, ("ab","cd") and ("a","bcd")
+    // would both key to "abcd". Regression guard: keep them as two groups.
+    const candidates = [
+      buildCandidate({ recordingId: "x", title: "ab", artist: "cd" }),
+      buildCandidate({ recordingId: "y", title: "a", artist: "bcd" }),
+    ];
+    const out = dedupeBySongIdentity(candidates, buildTrack());
+    expect(out).toHaveLength(2);
+  });
 });

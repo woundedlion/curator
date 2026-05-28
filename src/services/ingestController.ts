@@ -27,7 +27,16 @@ let backgroundRunners: Promise<void> = Promise.resolve();
 function queuePostIngestRunners(): void {
   backgroundRunners = backgroundRunners.then(() =>
     useUiStore.getState().withBusy(async () => {
-      await matchAllOnSpotify();
+      // Tracks that arrive already-resolved on Spotify (spotify-import
+      // rows, curator-export re-imports carrying a `spotifyUri`) are
+      // eligible for MB enrichment immediately and shouldn't wait for
+      // the Spotify search of unresolved rows to drain. Run both
+      // runners in parallel; `enrichAllPending` only picks up tracks
+      // whose Spotify status is already "matched", so the first pass
+      // handles the imported rows. A second `enrichAllPending` after
+      // the Spotify pass settles picks up rows promoted to "matched"
+      // during that search.
+      await Promise.all([matchAllOnSpotify(), enrichAllPending()]);
       await enrichAllPending();
     }),
   );

@@ -6,19 +6,18 @@ export type PlaybackSource =
   | { kind: "spotify-preview"; url: string; label: string }
   | { kind: "none" };
 
-export function isPlayable(
+// Whether `createPlaybackSource` will produce a non-`none` source for this
+// track. Mirrors that function's branches so callers can pre-check without
+// allocating an objectUrl. Round-tripped tracks that have only a Spotify
+// URI (no localFile, no previewUrl, no SDK) return `false` here — the
+// external-link affordance lives in PlayButton, not in the playback source.
+export function hasInAppSource(
   track: Track,
   sdkEnabled: boolean,
 ): boolean {
   if (track.localFile) return true;
   if (sdkEnabled && track.spotify.uri) return true;
   if (track.spotify.previewUrl) return true;
-  // Round-tripped tracks (.curator.txt re-import) carry a `spotifyUri` but
-  // lose `previewUrl` + `localFile`, so the row would otherwise be marked
-  // unplayable. We still expose a play affordance — PlayButton routes the
-  // click to open.spotify.com as a fallback, matching the picker dialog's
-  // chain (§4.5 picker preview chain).
-  if (track.spotify.uri) return true;
   return false;
 }
 

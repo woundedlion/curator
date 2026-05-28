@@ -98,19 +98,35 @@ async function fetchAndScore(
   queryFields: { title?: string; artist?: string; album?: string },
   track: Track,
   contactEmail: string,
+  guard: (() => boolean) | undefined,
 ): Promise<MBCandidate[]> {
   const query = buildRecordingQuery(queryFields);
   if (!query) return [];
-  const fetched = await searchRecordings(query, contactEmail);
+  const fetched = await searchRecordings(query, contactEmail, {
+    tag: track.id,
+    guard,
+  });
   const deduped = dedupeBySongIdentity(fetched, track);
   return scoreCandidates(track, deduped);
 }
+
+export type EnrichTrackOptions = {
+  bypassCache?: boolean;
+  /**
+   * Defense-in-depth guard. When the queued MB lookup pops, the
+   * guard is re-evaluated; returning false rejects the queued task
+   * with RequestCancelledError without firing the HTTP call. Pair
+   * with `cancelMusicbrainzRequestsByTag(track.id)` on the deletion
+   * side for layered protection.
+   */
+  guard?: () => boolean;
+};
 
 export async function enrichTrack(
   track: Track,
   contactEmail: string,
   acceptThreshold: number,
-  options: { bypassCache?: boolean } = {},
+  options: EnrichTrackOptions = {},
 ): Promise<EnrichmentOutcome> {
   const cacheKey = cacheKeyForTrack(track);
   if (!options.bypassCache) {
@@ -126,7 +142,12 @@ export async function enrichTrack(
     artist: track.artist,
     album: track.album,
   };
-  const primaryScored = await fetchAndScore(primaryFields, track, contactEmail);
+  const primaryScored = await fetchAndScore(
+    primaryFields,
+    track,
+    contactEmail,
+    options.guard,
+  );
   let outcome = classifyOutcome(primaryScored, track, acceptThreshold);
   let mergedCandidates = primaryScored;
 
@@ -148,6 +169,7 @@ export async function enrichTrack(
       },
       altScoringTrack,
       contactEmail,
+      options.guard,
     );
     mergedCandidates = mergeCandidatesPreferringPrimary(primaryScored, altScored);
     outcome = classifyOutcome(mergedCandidates, altScoringTrack, acceptThreshold);
