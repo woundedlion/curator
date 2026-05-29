@@ -167,12 +167,20 @@ export function AmbiguousMatchDialog({ trackId, onClose }: Props) {
   >(null);
   const [searching, setSearching] = useState(false);
 
-  useEffect(() => {
-    if (!trackId) return;
+  // Reset form state when the dialog reopens against a different track, or
+  // when the track's title/artist change underneath us. Done during render
+  // via the prev-state pattern instead of an effect so we don't trigger a
+  // cascading re-render.
+  const [syncedKey, setSyncedKey] = useState<string | null>(null);
+  const targetKey = trackId
+    ? `${trackId}|${track?.title ?? ""}|${track?.artist ?? ""}`
+    : null;
+  if (targetKey && targetKey !== syncedKey) {
+    setSyncedKey(targetKey);
     setTitleInput(track?.title ?? "");
     setArtistInput(track?.artist ?? "");
     setSearchedCandidates(null);
-  }, [trackId, track?.title, track?.artist]);
+  }
 
   const dialogRef = useDialogFocus<HTMLDivElement>(Boolean(trackId), onClose);
 
@@ -245,6 +253,10 @@ export function AmbiguousMatchDialog({ trackId, onClose }: Props) {
     const existing = track.spotify.candidates ?? [];
     if (existing.length > 0) return;
     if (!track.title && !track.artist) return;
+    // Kicking off an async fetch in response to a prop change is the
+    // canonical effect use case (see React docs §"Fetching data"). The
+    // setState inside runSearchWithFields is the side effect we want.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void runSearchWithFields(track.title, track.artist);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [trackId]);

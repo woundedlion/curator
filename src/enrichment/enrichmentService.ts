@@ -149,7 +149,6 @@ export async function enrichTrack(
     options.guard,
   );
   let outcome = classifyOutcome(primaryScored, track, acceptThreshold);
-  let mergedCandidates = primaryScored;
 
   const shouldTryAlt =
     outcome.status !== "matched" &&
@@ -171,7 +170,7 @@ export async function enrichTrack(
       contactEmail,
       options.guard,
     );
-    mergedCandidates = mergeCandidatesPreferringPrimary(primaryScored, altScored);
+    const mergedCandidates = mergeCandidatesPreferringPrimary(primaryScored, altScored);
     outcome = classifyOutcome(mergedCandidates, altScoringTrack, acceptThreshold);
   }
 

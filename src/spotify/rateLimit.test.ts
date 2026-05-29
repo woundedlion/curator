@@ -60,13 +60,28 @@ vi.mock("../store/uiStore", () => ({
   },
 }));
 
+// submitSpotifyRequest pulls an access token through authFlow on every
+// call. The auth machinery (PKCE, token refresh, sessionStorage) isn't
+// what these tests are exercising — they're exercising the wrapper's
+// status-code mapping and rate-limit policy — so stub the token getter
+// with a fixed string and bypass the rest.
+vi.mock("./authFlow", () => ({
+  getValidAccessToken: vi.fn(async () => "test-access-token"),
+  runWithRateLimitPolicy: vi.fn(),
+}));
+
 import {
   __getSpotifyRateLimitStateForTests,
   __resetSpotifyRateLimitStateForTests,
   getPendingSpotifyRequestCount,
   resetSpotifyCircuit,
   spotifyCircuitOpenMs,
+  SpotifyAuthExpiredError,
+  SpotifyForbiddenError,
+  SpotifyNetworkError,
   SpotifyRateLimitError,
+  SpotifyServerError,
+  submitSpotifyRequest,
   submitTokenRequest,
 } from "./apiClient";
 import {
@@ -488,5 +503,162 @@ describe("invariants under concurrent traffic", () => {
     // Exactly one outbound request. Seven other callers must have
     // been short-circuited by the open breaker.
     expect(send).toHaveBeenCalledTimes(1);
+  });
+});
+
+// submitSpotifyRequest funnels through `sendOnce` (which calls
+// `fetch`) and then `mapStatusToResult` (which inspects status). These
+// tests stub global fetch with a fixed Response and verify the typed
+// error contract.
+describe("status-code error mapping", () => {
+  // Each test sets its own response shape via this handler.
+  let nextResponse: () => Response | Promise<Response>;
+  let fetchSpy: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    nextResponse = () => ok();
+    fetchSpy = vi.fn(async () => nextResponse());
+    vi.stubGlobal("fetch", fetchSpy);
+  });
+
+  it("401 → SpotifyAuthExpiredError (token treated as stale, not retried)", async () => {
+    nextResponse = () => new Response("", { status: 401 });
+    const rej = captureRejection(
+      submitSpotifyRequest({ path: "/me" }, "client-id"),
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    expect(await rej).toBeInstanceOf(SpotifyAuthExpiredError);
+    // Exactly one outbound fetch — auth errors are not retried inside
+    // the wrapper; the caller decides whether to prompt re-auth.
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("403 → SpotifyForbiddenError carrying the requested path", async () => {
+    nextResponse = () =>
+      new Response("Insufficient client scope", { status: 403 });
+    const rej = captureRejection(
+      submitSpotifyRequest({ path: "/me/player/play" }, "client-id"),
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    const error = await rej;
+    expect(error).toBeInstanceOf(SpotifyForbiddenError);
+    expect((error as SpotifyForbiddenError).path).toBe("/me/player/play");
+  });
+
+  it("500 → SpotifyServerError carrying status + path", async () => {
+    nextResponse = () => new Response("upstream blew up", { status: 500 });
+    const rej = captureRejection(
+      submitSpotifyRequest({ path: "/search" }, "client-id"),
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    const error = await rej;
+    expect(error).toBeInstanceOf(SpotifyServerError);
+    expect((error as SpotifyServerError).status).toBe(500);
+    expect((error as SpotifyServerError).path).toBe("/search");
+  });
+
+  it("502 and 503 are also surfaced as SpotifyServerError (status preserved)", async () => {
+    for (const status of [502, 503] as const) {
+      __resetSpotifyRateLimitStateForTests();
+      nextResponse = () => new Response("", { status });
+      const rej = captureRejection(
+        submitSpotifyRequest({ path: "/me" }, "client-id"),
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      const error = await rej;
+      expect(error).toBeInstanceOf(SpotifyServerError);
+      expect((error as SpotifyServerError).status).toBe(status);
+    }
+  });
+
+  it("5xx is NOT retried (single-shot policy applies to all statuses, not just 429)", async () => {
+    nextResponse = () => new Response("", { status: 500 });
+    const rej = captureRejection(
+      submitSpotifyRequest({ path: "/me" }, "client-id"),
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    await rej;
+    // Advance well past any plausible retry window — fetch must still
+    // have been called exactly once.
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("network failure (fetch throws) → SpotifyNetworkError wrapping the cause", async () => {
+    const cause = new TypeError("Failed to fetch");
+    fetchSpy.mockImplementationOnce(async () => {
+      throw cause;
+    });
+    const rej = captureRejection(
+      submitSpotifyRequest({ path: "/me" }, "client-id"),
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    const error = await rej;
+    expect(error).toBeInstanceOf(SpotifyNetworkError);
+    expect((error as Error).message).toContain("Failed to fetch");
+  });
+
+  it("a 5xx error does NOT trip the circuit breaker (only 429 does)", async () => {
+    nextResponse = () => new Response("", { status: 503 });
+    const rej = captureRejection(
+      submitSpotifyRequest({ path: "/me" }, "client-id"),
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    await rej;
+    // A transient 5xx must not strand the breaker open — that would
+    // mask the upstream blip as an app-wide rate-limit pause.
+    expect(spotifyCircuitOpenMs()).toBe(0);
+  });
+
+  it("204 No Content resolves with undefined (no JSON parse attempted)", async () => {
+    nextResponse = () => new Response(null, { status: 204 });
+    const p = submitSpotifyRequest<undefined>(
+      { path: "/me/player/play", method: "PUT", body: { uris: ["x"] } },
+      "client-id",
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    await expect(p).resolves.toBeUndefined();
+  });
+
+  it("200 with an empty body resolves with undefined (Content-Length: 0 path)", async () => {
+    nextResponse = () =>
+      new Response("", {
+        status: 200,
+        headers: { "Content-Length": "0" },
+      });
+    const p = submitSpotifyRequest<undefined>(
+      { path: "/me/following", method: "PUT" },
+      "client-id",
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    await expect(p).resolves.toBeUndefined();
+  });
+
+  it("200 with JSON body resolves with the parsed value", async () => {
+    nextResponse = () =>
+      new Response(JSON.stringify({ id: "u-1", display_name: "alice" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    const result = await submitSpotifyRequest<{
+      id: string;
+      display_name: string;
+    }>({ path: "/me" }, "client-id");
+    expect(result).toEqual({ id: "u-1", display_name: "alice" });
+  });
+
+  it("other non-ok status (e.g. 400) → generic Error mentioning the status", async () => {
+    nextResponse = () =>
+      new Response("Bad Request: missing field", { status: 400 });
+    const rej = captureRejection(
+      submitSpotifyRequest({ path: "/me/playlists", method: "POST" }, "cid"),
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    const error = await rej;
+    expect(error).toBeInstanceOf(Error);
+    expect(error).not.toBeInstanceOf(SpotifyAuthExpiredError);
+    expect(error).not.toBeInstanceOf(SpotifyForbiddenError);
+    expect(error).not.toBeInstanceOf(SpotifyServerError);
+    expect((error as Error).message).toContain("400");
   });
 });

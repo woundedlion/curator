@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type KeyboardEvent } from "react";
+import { useCallback, useState, type KeyboardEvent } from "react";
 import { usePlaybackStore } from "../playback/playbackStore";
 import { formatDuration } from "../util/duration";
 import { PauseIcon, PlayIcon, StopIcon } from "./icons";
@@ -28,10 +28,13 @@ export function NowPlayingBar() {
 
   // If the current track changes mid-drag (e.g. SDK loads a new uri), drop
   // the pending drag value rather than seeking the new track to the prior
-  // position.
-  useEffect(() => {
+  // position. Reset during render via prev-state pattern so we don't
+  // trigger a cascading re-render from inside an effect.
+  const [lastTrackId, setLastTrackId] = useState(currentTrackId);
+  if (lastTrackId !== currentTrackId) {
+    setLastTrackId(currentTrackId);
     setDragValue(null);
-  }, [currentTrackId]);
+  }
 
   const commitSeek = useCallback(() => {
     if (dragValue === null) return;

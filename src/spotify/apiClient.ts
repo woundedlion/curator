@@ -1,26 +1,41 @@
 // Single chokepoint for every Spotify HTTP request.
 //
 // Composition:
-//   apiClient  →  RequestQueue  (token bucket: paces outbound rate)
-//              →  CircuitBreaker (handles 429 recovery)
+//   apiClient  →  IntervalQueue   (fixed-interval pacer; one in flight)
+//              →  CircuitBreaker  (handles 429 recovery)
 //
 // All outbound traffic must pass through `submitSpotifyRequest` (or
 // `submitTokenRequest` for accounts.spotify.com). Both share one
-// `RequestQueue` and one `CircuitBreaker` instance — so it is
+// `IntervalQueue` and one `CircuitBreaker` instance — so it is
 // impossible to exceed the configured rate or to slip a request past
 // an open breaker, regardless of how many concurrent callers exist or
 // how the higher layers schedule work.
 //
+// Spacing semantics: the queue is a strict-interval pacer (NOT a
+// token bucket). Every dispatch sets `nextRunAt = now + intervalMs`,
+// so an idle period does not accumulate burst credit — after 10
+// minutes idle, the next 4 calls still go out 350 ms apart. This is
+// deliberate: Spotify's quota is a rolling 30-second sliding-window
+// counter (per-app, per client_id — NOT per user/token), and the
+// dashboard explicitly flags burst patterns even when 30s totals
+// would be fine. A token bucket would let a burst through and earn
+// a multi-hour ban.
+//
 // Design constraints from real incidents:
-//   - The policy is single-shot per submission; recovery
-//     is the circuit breaker's job (half-open probe).
-//   - Retry-After is often CORS-hidden, so the default fallback is
-//     5 minutes, not 30 seconds — short enough not to strand on a
-//     benign 429, long enough to break the retry-into-ban loop on a
-//     hidden multi-hour penalty.
-//   - Bucket and breaker state are both persisted; a page reload
-//     after a heavy burst doesn't reset the spacing Spotify is
-//     still counting against the rolling window.
+//   - The policy is single-shot per submission. No in-call retries.
+//     Recovery is the circuit breaker's job (half-open probe).
+//     Spotipy users have escalated 1h bans to ~24h by retrying into
+//     the penalty window — see github.com/spotipy-dev/spotipy#1158.
+//   - Retry-After is NOT in Spotify's `Access-Control-Expose-Headers`,
+//     so browser JS reads it as `null` even when the response carried
+//     a header on the wire (incidents observed values up to ~24h
+//     hidden this way). The default fallback is 5 minutes — short
+//     enough not to strand on a benign 429, long enough to break the
+//     retry-into-ban loop on a hidden multi-hour penalty.
+//   - Queue and breaker state are both persisted to localStorage; a
+//     page reload after a heavy burst doesn't reset the spacing
+//     Spotify is still counting against the rolling window, and it
+//     can't reset an active ban.
 
 import { getValidAccessToken } from "./authFlow";
 import { CircuitBreaker } from "./circuitBreaker";
@@ -426,6 +441,7 @@ async function parseResponseBody<T>(
       `Spotify response was not JSON: ${
         error instanceof Error ? error.message : "parse failed"
       }`,
+      { cause: error },
     );
   }
 }

@@ -37,7 +37,7 @@ function buildTrackFromLine(line: string): Track {
 
 function stripBom(text: string): string {
   // Notepad on Windows saves UTF-8 with a leading BOM (U+FEFF). Without
-  // stripping, the first track's artist becomes `"﻿Artist"` which
+  // stripping, the first track's artist becomes `"<U+FEFF>Artist"` which
   // breaks all downstream matching.
   return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
 }

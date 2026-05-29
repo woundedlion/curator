@@ -213,6 +213,7 @@ async function runOneSearch(
           `MusicBrainz returned non-JSON response: ${
             error instanceof Error ? error.message : "unknown"
           }`,
+          { cause: error },
         );
       }
     }

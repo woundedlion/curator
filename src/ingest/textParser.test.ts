@@ -32,9 +32,9 @@ describe("parseTextContent", () => {
   });
 
   it("strips a leading UTF-8 BOM", () => {
-    // Notepad on Windows saves with `﻿` at the start; without
-    // stripping, the first artist becomes `﻿Radiohead`.
-    const tracks = parseTextContent("﻿Radiohead - Karma Police");
+    // Notepad on Windows saves with U+FEFF at the start; without
+    // stripping, the first artist becomes "<U+FEFF>Radiohead".
+    const tracks = parseTextContent("﻿" + "Radiohead - Karma Police");
     expect(tracks[0]).toMatchObject({
       artist: "Radiohead",
       title: "Karma Police",

@@ -38,9 +38,16 @@ export function SettingsDialog() {
   // breaker is closed) so an idle Settings dialog isn't re-rendering
   // every second for nothing.
   const [remainingMs, setRemainingMs] = useState(() => spotifyCircuitOpenMs());
+  // Resync remaining time when the dialog reopens — done during render via
+  // the prev-state pattern so we don't trigger a cascading re-render from
+  // inside the effect.
+  const [openWhenSynced, setOpenWhenSynced] = useState(open);
+  if (openWhenSynced !== open) {
+    setOpenWhenSynced(open);
+    if (open) setRemainingMs(spotifyCircuitOpenMs());
+  }
   useEffect(() => {
     if (!open) return;
-    setRemainingMs(spotifyCircuitOpenMs());
     if (spotifyCircuitOpenMs() <= 0) return;
     const id = window.setInterval(() => {
       const next = spotifyCircuitOpenMs();

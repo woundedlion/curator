@@ -76,8 +76,8 @@ user-supplied Client ID, client-side MB rate limiting) are spelled out in
    (MusicBrainz +        (Spotify search +       (debounced IDB
     Cover Art Archive)   candidate scoring)       persistence)
             │                  │
-            └──> musicbrainzClient (1 req/sec token bucket + IDB cache)
-                 spotify/apiClient (shared 429 wait window + circuit breaker)
+            └──> musicbrainzClient (1 req/sec fixed-interval pacer + IDB cache)
+                 spotify/apiClient (shared 350 ms spacing + circuit breaker)
 ```
 
 The **playlistStore** is the single source of truth for the active draft.
@@ -95,7 +95,7 @@ Each top-level folder under [src/](src/) owns a coherent layer:
 | [src/ingest/](src/ingest/) | Drop-target plumbing, recursive folder walker, text/m3u/curator-export parsers, in-batch dedupe, `Track[]` construction from `File[]`. |
 | [src/metadata/](src/metadata/) | `music-metadata` wrapper (audio file → tag fields) and the normalizers (parenthetical stripping, `feat./ft.`, NFKD, `&`→`and`) used by both MB queries and the candidate scorer. |
 | [src/workers/](src/workers/) | The Web Worker pool that runs `music-metadata` off the main thread. Pool size is `clamp(navigator.hardwareConcurrency, 2, 8)`. |
-| [src/enrichment/](src/enrichment/) | MusicBrainz client with token-bucket rate limit, strict-then-`dismax` query strategy, candidate dedup (by song identity, year-aware), Fuse.js scorer, Cover Art Archive HEAD probe. |
+| [src/enrichment/](src/enrichment/) | MusicBrainz client with a 1 req/sec fixed-interval pacer ([util/intervalQueue.ts](src/util/intervalQueue.ts)), strict-then-`dismax` query strategy, candidate dedup (by song identity, year-aware), Fuse.js scorer, Cover Art Archive HEAD probe. |
 | [src/spotify/](src/spotify/) | PKCE auth, token storage, the **unified API wrapper** (`apiClient.ts` — shared `nextAllowedAt`, retry policy, circuit breaker), per-track search, playlist read/create/replace via `/v1/playlists/{id}/items`, and the Web Playback SDK wrapper. |
 | [src/services/](src/services/) | Orchestrators that compose the layers above into user-visible actions: [ingestController](src/services/ingestController.ts), [enrichmentRunner](src/services/enrichmentRunner.ts), [spotifyMatchRunner](src/services/spotifyMatchRunner.ts), [spotifyPicker](src/services/spotifyPicker.ts), [playlistPublisher](src/services/playlistPublisher.ts), [playlistExporter](src/services/playlistExporter.ts), [spotifyBootstrap](src/services/spotifyBootstrap.ts). These are the only callers that hold cross-layer policy. |
 | [src/store/](src/store/) | Zustand stores: [playlistStore](src/store/playlistStore.ts) (draft state + undo), [settingsStore](src/store/settingsStore.ts) (localStorage-backed), [spotifyStore](src/store/spotifyStore.ts) (connection + playlists), [uiStore](src/store/uiStore.ts) (toasts, busy counter, modals). Pure helpers ([sortComparator](src/store/sortComparator.ts), [undoStack](src/store/undoStack.ts), [selectionHelpers](src/store/selectionHelpers.ts)) live alongside and are independently unit-tested. |
@@ -128,24 +128,57 @@ See [DESIGN.md](DESIGN.md) §4.3 for the full field-overwrite matrix.
 
 ### Rate limiting & error handling
 
-Two independent rate-limit regimes:
+Two independent rate-limit regimes, both built on the same primitive
+([util/intervalQueue.ts](src/util/intervalQueue.ts)) — a strict-interval
+FIFO pacer with at most one task in flight. It is **not** a token bucket:
+an idle period does not accumulate burst credit. Every dispatch sets
+`nextRunAt = now + intervalMs`, so the next caller waits the full interval
+regardless of how long the queue was empty.
 
-- **MusicBrainz**: client-side token-bucket queue in
-  [rateLimitedQueue.ts](src/enrichment/rateLimitedQueue.ts) (1 token/sec, burst
-  1) — MB allows 1 req/sec per IP. The IDB cache makes warm re-imports
-  effectively free.
+- **MusicBrainz**: a 1 req/sec pacer in
+  [enrichment/musicbrainzClient.ts](src/enrichment/musicbrainzClient.ts)
+  (MB's published per-IP gate). One auto-retry on 503 honoring `Retry-After`;
+  no persistence across reloads (MB's gate has no rolling window). The
+  IDB cache makes warm re-imports effectively free.
 - **Spotify**: every call to `api.spotify.com` *and* `accounts.spotify.com`
-  routes through [spotify/apiClient.ts](src/spotify/apiClient.ts). It enforces a
-  module-level `nextAllowedAt` shared across all callers (so a 429 on
-  `/search` also pauses `/me/playlists`), honors `Retry-After` with ≤300 ms
-  jitter, caps retries at 3, and opens a circuit breaker that fails all
-  in-flight calls fast for `min(retryAfter, 30s)` after the cap is hit. Token
-  refresh requests share the same wait window so they can't bypass the cool-off.
-  No other file is allowed to `fetch()` Spotify directly.
+  routes through [spotify/apiClient.ts](src/spotify/apiClient.ts), which
+  composes the pacer (350 ms between starts) with a three-state
+  [circuit breaker](src/spotify/circuitBreaker.ts). Token refresh
+  requests share the same queue and breaker, so a hammered token
+  endpoint can't bypass the cool-off. No other file is allowed to
+  `fetch()` Spotify directly.
+
+  - **Per-app quota.** Spotify counts requests over a rolling 30-second
+    window keyed on `client_id` — NOT per user, per token, or per tab.
+    Multiple tabs of the same app share one bucket; a heavy burst in
+    one tab burns the budget for all of them. State is persisted to
+    `localStorage` (capped at 60 s for the spacing window, at
+    `maxOpenMs` for the breaker) so a refresh doesn't let a fresh tab
+    replay the burst that just earned a 429.
+  - **Single-shot per submission.** No in-call retries. A 429 trips
+    the breaker and propagates as `SpotifyRateLimitError`; every
+    subsequent caller fails fast until the window expires. This is
+    the deliberate cure for the prior regression that fired up to
+    four requests per call into an active ban — Spotify escalates
+    sustained-abuse penalties from minutes to hours to ~24 h.
+  - **Retry-After is invisible to browser JS.** Spotify does not list
+    `Retry-After` in `Access-Control-Expose-Headers`, so
+    `response.headers.get('Retry-After')` returns `null` even when
+    the header was on the wire. When the parsed value is missing the
+    breaker opens for a 5-minute default (clamped to `[5 s, 1 h]`).
+    Five minutes is short enough not to strand on a benign burst, long
+    enough to break the retry-into-ban loop on a hidden multi-hour
+    penalty. Honored `Retry-After` values are clamped the same way.
+  - **Half-open probe.** When the window elapses, exactly one caller
+    is admitted as a canary. Success closes the breaker; another 429
+    reopens it for the new `Retry-After`. Without the probe, an N-deep
+    queue would flood Spotify the moment the timer elapsed and earn N
+    fresh 429s.
 
 Typed errors (`SpotifyAuthExpiredError`, `SpotifyForbiddenError`,
-`SpotifyRateLimitError`) flow out of the wrapper and let callers respond by
-type instead of digging into raw `Response` objects.
+`SpotifyRateLimitError`, `SpotifyServerError`, `SpotifyNetworkError`)
+flow out of the wrapper and let callers respond by type instead of
+digging into raw `Response` objects.
 
 ### Persistence
 
@@ -164,9 +197,12 @@ type instead of digging into raw `Response` objects.
 - **MB enrichment**: serialized through the 1 req/sec queue. The toolbar
   surfaces live queue depth (`Enriching · N remaining`) so users know how long
   a cold import will take.
-- **Spotify search**: 4 in flight, gated by
-  [concurrencyLimiter.ts](src/spotify/concurrencyLimiter.ts) and the shared
-  `apiClient` wait window.
+- **Spotify search**: gated by [concurrencyLimiter.ts](src/spotify/concurrencyLimiter.ts)
+  at 4 outstanding awaiters, which mainly bounds producer backpressure —
+  the `apiClient` pacer still serializes the actual HTTP at 350 ms
+  between starts. Parallelism is deliberately not enabled at the wire:
+  Spotify's rolling 30-s counter doesn't reward concurrency, and burst
+  patterns are the most reliable way to earn a multi-hour ban.
 - **Persistence writes**: debounced and coalesced (a burst of 100 enrichment
   completions becomes one IDB transaction).
 - **UI busy state**: a ref-counted `busyCount` in `uiStore` — each orchestrator
@@ -225,9 +261,11 @@ type instead of digging into raw `Response` objects.
   unmount via a shared `useDialogFocus` hook.
 - Cover Art Archive negative-cache so re-enrichment passes don't re-probe
   releases that already returned 404.
-- 53 Vitest unit tests covering normalizers, filename heuristic, Lucene-query
-  builder, sort comparator, undo stack, selection helpers, text parser, and the
-  curator export parser.
+- 298 Vitest unit tests across 26 files covering normalizers, filename
+  heuristic, Lucene-query builder, candidate scoring/dedup, sort comparator,
+  undo stack, selection helpers, text/M3U/curator-export parsers, the
+  Spotify rate limiter (pacer + circuit breaker + Retry-After parsing +
+  cancellation + status-code error mapping), and core store/service logic.
 
 ## Still on the wishlist
 

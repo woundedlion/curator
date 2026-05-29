@@ -48,8 +48,8 @@ export function DropZone({
     if (modalOpen) {
       // A modal is in front of the canvas — anything dropped here should
       // belong to the modal's input fields (the user dragging text into
-      // Settings), not the ingest pipeline.
-      setActive(null);
+      // Settings), not the ingest pipeline. We skip attaching listeners;
+      // the overlay is suppressed at render time below.
       return;
     }
     let clearTimer: ReturnType<typeof setTimeout> | null = null;
@@ -108,7 +108,7 @@ export function DropZone({
     };
   }, [onFilesDropped, onPlaylistDropped, recursive, modalOpen]);
 
-  if (!active) return null;
+  if (!active || modalOpen) return null;
   return (
     <div
       // Stacked under modal layers (z-50 in SettingsDialog/ConfirmDialog,

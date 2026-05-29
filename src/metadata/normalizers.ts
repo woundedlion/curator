@@ -1,4 +1,4 @@
-const PARENTHETICAL_SUFFIX = /\s*[\(\[][^()\[\]]*[\)\]]\s*$/;
+const PARENTHETICAL_SUFFIX = /\s*[([][^()[\]]*[)\]]\s*$/;
 const FEATURING_CLAUSE = /\s+(?:feat\.?|featuring|ft\.?)\s.+$/i;
 const MULTIPLE_WHITESPACE = /\s+/g;
 // Combining diacritic marks (post-NFKD decomposition). Stripping them
@@ -7,8 +7,8 @@ const MULTIPLE_WHITESPACE = /\s+/g;
 const COMBINING_DIACRITICS = /[̀-ͯ]/g;
 // Zero-width characters routinely leak from copy-paste off streaming
 // services / certain ID3 rippers. They invisibly break exact-string
-// matches. (​–‍ = zero-width space/joiner; ﻿ = BOM.)
-const ZERO_WIDTH = /[​-‍﻿]/g;
+// matches. Range covers ZWSP/ZWNJ/ZWJ (U+200B..U+200D) plus BOM (U+FEFF).
+const ZERO_WIDTH = /[\u200B-\u200D\uFEFF]/g;
 // Unicode bidi marks. Same problem class as zero-width: invisible,
 // occasionally leak into pasted titles, and break exact equality.
 const BIDI_MARKS = /[‎‏‪-‮⁦-⁩]/g;
@@ -43,9 +43,12 @@ function stripFeaturingClause(value: string): string {
 
 function normalizeWhitespaceChars(value: string): string {
   // NBSP and other non-breaking spaces have to become plain spaces before
-  // collapseWhitespace runs, otherwise "Pink Floyd" doesn't match
+  // collapseWhitespace runs, otherwise "Pink<NBSP>Floyd" doesn't match
   // "Pink Floyd".
-  return value.replace(/[  -   　]/g, " ");
+  return value.replace(
+    /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g,
+    " ",
+  );
 }
 
 function foldSmartQuotes(value: string): string {
