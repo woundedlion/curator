@@ -58,7 +58,7 @@ const mocks = vi.hoisted(() => ({
   searchSpotifyForTrack: vi.fn(),
   enrichTrack: vi.fn(),
   deleteCachedCandidates: vi.fn(async () => undefined),
-  probeCoverArtUrl: vi.fn(async () => undefined),
+  probeCoverArtUrl: vi.fn(async () => ({ kind: "missing" as const })),
 }));
 
 vi.mock("../spotify/spotifySearch", () => ({
@@ -80,7 +80,50 @@ import { reenrichAll } from "./enrichmentRunner";
 import { matchAllOnSpotify } from "./spotifyMatchRunner";
 import { usePlaylistStore } from "../store/playlistStore";
 import { useSettingsStore } from "../store/settingsStore";
-import type { Track } from "../types";
+import type { Enrichment, SpotifyMatch, Track } from "../types";
+
+function spotifyStateFor(
+  id: string,
+  status: "idle" | "pending" | "matched" | "ambiguous" | "missing",
+): SpotifyMatch {
+  switch (status) {
+    case "idle":
+    case "pending":
+    case "missing":
+      return { status };
+    case "matched":
+      return {
+        status: "matched",
+        uri: `spotify:track:${id}`,
+        candidates: [],
+        score: 1,
+      };
+    case "ambiguous":
+      return { status: "ambiguous", candidates: [], score: 0.5 };
+  }
+}
+
+function enrichmentStateFor(
+  status: "idle" | "pending" | "matched" | "ambiguous" | "failed",
+  userOverride: boolean | undefined,
+): Enrichment {
+  switch (status) {
+    case "idle":
+    case "pending":
+      return { status, userOverride };
+    case "failed":
+      return { status, userOverride };
+    case "matched":
+      return {
+        status: "matched",
+        mbRecordingId: "mb-stub",
+        score: 1,
+        userOverride,
+      };
+    case "ambiguous":
+      return { status: "ambiguous", candidates: [], score: 0.5, userOverride };
+  }
+}
 
 function track(
   id: string,
@@ -96,17 +139,11 @@ function track(
     source: { kind: opts.sourceKind ?? "file", fileName: `${id}.mp3` },
     title: `Title ${id}`,
     artist: `Artist ${id}`,
-    spotify: {
-      status: opts.spotifyStatus ?? "idle",
-      ...(opts.spotifyStatus === "matched" || opts.spotifyStatus === "ambiguous"
-        ? { candidates: [] }
-        : {}),
-      ...(opts.spotifyStatus === "matched" ? { uri: `spotify:track:${id}` } : {}),
-    },
-    enrichment: {
-      status: opts.enrichmentStatus ?? "idle",
-      userOverride: opts.userOverride,
-    },
+    spotify: spotifyStateFor(id, opts.spotifyStatus ?? "idle"),
+    enrichment: enrichmentStateFor(
+      opts.enrichmentStatus ?? "idle",
+      opts.userOverride,
+    ),
   };
 }
 

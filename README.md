@@ -10,7 +10,8 @@ playlists.
 npm install
 npm run dev
 npm test       # vitest unit tests
-npm run lint   # tsc --noEmit
+npm run lint   # eslint .
+npm run typecheck  # tsc --noEmit
 npm run build  # type-check + production bundle
 ```
 

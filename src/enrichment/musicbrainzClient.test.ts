@@ -178,7 +178,7 @@ describe("searchRecordings (mocked fetch)", () => {
       const candidates = await p;
 
       expect(fetchMock).toHaveBeenCalledTimes(1);
-      const url = String(fetchMock.mock.calls[0][0]);
+      const url = String(fetchMock.mock.calls[0]![0]);
       expect(url).toContain("/ws/2/recording");
       expect(url).toContain("query=");
       expect(url).toContain("fmt=json");
@@ -208,7 +208,7 @@ describe("searchRecordings (mocked fetch)", () => {
       await vi.advanceTimersByTimeAsync(MUSICBRAINZ_RATE_INTERVAL_MS);
       await p;
 
-      const headers = fetchMock.mock.calls[0][1]?.headers as Record<
+      const headers = fetchMock.mock.calls[0]![1]?.headers as Record<
         string,
         string
       >;
@@ -245,8 +245,8 @@ describe("searchRecordings (mocked fetch)", () => {
       const candidates = await p;
 
       expect(fetchMock).toHaveBeenCalledTimes(2);
-      const firstUrl = String(fetchMock.mock.calls[0][0]);
-      const secondUrl = String(fetchMock.mock.calls[1][0]);
+      const firstUrl = String(fetchMock.mock.calls[0]![0]);
+      const secondUrl = String(fetchMock.mock.calls[1]![0]);
       expect(firstUrl).not.toContain("dismax=true");
       expect(secondUrl).toContain("dismax=true");
       // The permissive form strips Lucene field prefixes.
@@ -254,7 +254,7 @@ describe("searchRecordings (mocked fetch)", () => {
       expect(secondUrl).not.toContain("artist%3A");
 
       expect(candidates).toHaveLength(1);
-      expect(candidates[0].title).toBe("Love Sponge");
+      expect(candidates[0]!.title).toBe("Love Sponge");
     });
 
     it("does NOT issue a permissive call when the permissive form equals the strict form", async () => {
@@ -358,9 +358,9 @@ describe("searchRecordings (mocked fetch)", () => {
 
       expect(fetchMock).toHaveBeenCalledTimes(2);
       // Retry honored Retry-After (2s) before re-firing.
-      expect(callTimestamps[1] - startedAt).toBeGreaterThanOrEqual(2_000);
+      expect(callTimestamps[1]! - startedAt).toBeGreaterThanOrEqual(2_000);
       expect(candidates).toHaveLength(1);
-      expect(candidates[0].title).toBe("Recovered");
+      expect(candidates[0]!.title).toBe("Recovered");
     });
 
     it("gives up after MAX_503_RETRIES (=1) — a second 503 surfaces as an error", async () => {
@@ -456,10 +456,10 @@ describe("searchRecordings (mocked fetch)", () => {
       await vi.advanceTimersByTimeAsync(0);
       const candidates = await p;
 
-      expect(candidates[0].year).toBe(1995);
-      expect(candidates[0].originalYear).toBe(1995);
-      expect(candidates[0].releaseId).toBe("rel-2018");
-      expect(candidates[0].album).toBe("Reissue");
+      expect(candidates[0]!.year).toBe(1995);
+      expect(candidates[0]!.originalYear).toBe(1995);
+      expect(candidates[0]!.releaseId).toBe("rel-2018");
+      expect(candidates[0]!.album).toBe("Reissue");
     });
 
     it("picks earliest of the returned releases when first-release-date is missing", async () => {
@@ -487,10 +487,10 @@ describe("searchRecordings (mocked fetch)", () => {
       await vi.advanceTimersByTimeAsync(0);
       const candidates = await p;
 
-      expect(candidates[0].year).toBe(1995);
-      expect(candidates[0].releaseId).toBe("rel-1995");
-      expect(candidates[0].album).toBe("Album '95");
-      expect(candidates[0].originalYear).toBeUndefined();
+      expect(candidates[0]!.year).toBe(1995);
+      expect(candidates[0]!.releaseId).toBe("rel-1995");
+      expect(candidates[0]!.album).toBe("Album '95");
+      expect(candidates[0]!.originalYear).toBeUndefined();
     });
   });
 });

@@ -65,13 +65,25 @@ const NEXT_ALLOWED_AT_CAP_MS = 60_000;
 
 // Circuit-open bounds. Min is so a "1s" Retry-After doesn't leave us
 // essentially open (the half-open probe semantics need real time to
-// drain Spotify's window). Max bounds a hostile response.
+// drain Spotify's window). Max bounds a hostile response — set to 12h
+// because Spotify HAS been observed issuing ~12h bans (Retry-After
+// 42578s seen on the wire, hidden via CORS) and the breaker's
+// exponential backoff needs ceiling room to reach them.
 const CIRCUIT_BREAKER_MIN_MS = 5_000;
-const CIRCUIT_BREAKER_MAX_MS = 60 * 60 * 1000;
+const CIRCUIT_BREAKER_MAX_MS = 12 * 60 * 60 * 1000;
 
-// Pessimistic Retry-After fallback. See `parseRetryAfter`.
+// Pessimistic Retry-After fallback. See `parseRetryAfter`. Capped at
+// the same max as the breaker so a Spotify-supplied multi-hour value
+// is honored without exceeding the breaker's ceiling.
 const DEFAULT_RETRY_AFTER_SECONDS = 5 * 60;
-const MAX_RETRY_AFTER_MS = 60 * 60 * 1000;
+const MAX_RETRY_AFTER_MS = 12 * 60 * 60 * 1000;
+
+// Per-call fetch timeout. Bounded so a hung connection can't keep the
+// half-open probe slot indefinitely (without this, a probe that never
+// resolves would leave `probeInFlight = true` forever and every
+// subsequent caller would fail fast for the rest of the session).
+// 20s is well above Spotify's p99 (~1s); a real timeout is the signal.
+const REQUEST_TIMEOUT_MS = 20_000;
 
 // --- error types -----------------------------------------------------------
 
@@ -106,6 +118,21 @@ export class SpotifyServerError extends Error {
   constructor(path: string, status: number, body: string) {
     super(`Spotify ${status} on ${path}: ${body}`);
     this.name = "SpotifyServerError";
+    this.status = status;
+    this.path = path;
+  }
+}
+
+// Covers the 4xx-and-other unhandled status range — 400 Bad Request,
+// 404 Not Found, 405 Method Not Allowed, 409 Conflict, etc. Callers can
+// type-check on this rather than groveling through generic `Error`
+// messages, and it keeps the typed-error contract complete.
+export class SpotifyHttpError extends Error {
+  readonly status: number;
+  readonly path: string;
+  constructor(path: string, status: number, body: string) {
+    super(`Spotify ${status} on ${path}: ${body}`);
+    this.name = "SpotifyHttpError";
     this.status = status;
     this.path = path;
   }
@@ -268,14 +295,25 @@ async function sendOnce(
   const accessToken = await getValidAccessToken(clientId);
   const url = `${SPOTIFY_API_BASE}${appendQuery(request.path, request.query)}`;
   const hasBody = request.body !== undefined;
+  return fetchWithTimeout(url, {
+    method: request.method ?? "GET",
+    headers: buildHeaders(accessToken, hasBody),
+    body: hasBody ? JSON.stringify(request.body) : undefined,
+  });
+}
+
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit,
+): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   try {
-    return await fetch(url, {
-      method: request.method ?? "GET",
-      headers: buildHeaders(accessToken, hasBody),
-      body: hasBody ? JSON.stringify(request.body) : undefined,
-    });
+    return await fetch(url, { ...init, signal: controller.signal });
   } catch (cause) {
     throw new SpotifyNetworkError(cause);
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -422,7 +460,11 @@ async function mapStatusToResult<T>(
   }
   if (!response.ok) {
     const text = await response.text().catch(() => "");
-    throw new Error(`Spotify ${response.status}: ${text}`);
+    throw new SpotifyHttpError(
+      request.path,
+      response.status,
+      text.slice(0, 200),
+    );
   }
   return (await parseResponseBody<T>(response)) as T;
 }
@@ -447,8 +489,17 @@ async function parseResponseBody<T>(
 }
 
 // --- test-only introspection ----------------------------------------------
+//
+// Both helpers no-op outside test mode. The functions stay exported (ESM
+// can't conditionally export) so production callers calling them by
+// mistake get a documented inert behavior rather than corrupting the
+// shared queue / breaker state. Vitest sets `import.meta.env.MODE` to
+// "test" so the test suite continues to drive them.
+
+const IS_TEST_ENV = import.meta.env.MODE === "test";
 
 export function __resetSpotifyRateLimitStateForTests(): void {
+  if (!IS_TEST_ENV) return;
   queue.reset();
   breaker.reset();
   lastReportedRateLimitMs = 0;
@@ -456,13 +507,18 @@ export function __resetSpotifyRateLimitStateForTests(): void {
 
 export function __getSpotifyRateLimitStateForTests(): {
   nextAllowedAt: number;
-  circuitOpenUntil: number;
   pendingCount: number;
   circuitRemainingMs: number;
 } {
+  if (!IS_TEST_ENV) {
+    return {
+      nextAllowedAt: 0,
+      pendingCount: 0,
+      circuitRemainingMs: 0,
+    };
+  }
   return {
     nextAllowedAt: queue.nextRunAtTimestamp,
-    circuitOpenUntil: 0, // exposed via circuitRemainingMs for assertions
     pendingCount: queue.depth,
     circuitRemainingMs: breaker.remainingMs(),
   };

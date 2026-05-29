@@ -59,13 +59,19 @@ export function NowPlayingBar() {
     [commitSeek, dragValue],
   );
 
-  if (!currentTrackId || !currentDisplay) return null;
+  // The bar stays visible as long as ANY of these is true: there's a
+  // current track id, audio is actively playing, or we have a display
+  // payload. The Player keeps these in sync; the triple-check is
+  // defense in depth so a bug in one mirror can't strand audio with
+  // no user-visible Stop control.
+  if (!currentTrackId && !isPlaying && !currentDisplay) return null;
 
   // `currentTrackId` is a real Track id for table-driven playback and the
   // synthetic `candidate:{uri}` form for dialog-driven candidate previews.
   // Only the former is a valid `toggle()` argument; the latter is owned by
-  // the dialog and toggled from inside it.
-  const canToggleFromHere = !currentTrackId.startsWith("candidate:");
+  // the dialog and toggled from inside it. (Stop still works either way.)
+  const canToggleFromHere =
+    currentTrackId !== null && !currentTrackId.startsWith("candidate:");
 
   const sliderValue = dragValue ?? positionMs;
   // The slider is operable any time we know the duration. Without a duration
@@ -101,9 +107,11 @@ export function NowPlayingBar() {
           <StopIcon />
         </button>
         <div className="min-w-0 flex-1">
-          <div className="truncate font-medium">{currentDisplay.title}</div>
+          <div className="truncate font-medium">
+            {currentDisplay?.title ?? "Now playing"}
+          </div>
           <div className="truncate text-xs text-neutral-400">
-            {currentDisplay.artist} · {sourceLabel(currentSource.kind)}
+            {currentDisplay?.artist ?? "—"} · {sourceLabel(currentSource.kind)}
           </div>
         </div>
       </div>

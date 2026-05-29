@@ -1,12 +1,21 @@
 import { MB_CACHE_VERSION } from "../constants";
+import { normalizeForMatching } from "../metadata/normalizers";
 import { getDatabase, STORE_MB_CACHE } from "./database";
-import type { MBCandidate } from "../types";
+import type { MBCandidate, Track } from "../types";
 
+// Raw (un-normalized) inputs. The cache module owns the normalization
+// contract — every read/write goes through `buildCacheKey`, which calls
+// `normalizeForMatching` internally. This keeps the three call sites
+// (enrich, runner, picker) from drifting on what "same key" means.
 export type MBCacheKey = {
-  title: string;
-  artist: string;
-  album: string;
+  title?: string;
+  artist?: string;
+  album?: string;
 };
+
+export function cacheKeyForTrack(track: Track): MBCacheKey {
+  return { title: track.title, artist: track.artist, album: track.album };
+}
 
 export type MBCacheEntry = {
   key: string;
@@ -33,7 +42,7 @@ type CoverArtNegativeEntry = {
 };
 
 export function buildCacheKey({ title, artist, album }: MBCacheKey): string {
-  return `${title}${KEY_DELIMITER}${artist}${KEY_DELIMITER}${album}`;
+  return `${normalizeForMatching(title)}${KEY_DELIMITER}${normalizeForMatching(artist)}${KEY_DELIMITER}${normalizeForMatching(album)}`;
 }
 
 function isCurrentVersion(entry: MBCacheEntry | undefined): boolean {

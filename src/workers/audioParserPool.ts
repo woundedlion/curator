@@ -110,13 +110,7 @@ class AudioParserPool {
       pending.reject(new Error("Audio parser worker crashed"));
     }
     this.discardWorker(worker);
-    if (this.started && this.workers.length === 0) {
-      // The pool just lost its last worker. Try to bring one back; if
-      // even one spawn succeeds the queue can resume draining.
-      this.spawnWorker();
-    } else if (this.started) {
-      this.spawnWorker();
-    }
+    if (this.started) this.spawnWorker();
     this.drain();
   }
 

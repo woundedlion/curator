@@ -27,22 +27,35 @@ let backgroundRunners: Promise<void> = Promise.resolve();
 function queuePostIngestRunners(): void {
   backgroundRunners = backgroundRunners.then(() =>
     useUiStore.getState().withBusy(async () => {
-      // Tracks that arrive already-resolved on Spotify (spotify-import
-      // rows, curator-export re-imports carrying a `spotifyUri`) are
-      // eligible for MB enrichment immediately and shouldn't wait for
-      // the Spotify search of unresolved rows to drain. Run both
-      // runners in parallel; `enrichAllPending` only picks up tracks
-      // whose Spotify status is already "matched", so the first pass
-      // handles the imported rows. A second `enrichAllPending` after
-      // the Spotify pass settles picks up rows promoted to "matched"
-      // during that search.
-      await Promise.all([matchAllOnSpotify(), enrichAllPending()]);
-      await enrichAllPending();
+      // Streaming match+enrich: the Spotify search runner and the MB
+      // enrichment runner run concurrently. The MB runner stays alive
+      // while Spotify is still working, polling for tracks the search
+      // promotes to `spotify.matched` and enriching them as they land.
+      //
+      // Why this matters: a pure-audio-file drop arrives with every
+      // row at `spotify.idle`. Without streaming, the first MB pass
+      // would find no eligible tracks (MB requires `spotify.matched`
+      // when Spotify is configured) and exit immediately; the second
+      // pass would have to wait for ALL Spotify searches to finish
+      // before starting any MB lookup. With streaming, MB starts
+      // enriching the first row the moment Spotify promotes it.
+      let spotifyDone = false;
+      const spotifyTask = matchAllOnSpotify().finally(() => {
+        spotifyDone = true;
+      });
+      const mbTask = enrichAllPending(undefined, {
+        whileActive: () => !spotifyDone,
+      });
+      await Promise.all([spotifyTask, mbTask]);
     }),
   );
-  // Drop a rejection so the next .then() runs cleanly. Errors are already
-  // surfaced as toasts by the runners themselves.
-  backgroundRunners = backgroundRunners.catch(() => undefined);
+  // Pin a resolved promise as the new chain head so a rejection here
+  // doesn't poison the next ingest. The runners themselves push toasts
+  // for user-visible failures; this log is the only trace of an
+  // *unexpected* crash that escaped them.
+  backgroundRunners = backgroundRunners.catch((error) => {
+    console.error("post-ingest runners crashed unexpectedly", error);
+  });
 }
 
 async function addAndEnrich(files: File[]): Promise<void> {
@@ -80,23 +93,36 @@ async function addAndEnrich(files: File[]): Promise<void> {
 async function partitionCuratorExports(
   files: File[],
 ): Promise<{ envelopes: CuratorExportEnvelope[]; others: File[] }> {
+  // Read all text files in parallel — file.text() is independent per
+  // file and was previously serialized in a for-loop, dominating the
+  // routing time on drops with many .txt entries. The result-merge
+  // preserves the input order of `others` so downstream parsing sees
+  // files in their dropped sequence.
   const envelopes: CuratorExportEnvelope[] = [];
-  const others: File[] = [];
-  for (const file of files) {
+  const others: File[] = new Array(files.length);
+  const textReads: Promise<{ index: number; env: CuratorExportEnvelope | null }>[] = [];
+  for (let i = 0; i < files.length; i++) {
+    const file = files[i]!;
     if (!isTextFile(file.name)) {
-      others.push(file);
+      others[i] = file;
       continue;
     }
-    try {
-      const content = await file.text();
-      const env = tryParseCuratorExport(content);
-      if (env) envelopes.push(env);
-      else others.push(file);
-    } catch {
-      others.push(file);
-    }
+    textReads.push(
+      (async () => {
+        try {
+          const env = tryParseCuratorExport(await file.text());
+          return { index: i, env };
+        } catch {
+          return { index: i, env: null };
+        }
+      })(),
+    );
   }
-  return { envelopes, others };
+  for (const { index, env } of await Promise.all(textReads)) {
+    if (env) envelopes.push(env);
+    else others[index] = files[index]!;
+  }
+  return { envelopes, others: others.filter((f): f is File => f !== undefined) };
 }
 
 async function importEnvelope(env: CuratorExportEnvelope): Promise<void> {
@@ -191,8 +217,20 @@ export async function pickFolderAndIngest(): Promise<void> {
       const handle = await window.showDirectoryPicker();
       const files = await walkDirectoryHandle(handle, { recursive });
       await addAndEnrich(files);
-    } catch {
-      // user cancelled
+    } catch (error) {
+      // User-cancelled the OS picker is the only silent path. Any
+      // other error (filesystem failure, permission revoked mid-walk,
+      // corrupt directory) needs to surface — silently swallowing
+      // makes the button look broken.
+      if (error instanceof DOMException && error.name === "AbortError") return;
+      console.error("pickFolderAndIngest failed", error);
+      useUiStore.getState().pushToast({
+        kind: "error",
+        message:
+          error instanceof Error
+            ? `Folder scan failed: ${error.message}`
+            : "Folder scan failed — see console",
+      });
     }
     return;
   }

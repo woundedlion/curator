@@ -591,7 +591,7 @@ describe("defence-in-depth guard at task-run boundary", () => {
     // The live task started within the first interval, not after
     // 2 * intervalMs worth of skipped-task waits. Spacing budget is
     // not consumed by guard-rejected tasks.
-    expect(liveSentAt[0] - startedAt).toBeLessThanOrEqual(500);
+    expect(liveSentAt[0]! - startedAt).toBeLessThanOrEqual(500);
 
     void fetchMock;
   });

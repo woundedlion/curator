@@ -2,7 +2,7 @@
 // playlistStore so they're trivially unit-testable.
 
 export function rangeBetween(
-  visibleIds: string[],
+  visibleIds: readonly string[],
   anchorId: string | null,
   targetId: string,
 ): string[] {
@@ -104,7 +104,7 @@ export function moveSelectionMaintainingShape(
   const selected: { id: string; origIndex: number }[] = [];
   const unselected: string[] = [];
   for (let i = 0; i < len; i++) {
-    const id = visibleIds[i];
+    const id = visibleIds[i]!;
     if (selectedIds.has(id)) selected.push({ id, origIndex: i });
     else unselected.push(id);
   }
@@ -112,7 +112,7 @@ export function moveSelectionMaintainingShape(
 
   const activeIdx = selected.findIndex((s) => s.id === activeId);
   if (activeIdx === -1) return visibleIds;
-  const activeOrigIndex = selected[activeIdx].origIndex;
+  const activeOrigIndex = selected[activeIdx]!.origIndex;
 
   const targetOrigIndex = visibleIds.indexOf(overId);
   if (targetOrigIndex === -1) return visibleIds;
@@ -138,9 +138,9 @@ export function moveSelectionMaintainingShape(
   // active row; clamp from the right so they don't run off the end, and
   // bump forward so they don't overlap the previous selected item.
   for (let i = activeIdx + 1; i < selected.length; i++) {
-    const offset = selected[i].origIndex - activeOrigIndex;
+    const offset = selected[i]!.origIndex - activeOrigIndex;
     const desired = activeTarget + offset;
-    const earliest = positions[i - 1] + 1;
+    const earliest = positions[i - 1]! + 1;
     const remainingAfter = selected.length - 1 - i;
     const latest = len - 1 - remainingAfter;
     positions[i] = Math.max(earliest, Math.min(desired, latest));
@@ -149,20 +149,20 @@ export function moveSelectionMaintainingShape(
   // Items before the active row: mirror the forward pass. The offset here
   // is negative (origIndex < activeOrigIndex).
   for (let i = activeIdx - 1; i >= 0; i--) {
-    const offset = selected[i].origIndex - activeOrigIndex;
+    const offset = selected[i]!.origIndex - activeOrigIndex;
     const desired = activeTarget + offset;
-    const latest = positions[i + 1] - 1;
+    const latest = positions[i + 1]! - 1;
     const earliest = i;
     positions[i] = Math.min(latest, Math.max(desired, earliest));
   }
 
   const result = new Array<string | null>(len).fill(null);
   for (let i = 0; i < selected.length; i++) {
-    result[positions[i]] = selected[i].id;
+    result[positions[i]!] = selected[i]!.id;
   }
   let u = 0;
   for (let i = 0; i < len; i++) {
-    if (result[i] === null) result[i] = unselected[u++];
+    if (result[i] === null) result[i] = unselected[u++] ?? null;
   }
 
   // Fast no-op check: if every slot already matches the input, return the

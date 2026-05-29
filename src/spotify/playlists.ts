@@ -213,9 +213,10 @@ export async function pushTracksToPlaylist(
   };
 
   for (let i = 0; i < chunks.length; i++) {
+    const slice = chunks[i]!;
     try {
-      await addTrackChunk(playlistId, chunks[i], clientId);
-      progress.added += chunks[i].length;
+      await addTrackChunk(playlistId, slice, clientId);
+      progress.added += slice.length;
     } catch (error) {
       if (isFatalPushError(error)) throw error;
       progress.failedChunks.push(i);
@@ -248,9 +249,10 @@ export async function replaceAndPushTracks(
   handlers.onProgress?.({ ...progress });
 
   for (let i = 0; i < remainingChunks.length; i++) {
+    const slice = remainingChunks[i]!;
     try {
-      await addTrackChunk(playlistId, remainingChunks[i], clientId);
-      progress.added += remainingChunks[i].length;
+      await addTrackChunk(playlistId, slice, clientId);
+      progress.added += slice.length;
     } catch (error) {
       if (isFatalPushError(error)) throw error;
       progress.failedChunks.push(i + 1);
@@ -260,15 +262,3 @@ export async function replaceAndPushTracks(
   return progress;
 }
 
-export function findPlaylistsByName(
-  playlists: SpotifyPlaylistSummary[],
-  ownerId: string,
-  candidateName: string,
-): SpotifyPlaylistSummary[] {
-  const targetName = candidateName.trim().toLowerCase();
-  return playlists.filter(
-    (playlist) =>
-      playlist.ownerId === ownerId &&
-      playlist.name.trim().toLowerCase() === targetName,
-  );
-}

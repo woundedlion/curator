@@ -52,7 +52,7 @@ describe("dedupeBySongIdentity", () => {
     // Track year 1998: deltas are old=3, rec-1997=1, remaster=19. 1997 wins.
     const out = dedupeBySongIdentity(candidates, buildTrack(1998));
     expect(out).toHaveLength(1);
-    expect(out[0].recordingId).toBe("rec-1997");
+    expect(out[0]!.recordingId).toBe("rec-1997");
   });
 
   it("breaks year-delta ties in favor of the first candidate seen", () => {
@@ -63,7 +63,7 @@ describe("dedupeBySongIdentity", () => {
     // Track year 1996 makes both deltas = 1. Strict-less-than reducer keeps
     // the first-seen candidate, which is the documented stable behavior.
     const out = dedupeBySongIdentity(candidates, buildTrack(1996));
-    expect(out[0].recordingId).toBe("old");
+    expect(out[0]!.recordingId).toBe("old");
   });
 
   it("picks the earliest representative when the track has no year", () => {
@@ -74,7 +74,7 @@ describe("dedupeBySongIdentity", () => {
     ];
     const out = dedupeBySongIdentity(candidates, buildTrack());
     expect(out).toHaveLength(1);
-    expect(out[0].recordingId).toBe("original");
+    expect(out[0]!.recordingId).toBe("original");
   });
 
   it("treats candidates without a year as effectively infinite distance / latest", () => {
@@ -83,11 +83,11 @@ describe("dedupeBySongIdentity", () => {
       buildCandidate({ recordingId: "1997", year: 1997 }),
     ];
     const withYearTrack = dedupeBySongIdentity(candidates, buildTrack(1996));
-    expect(withYearTrack[0].recordingId).toBe("1997");
+    expect(withYearTrack[0]!.recordingId).toBe("1997");
 
     const noYearTrack = dedupeBySongIdentity(candidates, buildTrack());
     // earliest wins; the candidate without a year ranks as +Infinity, so 1997 wins.
-    expect(noYearTrack[0].recordingId).toBe("1997");
+    expect(noYearTrack[0]!.recordingId).toBe("1997");
   });
 
   it("returns input verbatim when groups are all size 1", () => {

@@ -130,8 +130,9 @@ function classifyMatch(scored: SpotifyCandidate[]): SpotifyMatch {
   // is misleading in the UI (the glyph implies a dead-end) and in the
   // filter (hideUnmatched would hide rows the user could resolve with
   // one click).
-  if (scored.length === 0) return { status: "missing" };
-  const [best, runnerUp] = scored;
+  const best = scored[0];
+  if (!best) return { status: "missing" };
+  const runnerUp = scored[1];
   const onlyCandidate = scored.length === 1;
   const gap = runnerUp ? best.score - runnerUp.score : 1;
   if (

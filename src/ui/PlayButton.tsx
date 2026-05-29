@@ -2,6 +2,7 @@ import { usePlaybackStore } from "../playback/playbackStore";
 import { externalSpotifyUrl, hasInAppSource } from "../playback/playbackSource";
 import { useSettingsStore } from "../store/settingsStore";
 import type { Track } from "../types";
+import { getSpotifyUri } from "../util/trackAccessors";
 import { ExternalLinkIcon, PauseIcon, PlayIcon } from "./icons";
 
 type Props = {
@@ -20,8 +21,9 @@ export function PlayButton({ track }: Props) {
   // (Spotify URI but no in-app source — round-tripped imports), or fully
   // disabled.
   const inApp = hasInAppSource(track, sdkPreferred);
+  const spotifyUri = getSpotifyUri(track.spotify);
   const externalUrl =
-    !inApp && track.spotify.uri ? externalSpotifyUrl(track.spotify.uri) : null;
+    !inApp && spotifyUri ? externalSpotifyUrl(spotifyUri) : null;
   const isCurrent = currentTrackId === track.id;
   const showPause = isCurrent && isPlaying;
 

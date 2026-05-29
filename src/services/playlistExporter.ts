@@ -6,6 +6,7 @@ import {
 import { usePlaylistStore } from "../store/playlistStore";
 import { useUiStore } from "../store/uiStore";
 import type { Track } from "../types";
+import { getMbRecordingId, getSpotifyUri } from "../util/trackAccessors";
 
 function toExported(track: Track): CuratorExportedTrack {
   // Only round-trippable fields. We intentionally drop:
@@ -27,8 +28,8 @@ function toExported(track: Track): CuratorExportedTrack {
     discNo: track.discNo,
     durationMs: track.durationMs,
     coverUrl: track.coverUrl,
-    spotifyUri: track.spotify.uri,
-    mbRecordingId: track.enrichment.mbRecordingId,
+    spotifyUri: getSpotifyUri(track.spotify),
+    mbRecordingId: getMbRecordingId(track.enrichment),
   };
 }
 

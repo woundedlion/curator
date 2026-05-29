@@ -59,12 +59,14 @@ export async function ingestFiles(
     }),
   );
   for (let index = 0; index < results.length; index++) {
-    const result = results[index];
+    // Bounded iteration over results[] and the parallel unique[]; both
+    // arrays are the same length.
+    const result = results[index]!;
+    const file = unique[index]!;
     if (result.status === "fulfilled") {
       tracks.push(...result.value);
       continue;
     }
-    const file = unique[index];
     failures.push({ fileName: file.name, error: result.reason });
     console.warn("ingest: failed to parse", file.name, result.reason);
   }

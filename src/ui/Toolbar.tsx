@@ -11,7 +11,8 @@ import { ConnectionBadge } from "./ConnectionBadge";
 import {
   FilterIcon,
   GearIcon,
-  MushroomCloudIcon,
+  PlayIcon,
+  RefreshIcon,
   TrashIcon,
   TreeIcon,
 } from "./icons";
@@ -48,7 +49,7 @@ export function Toolbar({ hiddenCount, onPickFolder }: Props) {
   const isEnriching = queueDepth > 0 || enrichmentRemaining > 0;
   const openSettings = useUiStore((state) => state.setShowSettings);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
-  const [showNukeConfirm, setShowNukeConfirm] = useState(false);
+  const [showRefreshConfirm, setShowRefreshConfirm] = useState(false);
 
   function handleClear() {
     if (trackCount === 0) return;
@@ -60,17 +61,19 @@ export function Toolbar({ hiddenCount, onPickFolder }: Props) {
     clearPlaylist();
   }
 
-  function handleNuke() {
+  function handleRefresh() {
     if (trackCount === 0) return;
-    setShowNukeConfirm(true);
+    setShowRefreshConfirm(true);
   }
 
-  function confirmNuke() {
-    setShowNukeConfirm(false);
+  function confirmRefresh() {
+    setShowRefreshConfirm(false);
     nukeEnrichmentState();
+    void reenrichAll();
   }
 
   return (
+    <>
     <header
       className="sticky top-0 z-30 flex items-center gap-3 border-b border-neutral-800 bg-neutral-950/85 px-4 py-3 shadow-lg backdrop-blur"
       role="banner"
@@ -119,21 +122,21 @@ export function Toolbar({ hiddenCount, onPickFolder }: Props) {
       <IconButton
         label={
           trackCount === 0
-            ? "Nothing to look up"
-            : "Resume lookups for tracks not yet looked up (Spotify or MusicBrainz)"
+            ? "Nothing to resume"
+            : "Resume: restart lookups for unresolved tracks only"
         }
-        icon="↻"
+        icon={<PlayIcon />}
         onClick={() => void reenrichAll()}
         disabled={trackCount === 0}
       />
       <IconButton
         label={
           trackCount === 0
-            ? "Nothing to reset"
-            : "Reset all Spotify and MusicBrainz state back to idle"
+            ? "Nothing to refresh"
+            : "Refresh: wipe all Spotify and MusicBrainz state, then re-run lookups"
         }
-        icon={<MushroomCloudIcon />}
-        onClick={handleNuke}
+        icon={<RefreshIcon />}
+        onClick={handleRefresh}
         disabled={trackCount === 0}
       />
 
@@ -163,24 +166,28 @@ export function Toolbar({ hiddenCount, onPickFolder }: Props) {
           onClick={() => openSettings(true)}
         />
       </div>
-      <ConfirmDialog
-        open={showClearConfirm}
-        title="Clear playlist?"
-        message="All tracks will be removed from the current draft. You can undo this while the tab is open."
-        confirmLabel="Clear"
-        kind="danger"
-        onConfirm={confirmClearPlaylist}
-        onCancel={() => setShowClearConfirm(false)}
-      />
-      <ConfirmDialog
-        open={showNukeConfirm}
-        title="Reset all enrichment state?"
-        message="Every track's Spotify and MusicBrainz state will be reset to idle. Tracks themselves stay in the playlist — but their match status, candidate lists, and selected URIs are wiped. The toolbar's resume button will re-search all of them. You can undo this while the tab is open."
-        confirmLabel="Reset"
-        kind="danger"
-        onConfirm={confirmNuke}
-        onCancel={() => setShowNukeConfirm(false)}
-      />
     </header>
+    {/* Dialogs render as siblings of <header> rather than children: the
+        header's backdrop-blur creates a containing block for fixed-position
+        descendants, which would clip the dialog to the header bar. */}
+    <ConfirmDialog
+      open={showClearConfirm}
+      title="Clear playlist?"
+      message="All tracks will be removed from the current draft. You can undo this while the tab is open."
+      confirmLabel="Clear"
+      kind="danger"
+      onConfirm={confirmClearPlaylist}
+      onCancel={() => setShowClearConfirm(false)}
+    />
+    <ConfirmDialog
+      open={showRefreshConfirm}
+      title="Refresh all enrichment state?"
+      message="Every track's Spotify and MusicBrainz state will be reset to idle and lookups will re-run from scratch. Tracks themselves stay in the playlist — but their match status, candidate lists, and selected URIs are wiped. You can undo this while the tab is open."
+      confirmLabel="Refresh"
+      kind="danger"
+      onConfirm={confirmRefresh}
+      onCancel={() => setShowRefreshConfirm(false)}
+    />
+    </>
   );
 }

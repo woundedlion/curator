@@ -28,7 +28,7 @@ A browser-based playlist builder that ingests local music files or song lists, e
 | Framework | **React + TypeScript + Vite** | Standard, fast HMR, ecosystem support for the libraries below. |
 | State | **Zustand** | Less boilerplate than Redux; selectors avoid re-render storms when a 500-item playlist mutates. |
 | Drag & drop | **@dnd-kit/core** | A11y-friendly, virtualization-compatible, actively maintained (vs. react-beautiful-dnd which is unmaintained). |
-| ID3/metadata | **music-metadata-browser** | Parses ID3v1/v2, Vorbis (FLAC/OGG), MP4 atoms, ASF (WMA). Pure JS, no WASM. |
+| ID3/metadata | **music-metadata** | Parses ID3v1/v2, Vorbis (FLAC/OGG), MP4 atoms, ASF (WMA). Pure JS, no WASM. |
 | Fuzzy matching | **Fuse.js** | Weighted multi-field scoring; small footprint. |
 | HTTP | **fetch + a small queued client** | Need request queueing for MusicBrainz's 1-req/sec rate limit. |
 | Persistence | **IndexedDB (via `idb`)** for MB cache + draft playlists; **sessionStorage** for Spotify tokens | Tokens in sessionStorage limit XSS blast radius; cached lookups in IDB so re-imports are instant. |
@@ -76,7 +76,7 @@ A browser-based playlist builder that ingests local music files or song lists, e
 
 **Module boundaries**
 - `ingest/` — drag-drop handlers, File System Access API wrappers, text-file parser, recursive folder walker.
-- `metadata/` — `music-metadata-browser` wrapper, normalizers (strip "(Remastered)", "feat.", whitespace).
+- `metadata/` — `music-metadata` wrapper, normalizers (strip "(Remastered)", "feat.", whitespace).
 - `enrichment/` — MusicBrainz client with rate-limit queue, Fuse-based candidate scorer, cache layer.
 - `spotify/` — PKCE flow, token refresh, search, playlist CRUD.
 - `store/` — Zustand slices: `tracks`, `enrichment`, `spotify`, `settings`.
@@ -104,7 +104,7 @@ A browser-based playlist builder that ingests local music files or song lists, e
 - Also accept `.m3u`/`.m3u8`: treat `#EXTINF` lines as Artist/Title hints, ignore comments otherwise.
 
 **Audio-file parsing** (§1b):
-- Filter by extension first, then run `music-metadata-browser` on each file.
+- Filter by extension first, then run `music-metadata` on each file.
 - Extract: `artist`, `albumartist`, `album`, `title`, `year`, `track.no`, `track.of`, `disk.no`, `duration`, `genre`, `picture` (first cover).
 - Keep a reference to the original `File` handle (needed for previewing audio if we add that later — out of scope for v1 but free to retain).
 - Run extraction in a Web Worker pool (`navigator.hardwareConcurrency` workers, clamped 2–8) so a 2,000-file drop doesn't freeze the UI. The pool exposes a `shutdownAudioParserPool()` hook wired into `useAppBootstrap`'s cleanup; pending and queued parses are rejected with a clear error so SPA-style remounts don't leak worker instances. (Practically a dev-only concern under StrictMode double-mount.)
@@ -695,7 +695,7 @@ Filled vs hollow is the key visual distinction: a filled circle means Spotify ha
 
 ## 9. Testing Strategy
 
-**Implemented (Vitest)** — `npm test` runs the suite in <1s (53 tests across 8 files). Covers:
+**Implemented (Vitest)** — `npm test` runs the suite in ~2s (419 tests across 36 files). Covers:
 - `metadata/normalizers` — parenthetical/featuring stripping, casefold, ampersand expansion, Lucene escaping.
 - `ingest/filenameHeuristic` — 1/2/3/4+ segment parsing, leading track numbers, pure-digit segment as track number.
 - `ingest/textParser` — single-line, `Artist - Title`, `Artist - Album - Title`, comments / blanks.

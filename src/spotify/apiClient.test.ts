@@ -21,17 +21,19 @@ describe("parseRetryAfter", () => {
     );
   });
 
-  it("clamps a far-future HTTP-date to MAX_RETRY_AFTER_MS (1 hour)", () => {
+  it("clamps a far-future HTTP-date to MAX_RETRY_AFTER_MS (12 hours)", () => {
     const now = 1_700_000_000_000;
     const farFuture = new Date(now + 365 * 24 * 60 * 60 * 1000).toUTCString();
-    expect(parseRetryAfter(farFuture, now)).toBe(60 * 60 * 1000);
+    expect(parseRetryAfter(farFuture, now)).toBe(12 * 60 * 60 * 1000);
   });
 
-  it("clamps a huge integer to MAX_RETRY_AFTER_MS (1 hour)", () => {
-    // The real-world incident was Retry-After: 12225 (~3.4 hours).
-    // We honor up to 1 hour so the wait isn't comically long.
-    expect(parseRetryAfter("12225")).toBe(60 * 60 * 1000);
-    expect(parseRetryAfter("999999")).toBe(60 * 60 * 1000);
+  it("clamps a huge integer to MAX_RETRY_AFTER_MS (12 hours)", () => {
+    // Real-world incidents: Retry-After: 12225 (~3.4h) and 42578 (~12h).
+    // The cap was raised from 1h to 12h after observing Spotify-issued
+    // multi-hour bans hidden behind CORS — clamping to 1h was making
+    // the breaker probe back into an active ban every hour.
+    expect(parseRetryAfter("12225")).toBe(12225 * 1000); // within cap
+    expect(parseRetryAfter("999999")).toBe(12 * 60 * 60 * 1000); // capped
   });
 
   it("honors a realistic Spotify Retry-After value within the cap", () => {

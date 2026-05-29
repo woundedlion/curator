@@ -50,8 +50,10 @@ function createErrorReporter(): ErrorReporter {
 function markPending(trackId: string): void {
   const track = usePlaylistStore.getState().tracksById[trackId];
   if (!track) return;
+  // matchOne only enters here from spotify.status === "idle", so the
+  // prior state has no candidates to preserve.
   usePlaylistStore.getState().updateTrack(trackId, {
-    spotify: { ...track.spotify, status: "pending" },
+    spotify: { status: "pending" },
   });
 }
 
@@ -78,7 +80,6 @@ async function matchOne(
   // rematchOnSpotify, so this filter doesn't block intentional
   // user-driven re-searches.
   if (track.spotify.status !== "idle") return;
-  const priorStatus = track.spotify.status;
 
   markPending(trackId);
 
@@ -119,15 +120,16 @@ async function matchOne(
     console.error("Spotify match failed", { trackId, error });
     reportFirstError(error);
     // Transient failures (rate limit, expired auth) are NOT "no match
-    // on Spotify" — they mean we couldn't even ask. Reverting to the
-    // prior status (typically `idle`) keeps the row eligible for
-    // re-enrich-all once the circuit closes, instead of leaving it
-    // stuck in `missing` and excluded from publishes.
+    // on Spotify" — they mean we couldn't even ask. Reverting to
+    // `idle` keeps the row eligible for re-enrich-all once the
+    // circuit closes, instead of leaving it stuck in `missing` and
+    // excluded from publishes. (The gate above ensures only idle rows
+    // entered matchOne in the first place.)
     const isTransient =
       error instanceof SpotifyRateLimitError ||
       error instanceof SpotifyAuthExpiredError;
     usePlaylistStore.getState().updateTrack(trackId, {
-      spotify: { status: isTransient ? priorStatus : "missing" },
+      spotify: { status: isTransient ? "idle" : "missing" },
     });
   }
 }
@@ -184,9 +186,11 @@ export function promoteSingleCandidateMatches(): void {
     const track = store.tracksById[trackId];
     if (!track) continue;
     const { spotify } = track;
-    if (spotify.status === "matched") continue;
-    if (!spotify.candidates || spotify.candidates.length !== 1) continue;
-    const only = spotify.candidates[0];
+    // Only ambiguous rows can be promoted — matched is already there,
+    // idle/pending/missing have no candidate list to read.
+    if (spotify.status !== "ambiguous") continue;
+    if (spotify.candidates.length !== 1) continue;
+    const only = spotify.candidates[0]!;
     store.fillMissingDisplayFields(
       trackId,
       spotifyDisplayFieldsFromCandidate(only),

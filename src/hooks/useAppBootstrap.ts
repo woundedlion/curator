@@ -23,6 +23,25 @@ function flushIfHidden(): void {
   if (document.visibilityState === "hidden") flushOnHide();
 }
 
+// Surfaced to the user so a stalled enrichment / Spotify search after the
+// network drops isn't mistaken for an app hang. The reconnect toast is
+// info-level (auto-dismisses) so a brief blip doesn't leave a sticky
+// notification behind.
+function handleOffline(): void {
+  useUiStore.getState().pushToast({
+    kind: "error",
+    message:
+      "Network offline — Spotify and MusicBrainz lookups will fail until you reconnect.",
+  });
+}
+
+function handleOnline(): void {
+  useUiStore.getState().pushToast({
+    kind: "info",
+    message: "Network reconnected.",
+  });
+}
+
 export function useAppBootstrap(): void {
   useEffect(() => {
     usePlaybackStore.getState().initialize();
@@ -36,9 +55,13 @@ export function useAppBootstrap(): void {
     });
     window.addEventListener("pagehide", flushOnHide);
     document.addEventListener("visibilitychange", flushIfHidden);
+    window.addEventListener("offline", handleOffline);
+    window.addEventListener("online", handleOnline);
     return () => {
       window.removeEventListener("pagehide", flushOnHide);
       document.removeEventListener("visibilitychange", flushIfHidden);
+      window.removeEventListener("offline", handleOffline);
+      window.removeEventListener("online", handleOnline);
       unsubscribe();
       shutdownAudioParserPool();
     };

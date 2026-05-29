@@ -16,6 +16,11 @@ import { clearTokens, readTokens, writeTokens } from "./tokenStorage";
 
 const ACCESS_TOKEN_REFRESH_GUARD_MS = 30 * 1000;
 
+// Matches apiClient REQUEST_TIMEOUT_MS. Bounded so a hung token-endpoint
+// request can't trap the half-open probe slot (the token path shares
+// the same breaker as api.spotify.com calls).
+const TOKEN_REQUEST_TIMEOUT_MS = 20_000;
+
 type TokenResponse = {
   access_token: string;
   refresh_token?: string;
@@ -91,12 +96,19 @@ export async function beginAuthFlow(
 // of refresh attempts that would deepen the lockout.
 function postToTokenEndpoint(body: URLSearchParams): Promise<Response> {
   return runWithRateLimitPolicy(
-    () =>
-      fetch(SPOTIFY_TOKEN_URL, {
+    () => {
+      const controller = new AbortController();
+      const timer = setTimeout(
+        () => controller.abort(),
+        TOKEN_REQUEST_TIMEOUT_MS,
+      );
+      return fetch(SPOTIFY_TOKEN_URL, {
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
         body,
-      }),
+        signal: controller.signal,
+      }).finally(() => clearTimeout(timer));
+    },
     "/api/token",
   );
 }

@@ -80,6 +80,15 @@ export const PLAYLIST_SCROLL_KEY = "curator.playlist.scrollTop";
 export const SPOTIFY_CIRCUIT_OPEN_UNTIL_KEY =
   "curator.spotify.circuitOpenUntil.v1";
 
+// Consecutive-failure counter for exponential backoff. Persisted so
+// reload doesn't reset escalation — Spotify's CORS-hidden Retry-After
+// is often a multi-hour ban; we discover the actual duration only by
+// watching successive probes still come back 429, so losing that count
+// on reload would put us back at the 5-min default and resume probing
+// into the ban.
+export const SPOTIFY_CIRCUIT_FAILURE_COUNT_KEY =
+  "curator.spotify.circuitFailureCount.v1";
+
 // Proactive spacing window. Persisted for the same reason as the
 // circuit breaker: Spotify's rolling-30s quota counts requests from the
 // previous page session, but the in-memory `nextAllowedAt` resets on

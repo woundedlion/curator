@@ -35,13 +35,16 @@ function parseLeadingTrackNumber(segment: string): {
 } {
   const match = segment.match(/^\s*(\d{1,3})\s*[-.\s]\s*(.*)$/);
   if (!match) return { remainder: segment };
-  const value = parseInt(match[1], 10);
+  const value = parseInt(match[1]!, 10);
   if (!isValidTrackNumber(value)) return { remainder: segment };
-  return { trackNo: value, remainder: match[2] };
+  return { trackNo: value, remainder: match[2]! };
 }
 
 function hintFromTwoSegments(segments: string[]): FilenameHint {
-  const [first, second] = segments;
+  // Callers route here only when segments.length === 2, so first/second
+  // are guaranteed defined.
+  const first = segments[0]!;
+  const second = segments[1]!;
   const trackOnly = parseTrackNumberSegment(first);
   if (trackOnly !== undefined) {
     return { trackNo: trackOnly, title: second };
@@ -54,7 +57,9 @@ function hintFromTwoSegments(segments: string[]): FilenameHint {
 }
 
 function hintFromThreeSegments(segments: string[]): FilenameHint {
-  const [first, second, third] = segments;
+  const first = segments[0]!;
+  const second = segments[1]!;
+  const third = segments[2]!;
   const trackOnly = parseTrackNumberSegment(first);
   if (trackOnly !== undefined) {
     return { trackNo: trackOnly, artist: second, title: third };
@@ -73,9 +78,12 @@ function hintFromFourOrMoreSegments(segments: string[]): FilenameHint {
   // Detect by looking for a track-number-looking segment. Without this
   // shape detection, "Radiohead - In Rainbows - 03 - Nude" parses as
   // `album="Radiohead - In Rainbows", artist="03", title="Nude"`.
-  const title = segments[segments.length - 1];
+  // Caller guarantees segments.length >= 4.
+  const title = segments[segments.length - 1]!;
 
-  const trackNoAtMinus2 = parseTrackNumberSegment(segments[segments.length - 2]);
+  const trackNoAtMinus2 = parseTrackNumberSegment(
+    segments[segments.length - 2]!,
+  );
   if (trackNoAtMinus2 !== undefined) {
     // Pattern A: …Artist… - Album - Track# - Title.
     // Treat segment[-3] alone as album, everything before as artist.
@@ -88,14 +96,16 @@ function hintFromFourOrMoreSegments(segments: string[]): FilenameHint {
     };
   }
 
-  const trackNoAtMinus3 = parseTrackNumberSegment(segments[segments.length - 3]);
+  const trackNoAtMinus3 = parseTrackNumberSegment(
+    segments[segments.length - 3]!,
+  );
   if (trackNoAtMinus3 !== undefined) {
     // Pattern B: …Album… - Track# - Artist - Title.
     const albumSegments = segments.slice(0, segments.length - 3);
     return {
       trackNo: trackNoAtMinus3,
       title,
-      artist: segments[segments.length - 2],
+      artist: segments[segments.length - 2]!,
       album:
         albumSegments.length > 0
           ? albumSegments.join(ARTIST_TITLE_SEPARATOR)
@@ -104,7 +114,7 @@ function hintFromFourOrMoreSegments(segments: string[]): FilenameHint {
   }
 
   // No track number found — fall back to `[…album] - artist - title`.
-  const artist = segments[segments.length - 2];
+  const artist = segments[segments.length - 2]!;
   const albumSegments = segments.slice(0, segments.length - 2);
   return {
     title,
@@ -131,5 +141,5 @@ export function deriveHintsFromFileName(fileName: string): FilenameHint {
   if (segments.length >= 4) return hintFromFourOrMoreSegments(segments);
   if (segments.length === 3) return hintFromThreeSegments(segments);
   if (segments.length === 2) return hintFromTwoSegments(segments);
-  return hintFromSingleSegment(segments[0]);
+  return hintFromSingleSegment(segments[0] ?? "");
 }

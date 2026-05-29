@@ -16,7 +16,7 @@ import { ExternalLinkIcon, PauseIcon, PlayIcon } from "./icons";
 import { Spinner } from "./Spinner";
 
 type Props = {
-  trackId: string | null;
+  trackId: string;
   onClose: () => void;
 };
 
@@ -145,9 +145,11 @@ function CandidateRow({
 }
 
 export function AmbiguousMatchDialog({ trackId, onClose }: Props) {
-  const track = usePlaylistStore((state) =>
-    trackId ? state.tracksById[trackId] : null,
-  );
+  // The parent gates mount on `trackId !== null` and passes
+  // `key={trackId}`, so every picker session is a fresh component
+  // instance — initial state below initializes naturally per track,
+  // and the trackId/track references stay stable for this lifetime.
+  const track = usePlaylistStore((state) => state.tracksById[trackId]);
   const clientId = useSettingsStore((state) => state.settings.spotifyClientId);
   const preferFullPlayback = useSettingsStore(
     (state) => state.settings.preferFullPlayback,
@@ -167,36 +169,30 @@ export function AmbiguousMatchDialog({ trackId, onClose }: Props) {
   >(null);
   const [searching, setSearching] = useState(false);
 
-  // Reset form state when the dialog reopens against a different track, or
-  // when the track's title/artist change underneath us. Done during render
-  // via the prev-state pattern instead of an effect so we don't trigger a
-  // cascading re-render.
-  const [syncedKey, setSyncedKey] = useState<string | null>(null);
-  const targetKey = trackId
-    ? `${trackId}|${track?.title ?? ""}|${track?.artist ?? ""}`
-    : null;
-  if (targetKey && targetKey !== syncedKey) {
-    setSyncedKey(targetKey);
-    setTitleInput(track?.title ?? "");
-    setArtistInput(track?.artist ?? "");
-    setSearchedCandidates(null);
-  }
+  const dialogRef = useDialogFocus<HTMLDivElement>(true, onClose);
 
-  const dialogRef = useDialogFocus<HTMLDivElement>(Boolean(trackId), onClose);
-
-  // Stop any dialog-initiated playback when the dialog closes.
+  // Stop any dialog-initiated candidate playback on unmount. We route
+  // through the player's `stopIfCandidate` so the check happens
+  // INSIDE the playback operation queue — if a candidate's `play`
+  // is still in flight when the dialog unmounts, the enqueued
+  // `stopIfCandidate` runs after the play lands and still catches it.
+  // A point-in-time read of `currentTrackId` from the cleanup would
+  // miss that race.
   useEffect(() => {
-    if (trackId) return;
-    const current = usePlaybackStore.getState().currentTrackId;
-    if (current && current.startsWith("candidate:")) {
-      usePlaybackStore.getState().stop();
-    }
-  }, [trackId]);
+    return () => {
+      usePlaybackStore.getState().stopIfCandidate();
+    };
+  }, []);
 
-  const candidates = useMemo<SpotifyCandidate[]>(
-    () => searchedCandidates ?? track?.spotify.candidates ?? [],
-    [searchedCandidates, track],
-  );
+  const candidates = useMemo<SpotifyCandidate[]>(() => {
+    if (searchedCandidates) return searchedCandidates;
+    if (!track) return [];
+    const match = track.spotify;
+    if (match.status === "matched" || match.status === "ambiguous") {
+      return match.candidates;
+    }
+    return [];
+  }, [searchedCandidates, track]);
 
   // SDK is "available" if the user has opted in and either it's already
   // ready or it can be lazily initialized when playCandidate is called.
@@ -242,27 +238,30 @@ export function AmbiguousMatchDialog({ trackId, onClose }: Props) {
 
   // Curator-export round-trips drop the `candidates[]` array (DESIGN §4.5.1
   // serializes only the chosen `spotifyUri`), so a re-imported track opens
-  // this dialog with no list to pick from. Auto-fire the search once when
-  // the dialog opens against a candidate-less track that has enough
-  // metadata to query, so the user lands on a populated picker without an
-  // extra click. We key off `trackId` only, so picking a candidate (which
-  // populates `track.spotify.candidates` and closes the dialog) doesn't
-  // retrigger this in flight.
+  // this dialog with no list to pick from. Auto-fire the search once on
+  // mount against a candidate-less track that has enough metadata to
+  // query, so the user lands on a populated picker without an extra
+  // click. The parent's key={trackId} guarantees this effect runs exactly
+  // once per picker session.
   useEffect(() => {
-    if (!trackId || !track || !clientId) return;
-    const existing = track.spotify.candidates ?? [];
+    if (!track || !clientId) return;
+    const match = track.spotify;
+    const existing =
+      match.status === "matched" || match.status === "ambiguous"
+        ? match.candidates
+        : [];
     if (existing.length > 0) return;
     if (!track.title && !track.artist) return;
-    // Kicking off an async fetch in response to a prop change is the
-    // canonical effect use case (see React docs §"Fetching data"). The
-    // setState inside runSearchWithFields is the side effect we want.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     void runSearchWithFields(track.title, track.artist);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [trackId]);
+  }, []);
 
-  if (!trackId || !track) return null;
-  const currentUri = track.spotify.uri;
+  if (!track) return null;
+  const currentUri =
+    track.spotify.status === "matched" || track.spotify.status === "ambiguous"
+      ? track.spotify.uri
+      : undefined;
 
   return (
     <div
@@ -343,13 +342,10 @@ export function AmbiguousMatchDialog({ trackId, onClose }: Props) {
                         }
                       }}
                       onPick={() => {
-                        if (
-                          usePlaybackStore
-                            .getState()
-                            .currentTrackId?.startsWith("candidate:")
-                        ) {
-                          stopPlayback();
-                        }
+                        // Stop only candidate-scoped playback so we
+                        // don't disturb anything the user had playing
+                        // from the main view.
+                        usePlaybackStore.getState().stopIfCandidate();
                         void pickSpotifyCandidate(
                           trackId,
                           candidate,

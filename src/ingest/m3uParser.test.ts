@@ -10,7 +10,7 @@ describe("parseM3uContent", () => {
   it("ignores comment lines (other than EXTINF)", () => {
     const tracks = parseM3uContent("#EXTM3U\n#some random comment\nfoo.mp3\n");
     expect(tracks).toHaveLength(1);
-    expect(tracks[0].source.rawLine).toBe("foo.mp3");
+    expect(tracks[0]!.source.rawLine).toBe("foo.mp3");
   });
 
   it("captures Artist - Title hints from EXTINF", () => {
@@ -25,8 +25,8 @@ describe("parseM3uContent", () => {
       artist: "Radiohead",
       title: "Karma Police",
     });
-    expect(tracks[0].source.kind).toBe("m3u");
-    expect(tracks[0].source.rawLine).toBe("/music/track1.mp3");
+    expect(tracks[0]!.source.kind).toBe("m3u");
+    expect(tracks[0]!.source.rawLine).toBe("/music/track1.mp3");
   });
 
   it("falls back to title-only when EXTINF has no separator", () => {
@@ -38,22 +38,22 @@ describe("parseM3uContent", () => {
   it("treats EXTINF with no content after the comma as no hint", () => {
     const m3u = ["#EXTINF:120,", "song.mp3"].join("\n");
     const tracks = parseM3uContent(m3u);
-    expect(tracks[0].title).toBeUndefined();
-    expect(tracks[0].artist).toBeUndefined();
+    expect(tracks[0]!.title).toBeUndefined();
+    expect(tracks[0]!.artist).toBeUndefined();
   });
 
   it("treats EXTINF with whitespace-only content as no hint", () => {
     const m3u = ["#EXTINF:120,   ", "song.mp3"].join("\n");
     const tracks = parseM3uContent(m3u);
-    expect(tracks[0].title).toBeUndefined();
-    expect(tracks[0].artist).toBeUndefined();
+    expect(tracks[0]!.title).toBeUndefined();
+    expect(tracks[0]!.artist).toBeUndefined();
   });
 
   it("treats EXTINF without a comma at all as no hint", () => {
     const m3u = ["#EXTINF:120", "song.mp3"].join("\n");
     const tracks = parseM3uContent(m3u);
-    expect(tracks[0].title).toBeUndefined();
-    expect(tracks[0].artist).toBeUndefined();
+    expect(tracks[0]!.title).toBeUndefined();
+    expect(tracks[0]!.artist).toBeUndefined();
   });
 
   it("clears the EXTINF hint after one track consumes it", () => {
@@ -66,8 +66,8 @@ describe("parseM3uContent", () => {
     expect(tracks).toHaveLength(2);
     expect(tracks[0]).toMatchObject({ artist: "Hinted Artist", title: "Hinted Title" });
     // No carry-over hint into the second row.
-    expect(tracks[1].artist).toBeUndefined();
-    expect(tracks[1].title).toBeUndefined();
+    expect(tracks[1]!.artist).toBeUndefined();
+    expect(tracks[1]!.title).toBeUndefined();
   });
 
   it("normalizes Windows / classic-Mac line endings", () => {
@@ -81,8 +81,8 @@ describe("parseM3uContent", () => {
 
   it("each track gets a unique id and idle status", () => {
     const tracks = parseM3uContent("a.mp3\nb.mp3");
-    expect(tracks[0].id).not.toBe(tracks[1].id);
-    expect(tracks[0].enrichment.status).toBe("idle");
-    expect(tracks[0].spotify.status).toBe("idle");
+    expect(tracks[0]!.id).not.toBe(tracks[1]!.id);
+    expect(tracks[0]!.enrichment.status).toBe("idle");
+    expect(tracks[0]!.spotify.status).toBe("idle");
   });
 });

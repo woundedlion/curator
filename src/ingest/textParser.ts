@@ -1,6 +1,7 @@
 import { v4 as uuid } from "uuid";
 import { ARTIST_TITLE_SEPARATOR } from "../constants";
 import type { Track } from "../types";
+import { stripBom } from "../util/textNormalize";
 import {
   buildTracksFromExport,
   tryParseCuratorExport,
@@ -33,13 +34,6 @@ function buildTrackFromLine(line: string): Track {
     return { ...base, artist: first, title: second };
   }
   return { ...base, title: first };
-}
-
-function stripBom(text: string): string {
-  // Notepad on Windows saves UTF-8 with a leading BOM (U+FEFF). Without
-  // stripping, the first track's artist becomes `"<U+FEFF>Artist"` which
-  // breaks all downstream matching.
-  return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
 }
 
 export function parseTextContent(text: string): Track[] {

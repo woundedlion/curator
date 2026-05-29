@@ -3,7 +3,6 @@ import { usePlaylistStore } from "../store/playlistStore";
 import { useSettingsStore } from "../store/settingsStore";
 import { useSpotifyStore } from "../store/spotifyStore";
 import { useUiStore } from "../store/uiStore";
-import { findPlaylistsByName } from "../spotify/playlists";
 import {
   SpotifyAuthExpiredError,
   SpotifyForbiddenError,
@@ -145,10 +144,11 @@ export function CreatePlaylistPanel() {
 
   function start() {
     if (!user) return;
-    const matches = findPlaylistsByName(
-      spotifyPlaylists,
-      user.id,
-      playlist.name,
+    const targetName = playlist.name.trim().toLowerCase();
+    const matches = spotifyPlaylists.filter(
+      (p) =>
+        p.ownerId === user.id &&
+        p.name.trim().toLowerCase() === targetName,
     );
     if (matches.length === 0) {
       void publish("create");

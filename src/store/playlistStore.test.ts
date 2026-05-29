@@ -193,6 +193,7 @@ describe("source-of-truth invariant via fillMissingDisplayFields", () => {
         status: "matched",
         uri: "spotify:track:abc",
         candidates: [],
+        score: 1,
       },
     });
     usePlaylistStore.getState().addTracks([track]);

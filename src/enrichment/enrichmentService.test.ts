@@ -14,6 +14,14 @@ vi.mock("../db/musicbrainzCache", () => ({
   readCachedCandidates: (key: unknown) => readCacheMock(key),
   writeCachedCandidates: (key: unknown, candidates: MBCandidate[]) =>
     writeCacheMock(key, candidates),
+  // Production code normalizes inside the cache module; here we pass
+  // the raw track fields through so existing key-shape assertions
+  // continue to compare against title/artist/album literals.
+  cacheKeyForTrack: (track: {
+    title?: string;
+    artist?: string;
+    album?: string;
+  }) => ({ title: track.title, artist: track.artist, album: track.album }),
 }));
 
 import { enrichTrack } from "./enrichmentService";
@@ -133,7 +141,7 @@ describe("enrichTrack", () => {
 
     expect(readCacheMock).not.toHaveBeenCalled();
     expect(searchRecordingsMock).toHaveBeenCalled();
-    expect(outcome.candidates[0].recordingId).toBe("fresh");
+    expect(outcome.candidates[0]!.recordingId).toBe("fresh");
     expect(writeCacheMock).toHaveBeenCalled();
   });
 
@@ -200,6 +208,51 @@ describe("enrichTrack", () => {
     await enrichTrack(track, "me@example.test", 0.75);
 
     expect(searchRecordingsMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("does NOT return 'no-query' when primary fields are missing but alt-query produced a match (regression)", async () => {
+    // The previous early-return for "title and artist both undefined"
+    // clobbered a successful alt outcome with `failureReason: no-query`.
+    // The fix: only return no-query when alt also had nothing to query.
+    // Primary builds an empty query (title/artist undefined) so
+    // searchRecordings is NOT called for it — the alt is the only
+    // request that fires.
+    searchRecordingsMock.mockResolvedValueOnce([
+      candidate({
+        title: "Karma Police",
+        artist: "Radiohead",
+        album: "OK Computer",
+        year: 1997,
+      }),
+    ]);
+    const track = trackOf({
+      title: undefined,
+      artist: undefined,
+      altQuery: { title: "Karma Police", artist: "Radiohead" },
+    });
+
+    const outcome = await enrichTrack(track, "me@example.test", 0.6);
+
+    expect(searchRecordingsMock).toHaveBeenCalledTimes(1);
+    // The key regression assertion: outcome must NOT be the spurious
+    // failed/no-query that the prior early return produced. Whether the
+    // alt's single candidate scores high enough for "matched" vs
+    // "ambiguous" depends on the scorer, but both are valid outcomes —
+    // what matters is the alt's work isn't clobbered.
+    expect(outcome.status).not.toBe("failed");
+    expect(outcome.failureReason).toBeUndefined();
+    expect(outcome.candidates).toHaveLength(1);
+  });
+
+  it("returns 'no-query' only when both primary AND alt have nothing to query", async () => {
+    // Primary fields undefined, alt also undefined — true no-query.
+    const track = trackOf({ title: undefined, artist: undefined });
+
+    const outcome = await enrichTrack(track, "me@example.test", 0.6);
+
+    expect(searchRecordingsMock).not.toHaveBeenCalled();
+    expect(outcome.status).toBe("failed");
+    expect(outcome.failureReason).toBe("no-query");
   });
 
   it("merges primary + alt candidates and dedupes by recordingId, preferring primary order", async () => {

@@ -50,6 +50,15 @@ export type SpotifyPlaylistResponse = {
   public?: boolean;
 };
 
+// Spotify's playlist-tracks endpoint ships at least three on-the-wire
+// shapes that callers need to tolerate, often within the same response:
+//   1. `{ track: SpotifyTrackResponse | null }`  — the documented shape.
+//   2. `{ item: SpotifyTrackResponse | null }`   — newer envelope on
+//      some unified endpoints; same payload, different key.
+//   3. A wholly flat SpotifyTrackResponse with no envelope at all.
+// `extractTrackFromItem` in playlists.ts is the single funnel that
+// normalizes all three; this DTO carries the two named-envelope
+// variants. The "flat" form is matched structurally by the same helper.
 export type SpotifyPlaylistTrackItem = {
   added_at?: string;
   is_local?: boolean;

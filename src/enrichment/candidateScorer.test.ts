@@ -50,8 +50,8 @@ describe("scoreCandidates", () => {
       year: 1997,
     });
     const out = scoreCandidates(track, candidates);
-    expect(out[0].recordingId).toBe("right");
-    expect(out[0].score).toBeGreaterThan(out[1].score);
+    expect(out[0]!.recordingId).toBe("right");
+    expect(out[0]!.score).toBeGreaterThan(out[1]!.score);
   });
 
   it("prefers the year-aligned candidate as a tie-breaker when other fields match", () => {
@@ -78,7 +78,7 @@ describe("scoreCandidates", () => {
       year: 1997,
     });
     const out = scoreCandidates(track, candidates);
-    expect(out[0].recordingId).toBe("original");
+    expect(out[0]!.recordingId).toBe("original");
   });
 
   it("attaches a score to every returned candidate", () => {

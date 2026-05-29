@@ -93,11 +93,25 @@ export function buildTrackFromExport(t: CuratorExportedTrack): Track {
     discNo: t.discNo,
     durationMs: t.durationMs,
     coverUrl: t.coverUrl,
+    // Round-tripped rows are restored as `matched` by user decision.
+    // We don't carry the original score or the full candidate set
+    // through the export (intentional — the file would be massive);
+    // synthesize a sentinel score of 1 and an empty candidate list so
+    // the discriminated union's `matched` shape is satisfied.
     enrichment: t.mbRecordingId
-      ? { status: "matched", mbRecordingId: t.mbRecordingId }
+      ? {
+          status: "matched",
+          mbRecordingId: t.mbRecordingId,
+          score: 1,
+        }
       : { status: "idle" },
     spotify: t.spotifyUri
-      ? { status: "matched", uri: t.spotifyUri }
+      ? {
+          status: "matched",
+          uri: t.spotifyUri,
+          candidates: [],
+          score: 1,
+        }
       : { status: "idle" },
   };
 }

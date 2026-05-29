@@ -189,7 +189,9 @@ describe("toImportedTrack", () => {
     expect(t.source.kind).toBe("spotify-import");
     expect(t.source.spotifyUri).toBe("spotify:track:track-1");
     expect(t.spotify.status).toBe("matched");
-    expect(t.spotify.uri).toBe("spotify:track:track-1");
+    if (t.spotify.status === "matched") {
+      expect(t.spotify.uri).toBe("spotify:track:track-1");
+    }
     expect(t.enrichment.status).toBe("idle");
     expect(t.title).toBe("Karma Police");
     expect(t.artist).toBe("Radiohead");

@@ -1,25 +1,19 @@
-import { deleteCachedCandidates } from "../db/musicbrainzCache";
-import { normalizeForMatching } from "../metadata/normalizers";
+import {
+  cacheKeyForTrack,
+  deleteCachedCandidates,
+} from "../db/musicbrainzCache";
 import { spotifyDisplayFieldsFromCandidate } from "../spotify/spotifyMappers";
 import { usePlaylistStore } from "../store/playlistStore";
 import { useSettingsStore } from "../store/settingsStore";
 import { useUiStore } from "../store/uiStore";
-import type { SpotifyCandidate, Track } from "../types";
+import type { SpotifyCandidate } from "../types";
 import { enrichOneTrackMb } from "./enrichmentRunner";
-
-function cacheKeyFor(track: Track) {
-  return {
-    title: normalizeForMatching(track.title),
-    artist: normalizeForMatching(track.artist),
-    album: normalizeForMatching(track.album),
-  };
-}
 
 async function clearMbCacheForCurrentIdentity(trackId: string): Promise<void> {
   const track = usePlaylistStore.getState().tracksById[trackId];
   if (!track) return;
   try {
-    await deleteCachedCandidates(cacheKeyFor(track));
+    await deleteCachedCandidates(cacheKeyForTrack(track));
   } catch (error) {
     console.warn("spotifyPicker: cache clear failed", { trackId, error });
   }

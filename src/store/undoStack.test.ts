@@ -104,8 +104,13 @@ describe("snapshot helpers", () => {
       id: "a",
       source: { kind: "text", rawLine: "a" },
       title: "Karma Police",
-      enrichment: { status: "matched", mbRecordingId: "mb-1" },
-      spotify: { status: "matched", uri: "spotify:track:xyz" },
+      enrichment: { status: "matched", mbRecordingId: "mb-1", score: 1 },
+      spotify: {
+        status: "matched",
+        uri: "spotify:track:xyz",
+        candidates: [],
+        score: 1,
+      },
     };
     const priorIds = ["a", "b"];
     const entry = snapshotDeleteEntry(priorIds, [track], NO_SELECTION);

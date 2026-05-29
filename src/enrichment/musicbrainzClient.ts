@@ -8,7 +8,11 @@ import { parseRetryAfter } from "../spotify/apiClient";
 import { IntervalQueue } from "../util/intervalQueue";
 
 const SEARCH_LIMIT = 5;
-const SEARCH_TIMEOUT_MS = 10_000;
+// MB serves traffic from a single global cluster; tail latency during
+// peak hours can climb above 10s on routine searches. Bumped to 30s so
+// a slow-but-successful response doesn't surface as a confusing
+// "signal is aborted without reason" error toast.
+const SEARCH_TIMEOUT_MS = 30_000;
 const SERVICE_UNAVAILABLE_STATUS = 503;
 // MB returns 503 during sustained traffic or maintenance windows. One
 // retry buys us a free pass through a transient blip without retrying so
@@ -145,12 +149,38 @@ async function fetchWithTimeout(
   // entire enrichment pipeline. Cap each fetch so a network stall
   // becomes a normal failure instead of a deadlock.
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), SEARCH_TIMEOUT_MS);
+  let timedOut = false;
+  const timeoutId = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, SEARCH_TIMEOUT_MS);
   try {
     return await fetch(url, {
       headers: buildRequestHeaders(contactEmail),
       signal: controller.signal,
     });
+  } catch (error) {
+    // Translate any abort-shape error into a user-meaningful timeout.
+    // `instanceof DOMException` is too narrow — fetch in some browsers
+    // (Safari, some polyfills) throws an Error subclass with
+    // name="AbortError" that isn't a DOMException. Checking the name
+    // alone is the portable test. Also catches the raw "signal is
+    // aborted without reason" message that surfaces when an Error
+    // shape we don't expect carries the abort.
+    const message = error instanceof Error ? error.message : String(error);
+    const isAbort =
+      timedOut ||
+      (error instanceof Error && error.name === "AbortError") ||
+      message.includes("aborted");
+    if (isAbort) {
+      throw new Error(
+        `MusicBrainz request timed out after ${Math.round(
+          SEARCH_TIMEOUT_MS / 1000,
+        )}s — try again later`,
+        { cause: error },
+      );
+    }
+    throw error;
   } finally {
     clearTimeout(timeoutId);
   }

@@ -39,7 +39,10 @@ function pickRepresentative(
   group: MBCandidate[],
   track: Track,
 ): MBCandidate {
-  if (group.length === 1) return group[0];
+  // Caller (dedupeBySongIdentity) only builds groups from at-least-one
+  // candidate, so group[0] is always defined; the `!` is the local
+  // cost of `noUncheckedIndexedAccess`.
+  if (group.length === 1) return group[0]!;
   if (typeof track.year === "number") {
     return pickClosestYear(group, track.year);
   }

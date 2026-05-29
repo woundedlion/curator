@@ -1,6 +1,7 @@
 import { v4 as uuid } from "uuid";
 import { ARTIST_TITLE_SEPARATOR } from "../constants";
 import type { Track } from "../types";
+import { stripBom } from "../util/textNormalize";
 
 const EXTINF_PREFIX = "#EXTINF:";
 
@@ -32,10 +33,6 @@ function buildTrack(rawLine: string, hint: ExtInfHint): Track {
     enrichment: { status: "idle" },
     spotify: { status: "idle" },
   };
-}
-
-function stripBom(text: string): string {
-  return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text;
 }
 
 export function parseM3uContent(text: string): Track[] {

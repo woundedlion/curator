@@ -52,20 +52,30 @@ export function coverArtUrlForRelease(releaseMbid: string | undefined): string |
   return `${COVER_ART_BASE}/${releaseMbid}${FRONT_250_SUFFIX}`;
 }
 
+// Discriminates a confirmed 404 (caller does nothing further, the negative
+// cache absorbs it) from a transient failure (network / 5xx / timeout) the
+// caller may want to surface to the user. Without this distinction the
+// runner sees only `undefined` for both outcomes and silently drops cover
+// art that *should* have resolved.
+export type CoverArtProbeResult =
+  | { kind: "ok"; url: string }
+  | { kind: "missing" }
+  | { kind: "transient" };
+
 export async function probeCoverArtUrl(
   releaseMbid: string | undefined,
-): Promise<string | undefined> {
+): Promise<CoverArtProbeResult> {
   const url = coverArtUrlForRelease(releaseMbid);
-  if (!url || !releaseMbid) return undefined;
+  if (!url || !releaseMbid) return { kind: "missing" };
   const cache = await ensureHydrated();
-  if (cache.has(releaseMbid)) return undefined;
+  if (cache.has(releaseMbid)) return { kind: "missing" };
   return probeLimiter.run(() => probeOne(url, releaseMbid));
 }
 
 async function probeOne(
   url: string,
   releaseMbid: string,
-): Promise<string | undefined> {
+): Promise<CoverArtProbeResult> {
   // HEAD probes against CAA are usually fast but the host occasionally
   // hangs without responding. Cap the wait so a stall doesn't leak fetch
   // resources and so re-enrich-all on a 1k-track playlist can't pin on
@@ -79,20 +89,20 @@ async function probeOne(
     });
     if (response.status === 404) {
       recordNegative(releaseMbid);
-      return undefined;
+      return { kind: "missing" };
     }
     if (!response.ok) {
       console.warn("probeCoverArtUrl: transient failure", response.status, url);
-      return undefined;
+      return { kind: "transient" };
     }
-    return url;
+    return { kind: "ok", url };
   } catch (error) {
     // AbortError from our own timeout isn't worth surfacing in console as
     // a "network error" — that misleads about the failure cause.
     if (error instanceof Error && error.name !== "AbortError") {
       console.warn("probeCoverArtUrl: network error", url, error);
     }
-    return undefined;
+    return { kind: "transient" };
   } finally {
     clearTimeout(timeoutId);
   }

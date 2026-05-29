@@ -118,7 +118,7 @@ export function NameCollisionDialog({
 
         {matches.length === 1 ? (
           <SingleMatchActions
-            match={matches[0]}
+            match={matches[0]!}
             onReplace={onReplace}
             onCancel={onCancel}
           />

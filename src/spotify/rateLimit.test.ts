@@ -481,6 +481,114 @@ describe("circuit breaker half-open / probe semantics", () => {
     const parsed = Number(persisted);
     expect(parsed).toBeGreaterThanOrEqual(Date.now() + 90_000 - 1000);
   });
+
+  it("consecutive probe 429s double the open window each time (CORS-hidden multi-hour ban)", async () => {
+    // First trip: CORS-hidden Retry-After → 5min default.
+    {
+      const send = vi.fn(async () => tooMany(null));
+      const rej = captureRejection(submitTokenRequest(send, "/a"));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(await rej).toBeInstanceOf(SpotifyRateLimitError);
+      expect(spotifyCircuitOpenMs()).toBeGreaterThanOrEqual(5 * 60_000 - 1000);
+      expect(spotifyCircuitOpenMs()).toBeLessThan(6 * 60_000);
+    }
+
+    // Wait out the 5-min window, fire a probe — still 429.
+    await vi.advanceTimersByTimeAsync(5 * 60_000 + 1000);
+    {
+      const sendProbe = vi.fn(async () => tooMany(null));
+      const rej = captureRejection(submitTokenRequest(sendProbe, "/probe"));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(await rej).toBeInstanceOf(SpotifyRateLimitError);
+      // Trip #2 escalates to ~10 min (5min default * 2).
+      expect(spotifyCircuitOpenMs()).toBeGreaterThanOrEqual(10 * 60_000 - 1000);
+      expect(spotifyCircuitOpenMs()).toBeLessThan(11 * 60_000);
+    }
+
+    await vi.advanceTimersByTimeAsync(10 * 60_000 + 1000);
+    {
+      const sendProbe = vi.fn(async () => tooMany(null));
+      const rej = captureRejection(submitTokenRequest(sendProbe, "/probe"));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(await rej).toBeInstanceOf(SpotifyRateLimitError);
+      // Trip #3 escalates to ~20 min.
+      expect(spotifyCircuitOpenMs()).toBeGreaterThanOrEqual(20 * 60_000 - 1000);
+    }
+  });
+
+  it("a successful probe resets the escalation counter (next 429 starts fresh)", async () => {
+    // Trip twice to escalate.
+    {
+      const send = vi.fn(async () => tooMany(null));
+      const rej = captureRejection(submitTokenRequest(send, "/a"));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(await rej).toBeInstanceOf(SpotifyRateLimitError);
+    }
+    await vi.advanceTimersByTimeAsync(5 * 60_000 + 1000);
+    {
+      const sendProbe = vi.fn(async () => tooMany(null));
+      const rej = captureRejection(submitTokenRequest(sendProbe, "/probe"));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(await rej).toBeInstanceOf(SpotifyRateLimitError);
+    }
+
+    // Successful probe closes the circuit and resets counter.
+    await vi.advanceTimersByTimeAsync(10 * 60_000 + 1000);
+    {
+      const sendProbe = vi.fn(async () => ok());
+      const p = submitTokenRequest(sendProbe, "/probe");
+      await vi.advanceTimersByTimeAsync(0);
+      await p;
+      expect(spotifyCircuitOpenMs()).toBe(0);
+    }
+
+    // A fresh 429 now should be back at the unescalated 5min default,
+    // not the next exponential step.
+    await vi.advanceTimersByTimeAsync(MIN_SPACING_MS);
+    {
+      const send = vi.fn(async () => tooMany(null));
+      const rej = captureRejection(submitTokenRequest(send, "/b"));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(await rej).toBeInstanceOf(SpotifyRateLimitError);
+      expect(spotifyCircuitOpenMs()).toBeGreaterThanOrEqual(5 * 60_000 - 1000);
+      expect(spotifyCircuitOpenMs()).toBeLessThan(6 * 60_000);
+    }
+  });
+
+  it("escalation count persists across reload (so a fresh tab doesn't restart at trip #1)", async () => {
+    // Trip twice in the original module.
+    {
+      const send = vi.fn(async () => tooMany(null));
+      const rej = captureRejection(submitTokenRequest(send, "/a"));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(await rej).toBeInstanceOf(SpotifyRateLimitError);
+    }
+    await vi.advanceTimersByTimeAsync(5 * 60_000 + 1000);
+    {
+      const sendProbe = vi.fn(async () => tooMany(null));
+      const rej = captureRejection(submitTokenRequest(sendProbe, "/probe"));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(await rej).toBeInstanceOf(SpotifyRateLimitError);
+    }
+
+    // Reload the module. The persisted open window may have elapsed,
+    // but the counter should carry over: the next trip should escalate
+    // as if it were trip #3 (×4), not trip #1 (×1).
+    await vi.advanceTimersByTimeAsync(10 * 60_000 + 1000);
+    vi.resetModules();
+    const fresh = await import("./apiClient");
+
+    const send = vi.fn(async () => tooMany(null));
+    const rej = fresh
+      .submitTokenRequest(send, "/c")
+      .catch((e) => e);
+    await vi.advanceTimersByTimeAsync(0);
+    await rej;
+    // Trip #3 → 20 min.
+    expect(fresh.spotifyCircuitOpenMs()).toBeGreaterThanOrEqual(
+      20 * 60_000 - 1000,
+    );
+  });
 });
 
 describe("invariants under concurrent traffic", () => {

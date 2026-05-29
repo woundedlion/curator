@@ -49,8 +49,8 @@ export function useDialogFocus<T extends HTMLElement>(
         event.preventDefault();
         return;
       }
-      const first = items[0];
-      const last = items[items.length - 1];
+      const first = items[0]!;
+      const last = items[items.length - 1]!;
       const active = document.activeElement as HTMLElement | null;
       // "On the container itself" must be treated as outside the focusable
       // ring — otherwise Shift+Tab from the (tabIndex={-1}) container slips

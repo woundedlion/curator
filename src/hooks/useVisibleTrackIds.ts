@@ -1,4 +1,5 @@
 import { useMemo } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { usePlaylistStore } from "../store/playlistStore";
 
 export type VisibilityResult = {
@@ -7,11 +8,16 @@ export type VisibilityResult = {
 };
 
 export function useVisibleTrackIds(): VisibilityResult {
-  const trackIds = usePlaylistStore((state) => state.playlist.trackIds);
-  const hideUnmatched = usePlaylistStore(
-    (state) => state.playlist.hideUnmatched,
+  // One subscription, shallow-compared, so the hook re-runs at most
+  // once per store mutation regardless of how many of the three
+  // referenced slices changed.
+  const { trackIds, hideUnmatched, tracksById } = usePlaylistStore(
+    useShallow((state) => ({
+      trackIds: state.playlist.trackIds,
+      hideUnmatched: state.playlist.hideUnmatched,
+      tracksById: state.tracksById,
+    })),
   );
-  const tracksById = usePlaylistStore((state) => state.tracksById);
 
   return useMemo(() => {
     if (!hideUnmatched) return { visibleTrackIds: trackIds, hiddenCount: 0 };

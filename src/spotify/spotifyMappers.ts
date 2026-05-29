@@ -84,9 +84,15 @@ export function toImportedTrack(item: SpotifyTrackResponse): Track {
     durationMs: item.duration_ms,
     coverUrl: pickSmallestImage(album?.images),
     enrichment: { status: "idle" },
+    // Spotify-import is "matched by definition" — the user picked this
+    // row by importing the playlist. We don't have a candidate list or
+    // score (this isn't a search result); synthesize so the matched
+    // arm is satisfied. previewUrl carries through when present.
     spotify: {
       status: "matched",
       uri: item.uri,
+      candidates: [],
+      score: 1,
       previewUrl: item.preview_url ?? undefined,
     },
   };

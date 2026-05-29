@@ -1,7 +1,12 @@
 import { create } from "zustand";
 import { DEFAULT_PLAYLIST_NAME, DRAFT_PLAYLIST_ID } from "../constants";
-import { loadDraft, saveDraft } from "../db/draftRepository";
+import {
+  DraftQuotaExceededError,
+  loadDraft,
+  saveDraft,
+} from "../db/draftRepository";
 import { cancelTrackRequests } from "../services/cancelTrackRequests";
+import { useUiStore } from "./uiStore";
 import {
   moveSelectionBlock,
   moveSelectionBlockToEnd,
@@ -127,8 +132,40 @@ function cycleSortDirection(
   return {};
 }
 
+// 250 ms coalesces bursts of store mutations (e.g. 100 enrichment
+// completions in rapid succession) into a single IDB write while still
+// flushing fast enough that a tab close ~immediately after the last
+// edit catches the debounce — the pagehide/visibilitychange handlers
+// in useAppBootstrap flush synchronously if the timer is still pending.
 const PERSIST_DEBOUNCE_MS = 250;
 let pendingPersistTimer: ReturnType<typeof setTimeout> | undefined;
+// Persistence toasts can fire on every keystroke once writes are
+// failing. Latch once per session per kind so the user sees the
+// warning but isn't drowned in duplicates; the next reload resets the
+// latches.
+let quotaToastShown = false;
+let genericPersistToastShown = false;
+
+function reportPersistError(error: unknown): void {
+  if (error instanceof DraftQuotaExceededError) {
+    if (quotaToastShown) return;
+    quotaToastShown = true;
+    useUiStore.getState().pushToast({
+      kind: "error",
+      message:
+        "Browser storage is full — draft can't be saved. Export to .curator.txt to preserve your work.",
+    });
+    return;
+  }
+  console.error("schedulePersist: persist failed", error);
+  if (genericPersistToastShown) return;
+  genericPersistToastShown = true;
+  useUiStore.getState().pushToast({
+    kind: "error",
+    message:
+      "Couldn't save draft to browser storage. Recent edits may be lost on reload — export to .curator.txt to preserve your work.",
+  });
+}
 
 async function persistImmediately(): Promise<void> {
   const state = usePlaylistStore.getState();
@@ -151,9 +188,7 @@ function schedulePersist(): void {
   if (pendingPersistTimer) clearTimeout(pendingPersistTimer);
   pendingPersistTimer = setTimeout(() => {
     pendingPersistTimer = undefined;
-    void persistImmediately().catch((error) => {
-      console.error("schedulePersist: persist failed", error);
-    });
+    void persistImmediately().catch(reportPersistError);
   }, PERSIST_DEBOUNCE_MS);
 }
 
@@ -162,7 +197,11 @@ export async function flushPendingPersist(): Promise<void> {
     clearTimeout(pendingPersistTimer);
     pendingPersistTimer = undefined;
   }
-  await persistImmediately();
+  try {
+    await persistImmediately();
+  } catch (error) {
+    reportPersistError(error);
+  }
 }
 
 function applyUndo(
@@ -555,7 +594,7 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => ({
   undo() {
     set((state) => {
       if (state.undoStack.length === 0) return state;
-      const entry = state.undoStack[state.undoStack.length - 1];
+      const entry = state.undoStack[state.undoStack.length - 1]!;
       const remaining = state.undoStack.slice(0, -1);
       // applyUndo restores the prior selection from the entry itself —
       // we don't blanket-clear selection any more.

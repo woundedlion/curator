@@ -1,4 +1,8 @@
 import type { Track } from "../types";
+import {
+  getSpotifyPreviewUrl,
+  getSpotifyUri,
+} from "../util/trackAccessors";
 
 export type PlaybackSource =
   | { kind: "local"; objectUrl: string; label: string }
@@ -16,8 +20,8 @@ export function hasInAppSource(
   sdkEnabled: boolean,
 ): boolean {
   if (track.localFile) return true;
-  if (sdkEnabled && track.spotify.uri) return true;
-  if (track.spotify.previewUrl) return true;
+  if (sdkEnabled && getSpotifyUri(track.spotify)) return true;
+  if (getSpotifyPreviewUrl(track.spotify)) return true;
   return false;
 }
 
@@ -42,17 +46,19 @@ export function createPlaybackSource(
       label: "Local file",
     };
   }
-  if (sdkEnabled && track.spotify.uri) {
+  const uri = getSpotifyUri(track.spotify);
+  if (sdkEnabled && uri) {
     return {
       kind: "spotify-sdk",
-      uri: track.spotify.uri,
+      uri,
       label: "Spotify (full track)",
     };
   }
-  if (track.spotify.previewUrl) {
+  const previewUrl = getSpotifyPreviewUrl(track.spotify);
+  if (previewUrl) {
     return {
       kind: "spotify-preview",
-      url: track.spotify.previewUrl,
+      url: previewUrl,
       label: "Spotify preview (30s)",
     };
   }

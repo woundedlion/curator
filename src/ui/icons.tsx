@@ -105,14 +105,10 @@ export function CircleGlyphIcon({
   );
 }
 
-export function MushroomCloudIcon({ className }: IconProps) {
-  // Stylised nuke icon: a mushroom-cloud silhouette. Used on the
-  // toolbar's "reset all enrichment state" button — the action is
-  // destructive enough to deserve a vivid affordance, hence the
-  // unambiguous icon.
+export function RefreshIcon({ className }: IconProps) {
   return (
     <svg viewBox="0 0 24 24" className={svgClass(className)} aria-hidden>
-      <path d="M12 1.5c-1.6 0-2.9 1-3.4 2.4-.4-.2-.8-.3-1.2-.3-1.6 0-2.9 1.3-2.9 2.9 0 .6.2 1.2.5 1.7-.9.4-1.5 1.3-1.5 2.4 0 .6.2 1.1.5 1.6H8v1.5H4v1.5h16v-1.5h-4v-1.5h4.5c.3-.5.5-1 .5-1.6 0-1.1-.6-2-1.5-2.4.3-.5.5-1.1.5-1.7 0-1.6-1.3-2.9-2.9-2.9-.4 0-.8.1-1.2.3C14.9 2.5 13.6 1.5 12 1.5zM9 15v2h2v5h2v-5h2v-2H9z" />
+      <path d="M12 5V2L7 6l5 4V7a5 5 0 0 1 5 5 5 5 0 0 1-5 5 5 5 0 0 1-5-5H5a7 7 0 0 0 7 7 7 7 0 0 0 7-7 7 7 0 0 0-7-7z" />
     </svg>
   );
 }

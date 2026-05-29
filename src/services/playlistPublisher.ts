@@ -36,13 +36,15 @@ function collectPushableUris(): string[] {
   for (const id of state.playlist.trackIds) {
     const track = state.tracksById[id];
     if (!track) continue;
-    const status = track.spotify.status;
+    const match = track.spotify;
     const eligible = hideUnmatched
-      ? status === "matched"
-      : status === "matched" || status === "ambiguous";
+      ? match.status === "matched"
+      : match.status === "matched" || match.status === "ambiguous";
     if (!eligible) continue;
-    const uri = track.spotify.uri;
-    if (uri) uris.push(uri);
+    // match is narrowed to "matched" | "ambiguous"; both arms carry
+    // `uri` (required vs optional respectively).
+    if (match.status !== "matched" && match.status !== "ambiguous") continue;
+    if (match.uri) uris.push(match.uri);
   }
   return uris;
 }

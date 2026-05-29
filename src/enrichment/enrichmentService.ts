@@ -1,12 +1,12 @@
 import type { MBCandidate, Track } from "../types";
 import {
+  cacheKeyForTrack,
   readCachedCandidates,
   writeCachedCandidates,
 } from "../db/musicbrainzCache";
 import { dedupeBySongIdentity } from "./candidateDedup";
 import { scoreCandidates } from "./candidateScorer";
 import { buildRecordingQuery } from "./luceneQuery";
-import { normalizeForMatching } from "../metadata/normalizers";
 import { searchRecordings } from "./musicbrainzClient";
 import {
   MIN_AUTO_MATCH_TITLE_SIMILARITY,
@@ -21,20 +21,13 @@ export type EnrichmentOutcome = {
   failureReason?: "no-query" | "no-results";
 };
 
-function cacheKeyForTrack(track: Track) {
-  return {
-    title: normalizeForMatching(track.title),
-    artist: normalizeForMatching(track.artist),
-    album: normalizeForMatching(track.album),
-  };
-}
-
 function classifyOutcome(
   scored: MBCandidate[],
   track: Track,
   acceptThreshold: number,
 ): EnrichmentOutcome {
-  if (scored.length === 0) {
+  const best = scored[0];
+  if (!best) {
     return {
       status: "failed",
       candidates: [],
@@ -42,7 +35,6 @@ function classifyOutcome(
       failureReason: "no-results",
     };
   }
-  const [best] = scored;
   const scoreOk = best.score >= acceptThreshold;
   const titleOk = fieldLooksSimilar(track.title, best.title);
   const artistOk = fieldLooksSimilar(track.artist, best.artist);
@@ -182,7 +174,16 @@ export async function enrichTrack(
   // re-runs on cache miss anyway.
   if (primaryScored.length > 0) {
     await writeCachedCandidates(cacheKey, primaryScored);
-  } else if (primaryFields.title === undefined && primaryFields.artist === undefined) {
+  } else if (
+    outcome.status === "failed" &&
+    primaryFields.title === undefined &&
+    primaryFields.artist === undefined &&
+    !shouldTryAlt
+  ) {
+    // True "no-query": primary had nothing to query AND alt either
+    // doesn't exist or matches primary (so it also had nothing). When
+    // alt did run, defer to its outcome (no-results / ambiguous /
+    // matched) rather than clobbering it.
     return {
       status: "failed",
       candidates: [],

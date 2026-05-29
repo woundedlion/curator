@@ -29,7 +29,12 @@ export function AmbiguousEnrichmentDialog({ trackId, onClose }: Props) {
   const dialogRef = useDialogFocus<HTMLDivElement>(Boolean(trackId), onClose);
 
   if (!trackId || !track) return null;
-  const candidates = track.enrichment.candidates ?? [];
+  const candidates =
+    track.enrichment.status === "matched" ||
+    track.enrichment.status === "ambiguous" ||
+    track.enrichment.status === "failed"
+      ? (track.enrichment.candidates ?? [])
+      : [];
 
   return (
     <div

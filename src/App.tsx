@@ -36,16 +36,25 @@ export function App() {
     string | null
   >(null);
 
+  // The runners toast their own user-visible errors; the .catch is
+  // belt-and-suspenders for unexpected exceptions outside those paths
+  // so an unhandled rejection doesn't bubble to the console silently.
   const handleFiles = useCallback((files: File[]) => {
-    void ingestDroppedFiles(files);
+    ingestDroppedFiles(files).catch((error) => {
+      console.error("ingestDroppedFiles crashed", error);
+    });
   }, []);
 
   const handlePlaylistDrop = useCallback((playlistId: string) => {
-    void importPlaylistById(playlistId);
+    importPlaylistById(playlistId).catch((error) => {
+      console.error("importPlaylistById crashed", error);
+    });
   }, []);
 
   const handleReEnrich = useCallback((trackId: string) => {
-    void reenrichTrack(trackId);
+    reenrichTrack(trackId).catch((error) => {
+      console.error("reenrichTrack crashed", error);
+    });
   }, []);
 
   return (
@@ -77,10 +86,17 @@ export function App() {
         recursive={recursive}
       />
       <SettingsDialog />
-      <AmbiguousMatchDialog
-        trackId={spotifyPickerTrackId}
-        onClose={() => setSpotifyPickerTrackId(null)}
-      />
+      {spotifyPickerTrackId !== null && (
+        // `key` gives each picker session a fresh component instance so
+        // the dialog's form state initializes via standard useState,
+        // not a render-phase reset (see useState §"Storing information
+        // from previous renders" — equivalent semantic, clearer intent).
+        <AmbiguousMatchDialog
+          key={spotifyPickerTrackId}
+          trackId={spotifyPickerTrackId}
+          onClose={() => setSpotifyPickerTrackId(null)}
+        />
+      )}
       <AmbiguousEnrichmentDialog
         trackId={enrichmentPickerTrackId}
         onClose={() => setEnrichmentPickerTrackId(null)}
