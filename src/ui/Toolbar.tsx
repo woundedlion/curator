@@ -69,7 +69,17 @@ export function Toolbar({ hiddenCount, onPickFolder }: Props) {
   function confirmRefresh() {
     setShowRefreshConfirm(false);
     nukeEnrichmentState();
-    void reenrichAll();
+    runReenrichAll();
+  }
+
+  // reenrichAll surfaces its own user-visible errors via toasts; this
+  // wrapper exists so an UNEXPECTED crash (e.g. a Zustand store throw)
+  // doesn't slip out as an unhandled rejection. It's only a console.error
+  // path — the user has already been informed of any handled failure.
+  function runReenrichAll(): void {
+    reenrichAll().catch((error) => {
+      console.error("reenrichAll crashed", error);
+    });
   }
 
   return (
@@ -126,7 +136,7 @@ export function Toolbar({ hiddenCount, onPickFolder }: Props) {
             : "Resume: restart lookups for unresolved tracks only"
         }
         icon={<PlayIcon />}
-        onClick={() => void reenrichAll()}
+        onClick={runReenrichAll}
         disabled={trackCount === 0}
       />
       <IconButton

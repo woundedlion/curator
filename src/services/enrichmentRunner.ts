@@ -8,7 +8,11 @@ import { RequestCancelledError } from "../util/intervalQueue";
 import { usePlaylistStore } from "../store/playlistStore";
 import { useSettingsStore } from "../store/settingsStore";
 import { useUiStore } from "../store/uiStore";
-import type { Enrichment, Track } from "../types";
+import type { Enrichment } from "../types";
+import {
+  isTrackPendingLookup,
+  shouldEnrichTrack,
+} from "./enrichmentEligibility";
 import {
   matchAllOnSpotify,
   rematchOnSpotify,
@@ -25,19 +29,11 @@ type RunOutcome = {
 };
 
 function shouldSkipTrack(trackId: string): boolean {
-  const state = usePlaylistStore.getState();
-  const track = state.tracksById[trackId];
-  if (!track) return true;
-  if (track.enrichment.userOverride) return true;
-  if (track.enrichment.status === "matched") return true;
-  // Spotify is source of truth: when configured, only enrich tracks Spotify
-  // confirmed. Ambiguous tracks enrich after the user picks (via reenrichTrack
-  // in spotifyPicker); missing tracks stay un-enriched.
+  const track = usePlaylistStore.getState().tracksById[trackId];
   const spotifyConfigured = Boolean(
     useSettingsStore.getState().settings.spotifyClientId,
   );
-  if (spotifyConfigured && track.spotify.status !== "matched") return true;
-  return false;
+  return !shouldEnrichTrack(track, spotifyConfigured);
 }
 
 
@@ -90,6 +86,18 @@ async function runOneTrack(
     const store = usePlaylistStore.getState();
     const liveTrack = store.tracksById[trackId];
     if (!liveTrack) return { result: outcome.status, failureReason: outcome.failureReason };
+
+    // Drop late results that arrive after a reset. The runner sets
+    // `enrichment.status = "pending"` at start via markPending; if the
+    // live status is anything else by the time we resume, something
+    // else has touched the row — most commonly nukeEnrichmentState
+    // (which cancels QUEUED tasks but cannot abort IN-FLIGHT HTTP
+    // calls; the network response can still land here after the row
+    // was reset to idle). Without this guard, the late response would
+    // silently rewrite a nuked row back to matched/ambiguous/failed.
+    if (liveTrack.enrichment.status !== "pending") {
+      return { result: outcome.status, failureReason: outcome.failureReason };
+    }
 
     // Preserve `userOverride` across re-enrichment — it survives a bulk
     // pass via shouldSkipTrack/isUserOverridden, but if the user picked a
@@ -348,38 +356,6 @@ function resetTrackEnrichmentToIdle(trackId: string): void {
   usePlaylistStore.getState().updateTrack(trackId, {
     enrichment: { status: "idle" },
   });
-}
-
-// Toolbar "re-enrich all" (↻) is a "resume unfinished work" button —
-// it picks up tracks whose Spotify lookup or MB lookup hasn't happened
-// yet, and leaves rows that have already been resolved (matched /
-// ambiguous / missing on Spotify; matched / ambiguous / failed on MB)
-// untouched. The per-row ↻ remains the escape hatch for "redo from
-// scratch" on a single row, since it explicitly clears state and
-// re-runs every step.
-function isTrackPendingLookup(track: Track, spotifyConfigured: boolean): boolean {
-  if (track.enrichment.userOverride) return false;
-  if (track.source.kind === "spotify-import") {
-    return track.enrichment.status === "idle";
-  }
-  if (!spotifyConfigured) {
-    return track.enrichment.status === "idle";
-  }
-  // With Spotify configured: only truly-unknown rows are eligible.
-  //   - Spotify idle  : needs a Spotify search (and MB will run after).
-  //   - Spotify matched + MB idle : MB never ran for this resolved row.
-  // Every other state is a resolved decision the user already saw
-  // (ambiguous = waiting on user picker; missing = Spotify said no;
-  // matched on both = done). Re-queueing those on every toolbar ↻
-  // burns the rate-limit budget on settled work.
-  if (track.spotify.status === "idle") return true;
-  if (
-    track.spotify.status === "matched" &&
-    track.enrichment.status === "idle"
-  ) {
-    return true;
-  }
-  return false;
 }
 
 export async function reenrichAll(): Promise<void> {

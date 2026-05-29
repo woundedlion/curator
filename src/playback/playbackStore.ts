@@ -155,15 +155,24 @@ export const usePlaybackStore = create<PlaybackState>((set, get) => {
   ): PlayerTarget | null {
     // previewUrl is always preferred when present — it works without
     // SDK and without Premium. Falling back to SDK is only viable when
-    // the user opted in AND has a client id; the Player's sdkLoader
-    // will be invoked if needed to confirm.
+    // the user opted in AND has a client id AND SDK init hasn't
+    // already failed. Once status is "unavailable" the Player caches
+    // sdkLoadAttempted=true and silently returns null on every
+    // subsequent SDK-required install; constructing an SDK source here
+    // would produce a silent dead-end (no playback, no toast). Treat
+    // "unavailable" as "SDK is closed for the rest of this session"
+    // and fall through to the no-source toast in playCandidate.
+    const sdkStatus = get().sdk.status;
+    const sdkUsable =
+      sdkStatus === "ready" ||
+      (sdkStatus !== "unavailable" && shouldTryEnableSdk());
     const source: PlaybackSource = candidate.previewUrl
       ? {
           kind: "spotify-preview",
           url: candidate.previewUrl,
           label: "Spotify preview (30s)",
         }
-      : shouldTryEnableSdk() || get().sdk.status === "ready"
+      : sdkUsable
         ? {
             kind: "spotify-sdk",
             uri: candidate.uri,
@@ -218,14 +227,20 @@ export const usePlaybackStore = create<PlaybackState>((set, get) => {
       if (!storeRef.player) return;
       const target = buildCandidateTarget(candidate);
       if (!target) {
-        const sdkOff = !shouldTryEnableSdk() && get().sdk.status !== "ready";
-        useUiStore.getState().pushToast({
-          kind: "info",
-          message:
-            !candidate.previewUrl && sdkOff
-              ? "No 30-second preview for this track — enable Full-track playback in Settings (requires Spotify Premium)"
-              : "Playback unavailable for this track",
-        });
+        const sdkStatus = get().sdk.status;
+        const sdkUnavailable = sdkStatus === "unavailable";
+        const sdkOff = !shouldTryEnableSdk() && sdkStatus !== "ready";
+        let message: string;
+        if (!candidate.previewUrl && sdkUnavailable) {
+          message =
+            "No 30-second preview for this track — full-track playback is unavailable this session (reload to retry)";
+        } else if (!candidate.previewUrl && sdkOff) {
+          message =
+            "No 30-second preview for this track — enable Full-track playback in Settings (requires Spotify Premium)";
+        } else {
+          message = "Playback unavailable for this track";
+        }
+        useUiStore.getState().pushToast({ kind: "info", message });
         return;
       }
       void storeRef.player.play(target);

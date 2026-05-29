@@ -90,39 +90,34 @@ async function addAndEnrich(files: File[]): Promise<void> {
 // everything else to the existing ingest pipeline. Files that read fail
 // fall through as "others" — the downstream parser will surface its own
 // error rather than us swallowing it here.
+type Classification =
+  | { kind: "envelope"; env: CuratorExportEnvelope }
+  | { kind: "other"; file: File };
+
+async function classifyOne(file: File): Promise<Classification> {
+  if (!isTextFile(file.name)) return { kind: "other", file };
+  try {
+    const env = tryParseCuratorExport(await file.text());
+    return env ? { kind: "envelope", env } : { kind: "other", file };
+  } catch {
+    return { kind: "other", file };
+  }
+}
+
 async function partitionCuratorExports(
   files: File[],
 ): Promise<{ envelopes: CuratorExportEnvelope[]; others: File[] }> {
-  // Read all text files in parallel — file.text() is independent per
-  // file and was previously serialized in a for-loop, dominating the
-  // routing time on drops with many .txt entries. The result-merge
-  // preserves the input order of `others` so downstream parsing sees
-  // files in their dropped sequence.
+  // Read all text files in parallel. `Promise.all` preserves input order
+  // in the resolved array, so the trailing partition pass naturally
+  // keeps `others` in dropped sequence — no index bookkeeping needed.
+  const classifications = await Promise.all(files.map(classifyOne));
   const envelopes: CuratorExportEnvelope[] = [];
-  const others: File[] = new Array(files.length);
-  const textReads: Promise<{ index: number; env: CuratorExportEnvelope | null }>[] = [];
-  for (let i = 0; i < files.length; i++) {
-    const file = files[i]!;
-    if (!isTextFile(file.name)) {
-      others[i] = file;
-      continue;
-    }
-    textReads.push(
-      (async () => {
-        try {
-          const env = tryParseCuratorExport(await file.text());
-          return { index: i, env };
-        } catch {
-          return { index: i, env: null };
-        }
-      })(),
-    );
+  const others: File[] = [];
+  for (const c of classifications) {
+    if (c.kind === "envelope") envelopes.push(c.env);
+    else others.push(c.file);
   }
-  for (const { index, env } of await Promise.all(textReads)) {
-    if (env) envelopes.push(env);
-    else others[index] = files[index]!;
-  }
-  return { envelopes, others: others.filter((f): f is File => f !== undefined) };
+  return { envelopes, others };
 }
 
 async function importEnvelope(env: CuratorExportEnvelope): Promise<void> {

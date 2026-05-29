@@ -106,6 +106,16 @@ async function matchOne(
     const liveTrack = store.tracksById[trackId];
     if (!liveTrack) return;
 
+    // Drop late results that arrive after a reset. matchOne set
+    // spotify.status = "pending" via markPending; if the live status is
+    // anything else by the time we resume, something else has touched
+    // the row — most commonly nukeEnrichmentState (which cancels
+    // QUEUED tasks but cannot abort IN-FLIGHT HTTP calls; the network
+    // response can still land here after the row was reset to idle).
+    // Without this guard, the late response would silently rewrite a
+    // nuked row back to matched/ambiguous/missing.
+    if (liveTrack.spotify.status !== "pending") return;
+
     const fillIns = displayFieldsFromMatch(match);
     if (Object.keys(fillIns).length > 0) {
       store.fillMissingDisplayFields(trackId, fillIns);
@@ -119,6 +129,11 @@ async function matchOne(
     if (error instanceof RequestCancelledError) return;
     console.error("Spotify match failed", { trackId, error });
     reportFirstError(error);
+    // Same late-result guard as the success path. A nuke between
+    // markPending and the failing response means the row is back at
+    // idle; writing "missing" here would silently un-do the nuke.
+    const postLive = usePlaylistStore.getState().tracksById[trackId];
+    if (!postLive || postLive.spotify.status !== "pending") return;
     // Transient failures (rate limit, expired auth) are NOT "no match
     // on Spotify" — they mean we couldn't even ask. Reverting to
     // `idle` keeps the row eligible for re-enrich-all once the

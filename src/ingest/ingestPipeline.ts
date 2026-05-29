@@ -8,6 +8,16 @@ import {
 import { parseAudioFile } from "../metadata/audioParser";
 import { parseM3uFile } from "./m3uParser";
 import { parseTextFile } from "./textParser";
+import { ConcurrencyLimiter } from "../spotify/concurrencyLimiter";
+
+// Cap producer-side parallelism. Audio parses are already gated by the
+// worker pool (size ≤ 8), but text/m3u parsing reads the whole file
+// into memory on the main thread — a 100k-text-file drop would
+// otherwise allocate 100k File.text() promises and their backing
+// buffers simultaneously. 64 is well above the worker-pool ceiling
+// (audio still saturates the pool) and bounds resident memory at
+// ~64 concurrent file reads regardless of drop size.
+const PIPELINE_MAX_IN_FLIGHT = 64;
 
 export type IngestProgress = {
   parsedCount: number;
@@ -45,18 +55,23 @@ export async function ingestFiles(
   const failures: IngestFailure[] = [];
   let parsedCount = 0;
 
-  // Dispatch every file concurrently so the worker pool runs in parallel —
-  // a sequential `for await` here pinned throughput to one worker regardless
-  // of pool size. The pool itself bounds parallelism.
+  // Dispatch through a concurrency limiter so the worker pool runs in
+  // parallel — a sequential `for await` pinned throughput to one worker
+  // regardless of pool size. The limiter caps producer-side parallelism
+  // (the audio path is further gated by the worker pool; the text path
+  // is gated only here).
+  const limiter = new ConcurrencyLimiter(PIPELINE_MAX_IN_FLIGHT);
   const results = await Promise.allSettled(
-    unique.map(async (file) => {
-      try {
-        return await parseSingleFile(file);
-      } finally {
-        parsedCount++;
-        options.onProgress?.({ parsedCount, totalCount });
-      }
-    }),
+    unique.map((file) =>
+      limiter.run(async () => {
+        try {
+          return await parseSingleFile(file);
+        } finally {
+          parsedCount++;
+          options.onProgress?.({ parsedCount, totalCount });
+        }
+      }),
+    ),
   );
   for (let index = 0; index < results.length; index++) {
     // Bounded iteration over results[] and the parallel unique[]; both

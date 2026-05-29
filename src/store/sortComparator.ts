@@ -2,6 +2,18 @@ import type { SortDirection, SortField, Track } from "../types";
 
 type Comparable = string | number | undefined;
 
+// Locale-aware string comparison. ASCII `<`/`>` puts "É" after "Z" and
+// case-folds nothing; `Intl.Collator` with `sensitivity: "base"` matches
+// musical-library expectations: "Beyoncé" sorts next to "Beyonce", "É"
+// sorts where "E" does. `numeric: true` makes "Track 2" precede
+// "Track 10" — desirable on title sorts of numbered tracks. Constructed
+// once at module load (collator construction is the expensive part;
+// .compare itself is cheap).
+const stringCollator = new Intl.Collator(undefined, {
+  sensitivity: "base",
+  numeric: true,
+});
+
 function getFieldValue(track: Track, field: SortField): Comparable {
   switch (field) {
     case "artist":
@@ -29,16 +41,8 @@ function compareDefined(a: Comparable, b: Comparable, dir: SortDirection): numbe
   if (typeof a === "number" && typeof b === "number") {
     return dir === "asc" ? a - b : b - a;
   }
-  const left = String(a ?? "").toLowerCase();
-  const right = String(b ?? "").toLowerCase();
-  if (left === right) return 0;
-  return dir === "asc"
-    ? left < right
-      ? -1
-      : 1
-    : left < right
-      ? 1
-      : -1;
+  const cmp = stringCollator.compare(String(a ?? ""), String(b ?? ""));
+  return dir === "asc" ? cmp : -cmp;
 }
 
 export function sortTrackIds(

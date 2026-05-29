@@ -19,6 +19,14 @@ const probeLimiter = new ConcurrencyLimiter(PROBE_CONCURRENCY);
 // errors (network, 5xx) are *not* cached so a later re-enrich can retry.
 // The set is hydrated from IndexedDB on first use and persisted on each
 // new addition so the cache survives reloads.
+//
+// Memory cap mirrors the persistence cap (MAX_NEGATIVE_CACHE_SIZE in
+// musicbrainzCache.ts). JS Sets preserve insertion order, so we evict
+// the oldest entry whenever a new one would push us past the cap —
+// FIFO, matching the on-disk slice policy. Without this, a session
+// that probes a million distinct releases would keep them all live
+// regardless of how many actually persist.
+const MAX_IN_MEMORY_NEGATIVE_CACHE = 10_000;
 let negativeCache: Set<string> | null = null;
 let hydratePromise: Promise<void> | null = null;
 
@@ -38,13 +46,44 @@ async function ensureHydrated(): Promise<Set<string>> {
   return negativeCache!;
 }
 
-function recordNegative(mbid: string): void {
-  if (negativeCache !== null) negativeCache.add(mbid);
-  // Fire-and-forget persistence — losing a single negative cache write is
-  // not data loss (next reload re-probes).
-  void saveCoverArtNegativeMbids([mbid]).catch((error) => {
+// Microtask-batched persistence buffer. A re-enrich-all burst on a
+// fresh import can produce dozens of 404s in the same tick; firing one
+// IDB read-modify-write transaction per miss serializes them through
+// IDB's per-store transaction lock and burns disk writes. Coalescing
+// to one transaction per microtask is correctness-preserving (the
+// in-memory Set is updated synchronously, so the negative-cache
+// short-circuit is already authoritative for the rest of the session)
+// and cuts the IDB pressure proportional to burst size.
+const pendingNegativePersist = new Set<string>();
+let persistFlushScheduled = false;
+
+function flushNegativePersist(): void {
+  persistFlushScheduled = false;
+  if (pendingNegativePersist.size === 0) return;
+  const batch = Array.from(pendingNegativePersist);
+  pendingNegativePersist.clear();
+  void saveCoverArtNegativeMbids(batch).catch((error) => {
     console.warn("coverArt: failed to persist negative cache entry", error);
   });
+}
+
+function recordNegative(mbid: string): void {
+  if (negativeCache !== null) {
+    negativeCache.add(mbid);
+    // FIFO evict: Set iteration order is insertion order, so the first
+    // value seen by the iterator is the oldest. We only evict one per
+    // add because we only added one — the set never overshoots by more
+    // than one entry between record calls.
+    if (negativeCache.size > MAX_IN_MEMORY_NEGATIVE_CACHE) {
+      const oldest = negativeCache.values().next().value;
+      if (oldest !== undefined) negativeCache.delete(oldest);
+    }
+  }
+  pendingNegativePersist.add(mbid);
+  if (!persistFlushScheduled) {
+    persistFlushScheduled = true;
+    queueMicrotask(flushNegativePersist);
+  }
 }
 
 export function coverArtUrlForRelease(releaseMbid: string | undefined): string | undefined {

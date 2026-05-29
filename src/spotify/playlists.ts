@@ -34,6 +34,13 @@ export async function fetchCurrentUser(
   return callSpotify<SpotifyUserResponse>({ path: "/me" }, clientId);
 }
 
+// 500 pages × 100 items/page = 50k items, well above any sane user
+// playlist. The cap exists to bound the rate-limit budget a single
+// import can spend if Spotify ever ships a malformed `next` loop
+// (or just a pathologically large playlist) — we'd rather error
+// loudly than burn 350ms × N requests into a 429 ban.
+const FETCH_ALL_PAGES_MAX = 500;
+
 async function fetchAllPages<T>(
   initialPath: string,
   clientId: string,
@@ -42,13 +49,20 @@ async function fetchAllPages<T>(
   const items: T[] = [];
   let path: string | null = initialPath;
   let pageQuery = query;
+  let pageCount = 0;
 
   while (path) {
+    if (pageCount >= FETCH_ALL_PAGES_MAX) {
+      throw new Error(
+        `Spotify paging exceeded ${FETCH_ALL_PAGES_MAX} pages — truncating to prevent runaway request budget`,
+      );
+    }
     const page: SpotifyPaging<T> = await callSpotify<SpotifyPaging<T>>(
       { path, query: pageQuery },
       clientId,
     );
     items.push(...page.items);
+    pageCount++;
     if (page.next) {
       const url = new URL(page.next);
       path = url.pathname.replace(/^\/v1/, "") + url.search;
@@ -75,6 +89,12 @@ function extractTrackFromItem(
   item: SpotifyPlaylistTrackItem | null | undefined,
 ): SpotifyPlaylistTrackItem["track"] | undefined {
   if (!item) return undefined;
+  // Local-file uploads to a Spotify playlist carry `is_local: true`
+  // on the envelope. Their inner uri is `spotify:local:...`, which is
+  // not playable through the Web Playback SDK and cannot be re-published
+  // to a different playlist. Drop them at the boundary so they never
+  // get synthesized as a `matched` SpotifyMatch downstream.
+  if (item.is_local) return undefined;
   if (item.track) return item.track;
   if (item.item) return item.item;
   const flat = item as unknown as Partial<

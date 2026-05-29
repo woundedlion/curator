@@ -101,7 +101,12 @@ export function toImportedTrack(item: SpotifyTrackResponse): Track {
 export function isImportableTrack(
   item: SpotifyTrackResponse | null | undefined,
 ): item is SpotifyTrackResponse {
-  return Boolean(item && item.id && item.uri && item.name);
+  if (!item || !item.id || !item.uri || !item.name) return false;
+  // Defense-in-depth against the "flat" envelope shape where the
+  // `is_local` envelope flag is absent: spotify:local:... URIs aren't
+  // playable through the SDK or replayable to other playlists.
+  if (item.uri.startsWith("spotify:local:")) return false;
+  return true;
 }
 
 // The six displayed fields Spotify is authoritative for (DESIGN §4.5). Both

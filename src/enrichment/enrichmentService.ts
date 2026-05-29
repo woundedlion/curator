@@ -162,7 +162,20 @@ export async function enrichTrack(
       contactEmail,
       options.guard,
     );
-    const mergedCandidates = mergeCandidatesPreferringPrimary(primaryScored, altScored);
+    // Asymmetric-scoring note: primary candidates retain the score they
+    // got against `track`; alt candidates retain theirs against
+    // `altScoringTrack`. We do NOT re-score because (a) each batch's
+    // ranking is meaningful against its own query, and (b) re-scoring
+    // would penalize primary hits that *are* good matches for the
+    // unmodified track fields. We DO re-sort the merged list by score:
+    // without this, classifyOutcome picks merged[0] (primary's first
+    // result), burying a higher-scoring alt candidate behind a worse
+    // primary one — the alt branch only runs when primary failed the
+    // threshold, so primary's top is by definition not strong enough
+    // to defend its position against alt.
+    const mergedCandidates = mergeCandidatesPreferringPrimary(primaryScored, altScored)
+      .slice()
+      .sort((a, b) => b.score - a.score);
     outcome = classifyOutcome(mergedCandidates, altScoringTrack, acceptThreshold);
   }
 

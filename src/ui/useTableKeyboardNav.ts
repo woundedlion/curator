@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { usePlaylistStore } from "../store/playlistStore";
 import {
   computeKeyboardNavStep,
@@ -60,12 +60,32 @@ export function useTableKeyboardNav(options: TableKeyboardNavOptions): void {
   const { visibleTrackIds, getPageSize, scrollToIndex, onDeleteSelection } =
     options;
 
+  // Mirror the live arguments into refs synced via a commit-phase
+  // effect. The window keydown effect attaches ONCE (empty deps) and
+  // reads via the refs; without this, every change to visibleTrackIds
+  // (firing on every status flip when hideUnmatched is on) would
+  // re-attach the window listener and rerun the cleanup. Keyboard
+  // events fire after commit, so the brief render→commit window where
+  // the ref still points at the prior value is unobservable in
+  // practice.
+  const visibleIdsRef = useRef(visibleTrackIds);
+  const getPageSizeRef = useRef(getPageSize);
+  const scrollToIndexRef = useRef(scrollToIndex);
+  const onDeleteSelectionRef = useRef(onDeleteSelection);
+  useEffect(() => {
+    visibleIdsRef.current = visibleTrackIds;
+    getPageSizeRef.current = getPageSize;
+    scrollToIndexRef.current = scrollToIndex;
+    onDeleteSelectionRef.current = onDeleteSelection;
+  });
+
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
       if (targetIsTypingSurface(e.target)) return;
 
       const store = usePlaylistStore.getState();
       const selection = store.selectedTrackIds;
+      const visibleIds = visibleIdsRef.current;
 
       if (e.key === "Escape") {
         if (selection.size === 0) return;
@@ -76,7 +96,7 @@ export function useTableKeyboardNav(options: TableKeyboardNavOptions): void {
 
       if (e.key === "Delete" || e.key === "Backspace") {
         if (selection.size === 0) return;
-        onDeleteSelection();
+        onDeleteSelectionRef.current();
         e.preventDefault();
         return;
       }
@@ -90,22 +110,22 @@ export function useTableKeyboardNav(options: TableKeyboardNavOptions): void {
       // we provide; see jumpInFromEmpty below.
       const anchor = store.selectionAnchorId;
       const jumpInFromEmpty = selection.size === 0 && anchor === null;
-      if (jumpInFromEmpty && visibleTrackIds.length === 0) return;
+      if (jumpInFromEmpty && visibleIds.length === 0) return;
 
       // For plain (non-shift) nav, resume from anchor. For shift-extend,
       // resume from the moving end of the current range, which after a
       // shift-click or Cmd-click can differ from anchor.
       const cursor = e.shiftKey
-        ? deriveExtendEnd(selection, anchor, visibleTrackIds)
+        ? deriveExtendEnd(selection, anchor, visibleIds)
         : anchor;
 
       const step = computeKeyboardNavStep({
         key: e.key,
         shift: e.shiftKey,
-        visibleIds: visibleTrackIds,
+        visibleIds,
         cursor,
         anchor,
-        pageSize: getPageSize(),
+        pageSize: getPageSizeRef.current(),
       });
       if (!step) return;
 
@@ -115,10 +135,10 @@ export function useTableKeyboardNav(options: TableKeyboardNavOptions): void {
       } else {
         store.selectOnly(step.cursor);
       }
-      scrollToIndex(step.cursorIndex);
+      scrollToIndexRef.current(step.cursorIndex);
     }
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [visibleTrackIds, getPageSize, scrollToIndex, onDeleteSelection]);
+  }, []);
 }

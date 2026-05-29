@@ -262,11 +262,12 @@ digging into raw `Response` objects.
   unmount via a shared `useDialogFocus` hook.
 - Cover Art Archive negative-cache so re-enrichment passes don't re-probe
   releases that already returned 404.
-- 298 Vitest unit tests across 26 files covering normalizers, filename
-  heuristic, Lucene-query builder, candidate scoring/dedup, sort comparator,
-  undo stack, selection helpers, text/M3U/curator-export parsers, the
-  Spotify rate limiter (pacer + circuit breaker + Retry-After parsing +
-  cancellation + status-code error mapping), and core store/service logic.
+- Vitest unit tests covering normalizers, filename heuristic, Lucene-query
+  builder, candidate scoring/dedup, sort comparator, undo stack, selection
+  helpers, text/M3U/curator-export parsers, the Spotify rate limiter
+  (pacer + circuit breaker + Retry-After parsing + cancellation +
+  status-code error mapping), and core store/service logic. Run
+  `npm test` for the current count.
 
 ## Still on the wishlist
 

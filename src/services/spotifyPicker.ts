@@ -55,7 +55,16 @@ export async function pickSpotifyCandidate(
   // IS the user's chosen identity. A re-search would either auto-pick a
   // different candidate or land back on `ambiguous` (the exact state the
   // picker was opened to escape), silently reverting the user's pick.
-  void useUiStore.getState().withBusy(async () => {
-    await enrichOneTrackMb(trackId, { bypassCache: true });
-  });
+  // Fire-and-forget on purpose, but with an explicit .catch so an
+  // unexpected crash inside the runner surfaces in the console instead
+  // of becoming a silent unhandled rejection. User-visible MB failures
+  // are toasted inside enrichOneTrackMb already.
+  useUiStore
+    .getState()
+    .withBusy(async () => {
+      await enrichOneTrackMb(trackId, { bypassCache: true });
+    })
+    .catch((error) => {
+      console.error("spotifyPicker: post-pick enrichment crashed", error);
+    });
 }

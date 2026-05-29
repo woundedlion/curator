@@ -18,6 +18,15 @@ const SERVICE_UNAVAILABLE_STATUS = 503;
 // retry buys us a free pass through a transient blip without retrying so
 // aggressively that we punish a struggling server.
 const MAX_503_RETRIES = 1;
+// `parseRetryAfter` is shared with the Spotify path and clamps to a
+// 12h ceiling appropriate for Spotify's multi-hour sustained-abuse
+// bans. For MB, a misconfigured upstream advertising
+// `Retry-After: 86400` would stall the head of the queue (and every
+// caller behind it) for a day. MB outages are short — the user
+// benefits more from a clear error after a brief pause than a
+// multi-hour hang. Cap locally so any Retry-After larger than this
+// is treated as "give up after one short wait."
+const MB_RETRY_AFTER_CAP_MS = 60_000;
 
 type MBRecording = {
   id: string;
@@ -202,10 +211,14 @@ async function runOneSearch(
       if (response.status === SERVICE_UNAVAILABLE_STATUS) {
         // MB asks for a backoff via Retry-After. Honor it once, then
         // give up so the user sees a clear error rather than the queue
-        // stalling indefinitely on a wedged upstream.
-        const retryMs = parseRetryAfter(
+        // stalling indefinitely on a wedged upstream. Clamp locally —
+        // a misconfigured upstream advertising Retry-After: 86400
+        // would otherwise pin the head of the MB queue (and every
+        // queued track behind it) for a day.
+        const rawRetryMs = parseRetryAfter(
           response.headers.get("Retry-After"),
         );
+        const retryMs = Math.min(rawRetryMs, MB_RETRY_AFTER_CAP_MS);
         if (attempts < MAX_503_RETRIES) {
           attempts++;
           console.warn(

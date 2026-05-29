@@ -44,6 +44,20 @@ export function DropZone({
   const createOpen = useUiStore((state) => state.showCreateDialog);
   const modalOpen = settingsOpen || createOpen;
 
+  // If a modal opens while a drag is in flight, drop the overlay state
+  // too. The render-time check below already hides the overlay element
+  // when `modalOpen` is true, but if the user releases the drag *while*
+  // the modal is up and then dismisses the modal, no dragover heartbeat
+  // ever fires for the post-modal phase — so `active` stays stuck on
+  // its pre-modal value and the overlay reappears even though no drag
+  // is in progress. Resetting on modal-open is the canonical
+  // "synchronize external state into React" effect, which is the
+  // pattern the set-state-in-effect rule explicitly exempts.
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (modalOpen) setActive(null);
+  }, [modalOpen]);
+
   useEffect(() => {
     if (modalOpen) {
       // A modal is in front of the canvas — anything dropped here should

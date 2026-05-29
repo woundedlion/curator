@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   DndContext,
@@ -74,6 +74,19 @@ export function PlaylistTable({
   );
 
   const parentRef = useRef<HTMLDivElement | null>(null);
+  // Mirror visibleTrackIds into a ref synced via a commit-phase effect
+  // so the row-click callback can read it without listing the array in
+  // its useCallback deps. Without this, every status flip that mutates
+  // visibleTrackIds (cover URL arrival, match resolution, etc.) busts
+  // handleRowClick's identity, which in turn busts SortableTrackRow's
+  // memo for every visible row — i.e. a full table reconciliation per
+  // background update. Click events fire after commit, so the brief
+  // render→commit window where the ref still points at the prior
+  // value is unobservable in practice.
+  const visibleIdsRef = useRef(visibleTrackIds);
+  useEffect(() => {
+    visibleIdsRef.current = visibleTrackIds;
+  });
   const rowVirtualizer = useVirtualizer({
     count: visibleTrackIds.length,
     getScrollElement: () => parentRef.current,
@@ -178,7 +191,7 @@ export function PlaylistTable({
         return;
       }
       if (modifiers.shift) {
-        extendSelectionTo(trackId, visibleTrackIds);
+        extendSelectionTo(trackId, visibleIdsRef.current);
         return;
       }
       if (modifiers.meta) {
@@ -199,7 +212,6 @@ export function PlaylistTable({
     [
       suppressClickRef,
       extendSelectionTo,
-      visibleTrackIds,
       toggleSelection,
       selectOnly,
       clearSelection,

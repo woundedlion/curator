@@ -379,6 +379,66 @@ describe("SpotifySdkBackend — applyState translation", () => {
       player.fireStateChanged({ paused: false, position: 1, duration: 2 }),
     ).not.toThrow();
   });
+
+  it("dedupes consecutive same-phase emissions; position events always fire", async () => {
+    // 500ms poller + 2 Hz phase events through the Player → Zustand →
+    // every PlayButton subscribed to isPlaying = 2 Hz of useless
+    // reconciliation across the virtualized table during long
+    // playback. The backend caches the last-emitted phase and only
+    // re-emits on a real transition. Position events still fire on
+    // every state because the playhead is always changing.
+    await backend.load({
+      kind: "spotify-sdk",
+      uri: "spotify:track:abc",
+      label: "Spotify (full track)",
+    });
+    events.length = 0;
+    player.fireStateChanged({ paused: false, position: 1_000, duration: 30_000 });
+    player.fireStateChanged({ paused: false, position: 1_500, duration: 30_000 });
+    player.fireStateChanged({ paused: false, position: 2_000, duration: 30_000 });
+    expect(events).toEqual([
+      { kind: "position", positionMs: 1_000, durationMs: 30_000 },
+      { kind: "playing" },
+      { kind: "position", positionMs: 1_500, durationMs: 30_000 },
+      { kind: "position", positionMs: 2_000, durationMs: 30_000 },
+    ]);
+  });
+
+  it("a real paused-after-playing transition still fires its phase event", async () => {
+    await backend.load({
+      kind: "spotify-sdk",
+      uri: "spotify:track:abc",
+      label: "Spotify (full track)",
+    });
+    events.length = 0;
+    player.fireStateChanged({ paused: false, position: 1_000, duration: 30_000 });
+    player.fireStateChanged({ paused: true, position: 1_200, duration: 30_000 });
+    expect(events).toContainEqual({ kind: "playing" });
+    expect(events).toContainEqual({ kind: "paused" });
+  });
+
+  it("stop() resets the phase dedupe so a subsequent load() emits its first phase unconditionally", async () => {
+    // Without the reset, a backend that finished playing in the
+    // "paused" state would suppress its first emission on the next
+    // load(): the cache would still say "last emitted: paused" and
+    // a fresh paused state from the new playback would be a no-op,
+    // leaving subscribers without an authoritative phase signal.
+    await backend.load({
+      kind: "spotify-sdk",
+      uri: "spotify:track:abc",
+      label: "Spotify (full track)",
+    });
+    player.fireStateChanged({ paused: true, position: 0, duration: 30_000 });
+    await backend.stop();
+    events.length = 0;
+    await backend.load({
+      kind: "spotify-sdk",
+      uri: "spotify:track:def",
+      label: "Spotify (full track)",
+    });
+    player.fireStateChanged({ paused: true, position: 0, duration: 30_000 });
+    expect(events).toContainEqual({ kind: "paused" });
+  });
 });
 
 // ─── 5. pause / resume / seek pass-through + error swallowing ───────

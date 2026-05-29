@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import { pruneStaleCacheEntries } from "../db/musicbrainzCache";
 import { getMusicbrainzQueue } from "../enrichment/musicbrainzClient";
 import { usePlaybackStore } from "../playback/playbackStore";
 import { flushPendingPersist, usePlaylistStore } from "../store/playlistStore";
@@ -50,6 +51,15 @@ export function useAppBootstrap(): void {
       promoteSingleCandidateMatches();
     })();
     void bootstrapSpotify();
+    // Eagerly drop MB cache rows from prior `MB_CACHE_VERSION`s. Reads
+    // already skip them (see `isCurrentVersion`), so this is a quota
+    // reclaim, not a correctness fix — but a long-lived profile that
+    // has lived through several schema bumps can otherwise accumulate
+    // tens of thousands of dead rows that slow `getCacheSize` and
+    // bloat IDB. Best-effort; a sweep failure is non-fatal.
+    pruneStaleCacheEntries().catch((error) => {
+      console.warn("pruneStaleCacheEntries failed", error);
+    });
     const unsubscribe = getMusicbrainzQueue().observe((depth) => {
       useUiStore.getState().setEnrichmentQueueDepth(depth);
     });

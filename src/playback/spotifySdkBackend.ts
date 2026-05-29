@@ -25,6 +25,14 @@ export class SpotifySdkBackend implements Backend {
   private observer: BackendObserver | null = null;
   private poller: ReturnType<typeof setInterval> | null = null;
   private stateListener: SpotifyPlayerListener | null = null;
+  // Cached last-emitted phase so applyState can dedupe paused/playing
+  // emissions on every poll tick. The 500ms poller fires twice per
+  // second; without this cache, every tick during a long playback emits
+  // a fresh phase event that fans out through the Player → Zustand →
+  // every PlayButton subscribed to isPlaying, producing 2 Hz of
+  // useless reconciliation across the entire virtualized table.
+  // null = no phase emitted yet (initial state); reset on stop().
+  private lastEmittedPaused: boolean | null = null;
 
   constructor(opts: {
     player: SpotifyPlayerInstance;
@@ -85,6 +93,10 @@ export class SpotifySdkBackend implements Backend {
     // already moved on.
     this.detachSdkListener();
     this.stopPoller();
+    // Reset the phase dedupe cache: a fresh load() on this backend
+    // must emit its first phase event unconditionally, even if it
+    // happens to match the last phase from the prior playback.
+    this.lastEmittedPaused = null;
     try {
       await pauseSpotifyPlayback(this.player);
     } catch (error) {
@@ -141,14 +153,19 @@ export class SpotifySdkBackend implements Backend {
     if (!state) return;
     if (!this.observer) return;
     // Translate state into the BackendEvent stream. Position is always
-    // useful; the playing/paused event fires when our cached idea of
-    // the playing state would change. We DON'T track that locally —
-    // the Player de-dupes phase transitions if it ever needs to.
+    // useful; the playing/paused event ONLY fires on a real transition
+    // to avoid 2 Hz of useless reconciliation across every
+    // PlayButton/Toolbar subscriber during a long playback. The
+    // Player's handleBackendEvent is also idempotent on same-phase
+    // patches, but de-duping here cuts the work at the source.
     this.observer({
       kind: "position",
       positionMs: state.position,
       durationMs: state.duration,
     });
-    this.observer(state.paused ? { kind: "paused" } : { kind: "playing" });
+    if (this.lastEmittedPaused !== state.paused) {
+      this.lastEmittedPaused = state.paused;
+      this.observer(state.paused ? { kind: "paused" } : { kind: "playing" });
+    }
   }
 }

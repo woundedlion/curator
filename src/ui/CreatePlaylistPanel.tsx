@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 import { usePlaylistStore } from "../store/playlistStore";
 import { useSettingsStore } from "../store/settingsStore";
 import { useSpotifyStore } from "../store/spotifyStore";
@@ -64,27 +65,32 @@ export function CreatePlaylistPanel() {
   const spotifyPlaylists = useSpotifyStore((state) => state.playlists);
   const pushToast = useUiStore((state) => state.pushToast);
 
-  const inFlightWork = usePlaylistStore((state) => {
-    for (const id of state.playlist.trackIds) {
-      const track = state.tracksById[id];
-      if (track?.enrichment.status === "pending") return true;
-      if (track?.spotify.status === "pending") return true;
-    }
-    return false;
-  });
-
+  // Single-pass derivation of both publish-gate signals. Previously
+  // these were two separate selectors that each scanned every track on
+  // every store mutation; consolidating halves the work and lets
+  // useShallow shortcut the re-render when neither value changed.
   // Ambiguous rows demand a user pick before publish — silently dropping
   // them produces partial playlists the user didn't authorize.
-  const unresolvedAmbiguousCount = usePlaylistStore((state) => {
-    let count = 0;
-    for (const id of state.playlist.trackIds) {
-      const track = state.tracksById[id];
-      if (track?.spotify.status === "ambiguous" && !track.spotify.uri) {
-        count++;
+  const { inFlightWork, unresolvedAmbiguousCount } = usePlaylistStore(
+    useShallow((state) => {
+      let inFlightWork = false;
+      let unresolvedAmbiguousCount = 0;
+      for (const id of state.playlist.trackIds) {
+        const track = state.tracksById[id];
+        if (!track) continue;
+        if (
+          track.enrichment.status === "pending" ||
+          track.spotify.status === "pending"
+        ) {
+          inFlightWork = true;
+        }
+        if (track.spotify.status === "ambiguous" && !track.spotify.uri) {
+          unresolvedAmbiguousCount++;
+        }
       }
-    }
-    return count;
-  });
+      return { inFlightWork, unresolvedAmbiguousCount };
+    }),
+  );
 
   const [publishing, setPublishing] = useState(false);
   const [collision, setCollision] = useState<SpotifyPlaylistSummary[] | null>(
