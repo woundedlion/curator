@@ -79,6 +79,36 @@ describe("parseM3uContent", () => {
     ]);
   });
 
+  it("extracts the EXTINF duration (seconds) into durationMs", () => {
+    const tracks = parseM3uContent("#EXTINF:259,Radiohead - Karma Police\nx.mp3");
+    expect(tracks[0]!.durationMs).toBe(259_000);
+  });
+
+  it("accepts floating-point EXTINF seconds (foobar2000 writes these)", () => {
+    const tracks = parseM3uContent("#EXTINF:259.5,A - B\nx.mp3");
+    expect(tracks[0]!.durationMs).toBe(259_500);
+  });
+
+  it("treats `-1` (unknown duration per EXTM3U convention) as missing", () => {
+    const tracks = parseM3uContent("#EXTINF:-1,A - B\nx.mp3");
+    expect(tracks[0]!.durationMs).toBeUndefined();
+  });
+
+  it("treats a non-numeric duration field as missing", () => {
+    const tracks = parseM3uContent("#EXTINF:not-a-number,A - B\nx.mp3");
+    expect(tracks[0]!.durationMs).toBeUndefined();
+    // Other hints still flow through.
+    expect(tracks[0]!.artist).toBe("A");
+    expect(tracks[0]!.title).toBe("B");
+  });
+
+  it("retains durationMs even when the metadata tail is empty", () => {
+    const tracks = parseM3uContent("#EXTINF:200,\nx.mp3");
+    expect(tracks[0]!.durationMs).toBe(200_000);
+    expect(tracks[0]!.title).toBeUndefined();
+    expect(tracks[0]!.artist).toBeUndefined();
+  });
+
   it("each track gets a unique id and idle status", () => {
     const tracks = parseM3uContent("a.mp3\nb.mp3");
     expect(tracks[0]!.id).not.toBe(tracks[1]!.id);

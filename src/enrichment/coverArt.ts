@@ -3,7 +3,7 @@ import {
   loadCoverArtNegativeCache,
   saveCoverArtNegativeMbids,
 } from "../db/musicbrainzCache";
-import { ConcurrencyLimiter } from "../spotify/concurrencyLimiter";
+import { ConcurrencyLimiter } from "../util/concurrencyLimiter";
 
 const FRONT_250_SUFFIX = "/front-250";
 const PROBE_TIMEOUT_MS = 5_000;

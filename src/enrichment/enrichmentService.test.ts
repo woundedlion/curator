@@ -118,7 +118,7 @@ describe("enrichTrack", () => {
     expect(searchRecordingsMock).not.toHaveBeenCalled();
   });
 
-  it("short-circuits on a cache hit and does not hit the network", async () => {
+  it("short-circuits on a cache hit when the cache auto-matches and altQuery isn't needed", async () => {
     readCacheMock.mockResolvedValue([candidate()]);
     const track = trackOf({ title: "Karma Police", artist: "Radiohead" });
 
@@ -126,6 +126,50 @@ describe("enrichTrack", () => {
 
     expect(searchRecordingsMock).not.toHaveBeenCalled();
     expect(outcome.candidates).toHaveLength(1);
+  });
+
+  it("does NOT rewrite the cache on a cache hit (no churn on cachedAt)", async () => {
+    readCacheMock.mockResolvedValue([candidate()]);
+    const track = trackOf({ title: "Karma Police", artist: "Radiohead" });
+
+    await enrichTrack(track, "me@example.test", 0.75);
+
+    expect(writeCacheMock).not.toHaveBeenCalled();
+  });
+
+  it("still fires altQuery on a CACHE HIT when the cached primary doesn't auto-match (regression)", async () => {
+    // Before the fix, any non-empty cache read short-circuited the
+    // function with `return classifyOutcome(...)`, skipping the
+    // altQuery branch entirely. A track first enriched without an
+    // altQuery (or before altQuery was derived) would then get a
+    // permanently degraded match — every subsequent re-enrich would
+    // early-return on the cache hit and the altQuery would never fire.
+    readCacheMock.mockResolvedValue([
+      // Cached primary candidate scores poorly against the track —
+      // wrong title and artist mean classifyOutcome → ambiguous.
+      candidate({ title: "Some Other Song", artist: "Some Other Artist" }),
+    ]);
+    searchRecordingsMock.mockResolvedValueOnce([
+      candidate({
+        recordingId: "alt-hit",
+        title: "Karma Police",
+        artist: "Radiohead",
+      }),
+    ]);
+    const track = trackOf({
+      title: "Karm Pol",
+      artist: "Radio",
+      altQuery: { title: "Karma Police", artist: "Radiohead" },
+    });
+
+    const outcome = await enrichTrack(track, "me@example.test", 0.6);
+
+    // Alt query fired (primary fetch did NOT — cache fed primary).
+    expect(searchRecordingsMock).toHaveBeenCalledTimes(1);
+    // And the alt's strong candidate now shows up in the merged set,
+    // so the outcome isn't stuck at the degraded cache-only ambiguous.
+    const recIds = outcome.candidates.map((c) => c.recordingId);
+    expect(recIds).toContain("alt-hit");
   });
 
   it("bypassCache option skips the cache read but still writes results", async () => {

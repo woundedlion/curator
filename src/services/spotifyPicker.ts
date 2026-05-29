@@ -1,5 +1,5 @@
 import {
-  cacheKeyForTrack,
+  type MBCacheKey,
   deleteCachedCandidates,
 } from "../db/musicbrainzCache";
 import { spotifyDisplayFieldsFromCandidate } from "../spotify/spotifyMappers";
@@ -9,11 +9,12 @@ import { useUiStore } from "../store/uiStore";
 import type { SpotifyCandidate } from "../types";
 import { enrichOneTrackMb } from "./enrichmentRunner";
 
-async function clearMbCacheForCurrentIdentity(trackId: string): Promise<void> {
-  const track = usePlaylistStore.getState().tracksById[trackId];
-  if (!track) return;
+async function clearMbCacheForKey(
+  trackId: string,
+  key: MBCacheKey,
+): Promise<void> {
   try {
-    await deleteCachedCandidates(cacheKeyForTrack(track));
+    await deleteCachedCandidates(key);
   } catch (error) {
     console.warn("spotifyPicker: cache clear failed", { trackId, error });
   }
@@ -45,8 +46,24 @@ export async function pickSpotifyCandidate(
   candidate: SpotifyCandidate,
   candidates: SpotifyCandidate[],
 ): Promise<void> {
+  // Capture the row's PRE-PICK identity BEFORE applyCandidateToTrack
+  // overwrites title/artist/album from the chosen Spotify candidate.
+  // If we read the track after the update, the cache delete would key
+  // off the new identity — whose entry doesn't exist yet — and the
+  // stale entry under the old (title, artist, album) tuple would
+  // remain in IDB, slowly leaking entries on every pick. bypassCache
+  // on the follow-up enrichment masks the immediate symptom, but the
+  // leak compounds across rows that get re-picked.
+  const priorTrack = usePlaylistStore.getState().tracksById[trackId];
+  const priorKey: MBCacheKey | null = priorTrack
+    ? {
+        title: priorTrack.title,
+        artist: priorTrack.artist,
+        album: priorTrack.album,
+      }
+    : null;
   applyCandidateToTrack(trackId, candidate, candidates);
-  await clearMbCacheForCurrentIdentity(trackId);
+  if (priorKey) await clearMbCacheForKey(trackId, priorKey);
   const hasContact = Boolean(
     useSettingsStore.getState().settings.musicbrainzContact.trim(),
   );

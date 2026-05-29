@@ -473,6 +473,60 @@ describe("removeTracks cancellation ordering", () => {
   });
 });
 
+describe("toggleSelection anchor semantics", () => {
+  it("moves anchor to the clicked id when the toggle ADDS to selection", () => {
+    const a = makeTrack({ id: "a" });
+    const b = makeTrack({ id: "b" });
+    usePlaylistStore.getState().addTracks([a, b]);
+    usePlaylistStore.getState().setSelection(["a"], "a");
+
+    usePlaylistStore.getState().toggleSelection("b");
+
+    expect(usePlaylistStore.getState().selectionAnchorId).toBe("b");
+    expect(Array.from(usePlaylistStore.getState().selectedTrackIds).sort()).toEqual([
+      "a",
+      "b",
+    ]);
+  });
+
+  it("does NOT move anchor when the toggle REMOVES from selection (regression)", () => {
+    // Before the fix, every toggle wrote `selectionAnchorId = id`,
+    // even when the row was deselected. A subsequent shift-click
+    // would then extend from a row the user just removed.
+    const a = makeTrack({ id: "a" });
+    const b = makeTrack({ id: "b" });
+    const c = makeTrack({ id: "c" });
+    usePlaylistStore.getState().addTracks([a, b, c]);
+    // Selection {a, b, c}, anchor a (set by the original click on a).
+    usePlaylistStore.getState().setSelection(["a", "b", "c"], "a");
+
+    // Ctrl-click c to deselect.
+    usePlaylistStore.getState().toggleSelection("c");
+
+    expect(Array.from(usePlaylistStore.getState().selectedTrackIds).sort()).toEqual([
+      "a",
+      "b",
+    ]);
+    expect(usePlaylistStore.getState().selectionAnchorId).toBe("a");
+  });
+
+  it("clears anchor when the toggle removes the row that WAS the anchor", () => {
+    const a = makeTrack({ id: "a" });
+    const b = makeTrack({ id: "b" });
+    usePlaylistStore.getState().addTracks([a, b]);
+    // Anchor IS the row being toggled off.
+    usePlaylistStore.getState().setSelection(["a", "b"], "b");
+
+    usePlaylistStore.getState().toggleSelection("b");
+
+    expect(Array.from(usePlaylistStore.getState().selectedTrackIds)).toEqual(["a"]);
+    // No meaningful pivot remains — next shift-click should establish
+    // a fresh anchor at its own click point (extendSelectionTo
+    // handles `anchor === null` by treating the new id as the anchor).
+    expect(usePlaylistStore.getState().selectionAnchorId).toBeNull();
+  });
+});
+
 describe("extendSelectionTo", () => {
   it("resets a stale anchor when it's no longer in visibleIds", () => {
     const a = makeTrack({ id: "a" });

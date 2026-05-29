@@ -1,7 +1,7 @@
 import { v4 as uuid } from "uuid";
 import { ARTIST_TITLE_SEPARATOR } from "../constants";
 import type { Track } from "../types";
-import { stripBom } from "../util/textNormalize";
+import { normalizeText } from "../util/textNormalize";
 import {
   buildTracksFromExport,
   tryParseCuratorExport,
@@ -37,10 +37,10 @@ function buildTrackFromLine(line: string): Track {
 }
 
 export function parseTextContent(text: string): Track[] {
-  // Normalize CRLF (Windows) and lone CR (classic Mac) into LF.
-  // Existing LFs are untouched.
-  const normalized = stripBom(text).replace(/\r\n|\r/g, "\n");
-  return normalized.split("\n").filter(isMeaningfulLine).map(buildTrackFromLine);
+  return normalizeText(text)
+    .split("\n")
+    .filter(isMeaningfulLine)
+    .map(buildTrackFromLine);
 }
 
 export async function parseTextFile(file: File): Promise<Track[]> {

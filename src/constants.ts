@@ -42,7 +42,6 @@ export const COVER_ART_BASE = "https://coverartarchive.org/release";
 
 export const MUSICBRAINZ_RATE_INTERVAL_MS = 1100;
 
-export const SPOTIFY_SEARCH_CONCURRENCY = 4;
 export const SPOTIFY_TRACK_ADD_CHUNK = 100;
 
 export const DEFAULT_ACCEPT_MB = 0.75;

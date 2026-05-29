@@ -216,7 +216,7 @@ describe("pickSpotifyCandidate — identity-change contract (DESIGN §4.5 item 1
     }
   });
 
-  it("clears the MB cache for the row's CURRENT (pre-pick) identity", async () => {
+  it("clears the MB cache for the row's PRE-PICK identity", async () => {
     seedTrack(
       trackOf({
         id: "t1",
@@ -229,19 +229,18 @@ describe("pickSpotifyCandidate — identity-change contract (DESIGN §4.5 item 1
     await pickSpotifyCandidate("t1", candidate(), [candidate()]);
 
     expect(mocks.deleteCachedCandidates).toHaveBeenCalledTimes(1);
-    // NOTE: the picker reads the track AFTER applyCandidateToTrack
-    // wrote the new identity (see clearMbCacheForCurrentIdentity), so
-    // the cache key reflects the *new* identity's title/artist/album.
-    // This is the contract the code ships — the comment in the file
-    // calls this the "current identity", meaning post-pick.
+    // Cache key MUST reflect the pre-pick identity. The entry that
+    // exists in IDB was written by the original enrichment under the
+    // OLD title/artist/album tuple; keying the delete off the new
+    // identity would leave that stale entry resident and slowly leak.
     const key = mocks.deleteCachedCandidates.mock.calls[0]![0] as {
       title?: string;
       artist?: string;
       album?: string;
     };
-    expect(key.title).toBe("New Title");
-    expect(key.artist).toBe("New Artist");
-    expect(key.album).toBe("New Album");
+    expect(key.title).toBe("Old Title");
+    expect(key.artist).toBe("Old Artist");
+    expect(key.album).toBe("Old Album");
   });
 
   it("triggers MB re-enrichment with bypassCache: true", async () => {

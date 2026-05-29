@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import { useSpotifyStore } from "../store/spotifyStore";
 import { useSettingsStore } from "../store/settingsStore";
 import { IconButton } from "./IconButton";
+import { RefreshIcon } from "./icons";
 import { Spinner } from "./Spinner";
 import { setPlaylistDragPayload } from "./dragData";
 
@@ -40,10 +41,9 @@ export function Sidebar() {
         <h2 className="font-semibold">Spotify playlists</h2>
         <IconButton
           label="Refresh playlists"
-          icon="↻"
+          icon={<RefreshIcon />}
           onClick={refresh}
           disabled={!connected || loading}
-          className="px-1 py-0 text-xs"
         />
       </div>
 

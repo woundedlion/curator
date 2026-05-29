@@ -1,17 +1,31 @@
 import { v4 as uuid } from "uuid";
 import { ARTIST_TITLE_SEPARATOR } from "../constants";
 import type { Track } from "../types";
-import { stripBom } from "../util/textNormalize";
+import { normalizeText } from "../util/textNormalize";
 
 const EXTINF_PREFIX = "#EXTINF:";
 
-type ExtInfHint = { artist?: string; title?: string };
+type ExtInfHint = { artist?: string; title?: string; durationMs?: number };
 
 function parseExtInfLine(line: string): ExtInfHint {
-  const commaIndex = line.indexOf(",");
+  // `#EXTINF:<seconds>,<artist - title>` per the EXTM3U convention.
+  // Strip the `#EXTINF:` prefix first so the comma split is
+  // unambiguous between the duration and the metadata tail. Seconds
+  // may be `-1` (unknown), integer, or float; any non-finite or
+  // non-positive value is treated as missing.
+  const payload = line.startsWith(EXTINF_PREFIX)
+    ? line.slice(EXTINF_PREFIX.length)
+    : line;
+  const commaIndex = payload.indexOf(",");
   if (commaIndex === -1) return {};
-  const after = line.slice(commaIndex + 1).trim();
-  if (after.length === 0) return {};
+  const seconds = Number.parseFloat(payload.slice(0, commaIndex).trim());
+  const durationMs =
+    Number.isFinite(seconds) && seconds > 0
+      ? Math.round(seconds * 1000)
+      : undefined;
+
+  const after = payload.slice(commaIndex + 1).trim();
+  if (after.length === 0) return durationMs !== undefined ? { durationMs } : {};
   const segments = after
     .split(ARTIST_TITLE_SEPARATOR)
     .map((segment) => segment.trim());
@@ -19,9 +33,10 @@ function parseExtInfLine(line: string): ExtInfHint {
     return {
       artist: segments[0],
       title: segments.slice(1).join(ARTIST_TITLE_SEPARATOR),
+      durationMs,
     };
   }
-  return { title: after };
+  return { title: after, durationMs };
 }
 
 function buildTrack(rawLine: string, hint: ExtInfHint): Track {
@@ -30,6 +45,7 @@ function buildTrack(rawLine: string, hint: ExtInfHint): Track {
     source: { kind: "m3u", rawLine },
     artist: hint.artist,
     title: hint.title,
+    durationMs: hint.durationMs,
     enrichment: { status: "idle" },
     spotify: { status: "idle" },
   };
@@ -40,9 +56,7 @@ export function parseM3uContent(text: string): Track[] {
   // `#EXTM3U` header becomes `<U+FEFF>#EXTM3U` (still ignorable as a
   // comment), but more importantly a BOM-prefixed file's first non-
   // comment line lands prepended with U+FEFF in `rawLine`.
-  const lines = stripBom(text)
-    .replace(/\r\n|\r/g, "\n")
-    .split("\n");
+  const lines = normalizeText(text).split("\n");
   const tracks: Track[] = [];
   let pendingHint: ExtInfHint = {};
 

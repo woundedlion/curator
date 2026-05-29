@@ -8,7 +8,7 @@ import {
 import { parseAudioFile } from "../metadata/audioParser";
 import { parseM3uFile } from "./m3uParser";
 import { parseTextFile } from "./textParser";
-import { ConcurrencyLimiter } from "../spotify/concurrencyLimiter";
+import { ConcurrencyLimiter } from "../util/concurrencyLimiter";
 
 // Cap producer-side parallelism. Audio parses are already gated by the
 // worker pool (size ≤ 8), but text/m3u parsing reads the whole file

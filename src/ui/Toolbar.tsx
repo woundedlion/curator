@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useEnrichmentRemaining } from "../hooks/useEnrichmentRemaining";
-import { useSpotifyQueueDepth } from "../hooks/useSpotifyQueueDepth";
+import { useSpotifyRemaining } from "../hooks/useSpotifyRemaining";
 import { reenrichAll } from "../services/enrichmentRunner";
 import { useSettingsStore } from "../store/settingsStore";
 import { usePlaylistStore } from "../store/playlistStore";
@@ -40,7 +40,7 @@ export function Toolbar({ hiddenCount, onPickFolder }: Props) {
   );
   const enrichmentRemaining = useEnrichmentRemaining();
   const queueDepth = useUiStore((state) => state.enrichmentQueueDepth);
-  const spotifyQueueDepth = useSpotifyQueueDepth();
+  const spotifyRemaining = useSpotifyRemaining();
   // Show the "Enriching" badge whenever EITHER signal says work is in
   // flight. They can race during shutdown (queue cleared before the row
   // count drops, or vice versa); requiring both would hide ongoing work
@@ -159,13 +159,13 @@ export function Toolbar({ hiddenCount, onPickFolder }: Props) {
             Enriching · {enrichmentRemaining} remaining
           </span>
         )}
-        {spotifyQueueDepth > 0 && (
+        {spotifyRemaining > 0 && (
           <span
             className="text-xs text-neutral-400 tabular-nums"
             aria-live="polite"
-            title="Spotify requests waiting on the rate-limit queue"
+            title="Tracks not yet resolved on Spotify"
           >
-            Spotify · {spotifyQueueDepth} queued
+            Spotify · {spotifyRemaining} remaining
           </span>
         )}
         <BusySpinner />

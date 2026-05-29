@@ -73,11 +73,14 @@ vi.mock("./authFlow", () => ({
 import {
   __getSpotifyRateLimitStateForTests,
   __resetSpotifyRateLimitStateForTests,
+  cancelSpotifyRequestsByTag,
   getPendingSpotifyRequestCount,
+  RequestCancelledError,
   resetSpotifyCircuit,
   spotifyCircuitOpenMs,
   SpotifyAuthExpiredError,
   SpotifyForbiddenError,
+  SpotifyHttpError,
   SpotifyNetworkError,
   SpotifyRateLimitError,
   SpotifyServerError,
@@ -755,7 +758,7 @@ describe("status-code error mapping", () => {
     expect(result).toEqual({ id: "u-1", display_name: "alice" });
   });
 
-  it("other non-ok status (e.g. 400) → generic Error mentioning the status", async () => {
+  it("other non-ok status (e.g. 400) → SpotifyHttpError carrying status + path", async () => {
     nextResponse = () =>
       new Response("Bad Request: missing field", { status: 400 });
     const rej = captureRejection(
@@ -763,10 +766,78 @@ describe("status-code error mapping", () => {
     );
     await vi.advanceTimersByTimeAsync(0);
     const error = await rej;
-    expect(error).toBeInstanceOf(Error);
+    expect(error).toBeInstanceOf(SpotifyHttpError);
+    expect((error as SpotifyHttpError).status).toBe(400);
+    expect((error as SpotifyHttpError).path).toBe("/me/playlists");
+    // And the typed-error hierarchy is disjoint — a 400 is not a
+    // server error, not a forbidden, not an auth-expired.
     expect(error).not.toBeInstanceOf(SpotifyAuthExpiredError);
     expect(error).not.toBeInstanceOf(SpotifyForbiddenError);
     expect(error).not.toBeInstanceOf(SpotifyServerError);
-    expect((error as Error).message).toContain("400");
+  });
+});
+
+// Regression: a circuit-breaker probe slot must be released even when
+// the queued task is cancelled before its body runs. Pre-fix, the
+// `releaseProbe()` call lived inside the task body's `finally`, which
+// never fires for either `cancelByTag` or a `guard`-fail rejection.
+// The bug stranded `probeInFlight = true` for the rest of the
+// session, so every subsequent caller failed fast against an empty
+// open window forever. The fix lifts releaseProbe to an outer
+// try/finally that wraps the entire queue.enqueue — both the
+// normal-body path and the reject-without-body path release the slot.
+//
+// The two reject-without-body paths share the same code path through
+// the queue (both end up rejecting `queue.enqueue`'s outer promise
+// before the task body runs). The `guard` path is the one we exercise
+// here because it's straightforward to trigger; `cancelByTag` would
+// require a multi-task pending-queue scenario that's awkward to set
+// up under fake timers (drain dispatches sync when `nextRunAt` is in
+// the past). The fix is symmetrical — both paths route through the
+// same outer try/finally.
+describe("probe-slot release on cancellation", () => {
+  it("guard-fail on the lone half-open probe does NOT strand probeInFlight", async () => {
+    // Trip the breaker.
+    {
+      const send = vi.fn(async () => tooMany("5"));
+      const rej = captureRejection(submitTokenRequest(send, "/trip"));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(await rej).toBeInstanceOf(SpotifyRateLimitError);
+    }
+    await vi.advanceTimersByTimeAsync(6_000);
+
+    // Probe whose guard will return false at task-pop time. tryAcquire
+    // synchronously returns "probe" and sets probeInFlight = true.
+    const sendProbe = vi.fn(async () => ok());
+    const probeRej = captureRejection(
+      submitSpotifyRequest(
+        { path: "/probe" },
+        "cid",
+        { guard: () => false, tag: "track-being-deleted" },
+      ),
+    );
+
+    // Let the queue dispatch — guard returns false at task-pop and
+    // rejects with RequestCancelledError BEFORE the body runs.
+    await vi.advanceTimersByTimeAsync(0);
+    expect(await probeRej).toBeInstanceOf(RequestCancelledError);
+    expect(sendProbe).not.toHaveBeenCalled();
+
+    // The defining check: probeInFlight must have been released even
+    // though the body never ran. Next caller must be admitted as the
+    // new probe and succeed.
+    const sendNext = vi.fn(async () => ok());
+    const nextPromise = submitTokenRequest(sendNext, "/next");
+    await vi.advanceTimersByTimeAsync(MIN_SPACING_MS);
+    await nextPromise;
+    expect(sendNext).toHaveBeenCalledTimes(1);
+    expect(spotifyCircuitOpenMs()).toBe(0);
+  });
+
+  it("cancelSpotifyRequestsByTag is a no-op when no pending tasks match (sanity)", () => {
+    // Sanity that the cancel API exists and is callable from the
+    // wrapper — the deeper cancelByTag-finds-probe scenario lives
+    // outside this test (see comment above).
+    expect(cancelSpotifyRequestsByTag("nonexistent")).toBe(0);
   });
 });

@@ -121,25 +121,39 @@ export async function enrichTrack(
   options: EnrichTrackOptions = {},
 ): Promise<EnrichmentOutcome> {
   const cacheKey = cacheKeyForTrack(track);
-  if (!options.bypassCache) {
-    const cached = await readCachedCandidates(cacheKey);
-    if (cached && cached.length > 0) {
-      const scored = scoreCandidates(track, cached);
-      return classifyOutcome(scored, track, acceptThreshold);
-    }
-  }
-
   const primaryFields = {
     title: track.title,
     artist: track.artist,
     album: track.album,
   };
-  const primaryScored = await fetchAndScore(
-    primaryFields,
-    track,
-    contactEmail,
-    options.guard,
-  );
+
+  // Cache hit substitutes for the primary FETCH only — it does NOT
+  // short-circuit the rest of the function. A track first enriched
+  // without an altQuery (or before altQuery was derived) would
+  // otherwise get a permanently degraded match: every subsequent
+  // re-enrich would early-return on the cache hit and the altQuery
+  // would never fire. The cost is at most one extra MB request per
+  // re-enrich of an alt-query-bearing track that fell below the
+  // accept threshold on cache — bounded by the rate-limit queue and
+  // gated by `shouldTryAlt` below (only runs when primary didn't
+  // auto-match and altQuery actually differs from the primary).
+  let primaryScored: MBCandidate[] | null = null;
+  let cacheHit = false;
+  if (!options.bypassCache) {
+    const cached = await readCachedCandidates(cacheKey);
+    if (cached && cached.length > 0) {
+      primaryScored = scoreCandidates(track, cached);
+      cacheHit = true;
+    }
+  }
+  if (primaryScored === null) {
+    primaryScored = await fetchAndScore(
+      primaryFields,
+      track,
+      contactEmail,
+      options.guard,
+    );
+  }
   let outcome = classifyOutcome(primaryScored, track, acceptThreshold);
 
   const shouldTryAlt =
@@ -184,8 +198,10 @@ export async function enrichTrack(
   // wrote `mergedCandidates` here, alt-query-derived recordings would
   // leak into a future enrichment of any *other* track that shares this
   // primary identity. The alt query is a per-track-altQuery effort and
-  // re-runs on cache miss anyway.
-  if (primaryScored.length > 0) {
+  // re-runs on cache miss anyway. Skip the rewrite when we read from
+  // cache — `primaryScored` is byte-equal to what's already there, so
+  // the write is a no-op modulo cachedAt churn.
+  if (primaryScored.length > 0 && !cacheHit) {
     await writeCachedCandidates(cacheKey, primaryScored);
   } else if (
     outcome.status === "failed" &&

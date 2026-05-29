@@ -1,10 +1,8 @@
-import { SPOTIFY_SEARCH_CONCURRENCY } from "../constants";
 import {
   RequestCancelledError,
   SpotifyAuthExpiredError,
   SpotifyRateLimitError,
 } from "../spotify/apiClient";
-import { ConcurrencyLimiter } from "../spotify/concurrencyLimiter";
 import { searchSpotifyForTrack } from "../spotify/spotifySearch";
 import { spotifyDisplayFieldsFromCandidate } from "../spotify/spotifyMappers";
 import { usePlaylistStore } from "../store/playlistStore";
@@ -160,13 +158,15 @@ export async function matchAllOnSpotify(
   scope?: ReadonlySet<string>,
 ): Promise<void> {
   const reportFirstError = createErrorReporter();
-  const limiter = new ConcurrencyLimiter(SPOTIFY_SEARCH_CONCURRENCY);
   const allTrackIds = usePlaylistStore.getState().playlist.trackIds;
   const trackIds = scope
     ? allTrackIds.filter((id) => scope.has(id))
     : allTrackIds;
+  // No producer-side limiter: the apiClient's IntervalQueue paces every
+  // request at 350ms, so concurrent matchOne calls all serialize at the
+  // pacer anyway. Capping producer parallelism doesn't change throughput.
   await Promise.all(
-    trackIds.map((id) => limiter.run(() => matchOne(id, reportFirstError))),
+    trackIds.map((id) => matchOne(id, reportFirstError)),
   );
 }
 

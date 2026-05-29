@@ -336,8 +336,16 @@ async function submitRaw(
   }
   const isProbe = slot === "probe";
 
-  return queue.enqueue(async () => {
-    try {
+  // Outer try/finally so the probe slot is released on every exit
+  // path — including queue cancellation (cancelByTag) and guard-fail,
+  // which reject the enqueue promise WITHOUT running the task body.
+  // An inner-only finally would never fire in those cases, stranding
+  // probeInFlight=true and failing every subsequent caller for the
+  // rest of the session. releaseProbe() is idempotent w.r.t. close(),
+  // so the success path (where close() also clears probeInFlight via
+  // its own reset) remains correct.
+  try {
+    return await queue.enqueue(async () => {
       // Another caller may have tripped the breaker while we were
       // queued; non-probe callers respect the new window.
       if (!isProbe && breaker.remainingMs() > 0) {
@@ -360,10 +368,10 @@ async function submitRaw(
       // the entire ban window before they could even reach the
       // breaker check, masking the fail-fast as a timeout.
       throw new SpotifyRateLimitError(retryMs);
-    } finally {
-      if (isProbe) breaker.releaseProbe();
-    }
-  }, { tag: context.tag, guard: context.guard });
+    }, { tag: context.tag, guard: context.guard });
+  } finally {
+    if (isProbe) breaker.releaseProbe();
+  }
 }
 
 export type SubmitOptions = {

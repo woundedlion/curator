@@ -616,9 +616,24 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => ({
   toggleSelection(id) {
     set((state) => {
       const next = new Set(state.selectedTrackIds);
-      if (next.has(id)) next.delete(id);
+      const wasSelected = next.has(id);
+      if (wasSelected) next.delete(id);
       else next.add(id);
-      return { selectedTrackIds: next, selectionAnchorId: id };
+      // Anchor follows ADDs but NOT REMOVEs — a ctrl-click that
+      // deselects didn't affirmatively pivot to the row, it removed
+      // it. Leaving the anchor at the toggled-off id would make a
+      // subsequent shift-click extend from a row that's no longer in
+      // the selection (file-explorer-style behaviour). If the anchor
+      // *was* the toggled-off id, clear it so the next shift-click
+      // sets a fresh anchor at its own click point.
+      let nextAnchor: string | null;
+      if (wasSelected) {
+        nextAnchor =
+          state.selectionAnchorId === id ? null : state.selectionAnchorId;
+      } else {
+        nextAnchor = id;
+      }
+      return { selectedTrackIds: next, selectionAnchorId: nextAnchor };
     });
   },
 
