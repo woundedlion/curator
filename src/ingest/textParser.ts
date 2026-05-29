@@ -1,7 +1,7 @@
 import { v4 as uuid } from "uuid";
 import { ARTIST_TITLE_SEPARATOR } from "../constants";
 import type { Track } from "../types";
-import { normalizeText } from "../util/textNormalize";
+import { normalizeText, readBlobAsText } from "../util/textNormalize";
 import {
   buildTracksFromExport,
   tryParseCuratorExport,
@@ -44,7 +44,10 @@ export function parseTextContent(text: string): Track[] {
 }
 
 export async function parseTextFile(file: File): Promise<Track[]> {
-  const content = await file.text();
+  // `readBlobAsText` falls back to Windows-1252 when the file isn't
+  // valid UTF-8 (common for Notepad "ANSI" saves). Without that, é/ñ/£
+  // came through as U+FFFD replacement chars and matching failed.
+  const content = await readBlobAsText(file);
   // A Curator export file is a `.txt` carrying our JSON envelope. Detect
   // it before falling back to line-based parsing so the round-trip preserves
   // Spotify/MB selections instead of treating the JSON as 1 line per token.

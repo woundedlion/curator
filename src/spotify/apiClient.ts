@@ -291,29 +291,50 @@ function buildHeaders(
 async function sendOnce(
   request: SpotifyRequest,
   clientId: string,
+  cancelSignal: AbortSignal,
 ): Promise<Response> {
   const accessToken = await getValidAccessToken(clientId);
   const url = `${SPOTIFY_API_BASE}${appendQuery(request.path, request.query)}`;
   const hasBody = request.body !== undefined;
-  return fetchWithTimeout(url, {
-    method: request.method ?? "GET",
-    headers: buildHeaders(accessToken, hasBody),
-    body: hasBody ? JSON.stringify(request.body) : undefined,
-  });
+  return fetchWithTimeout(
+    url,
+    {
+      method: request.method ?? "GET",
+      headers: buildHeaders(accessToken, hasBody),
+      body: hasBody ? JSON.stringify(request.body) : undefined,
+    },
+    cancelSignal,
+  );
 }
 
 async function fetchWithTimeout(
   url: string,
   init: RequestInit,
+  cancelSignal: AbortSignal,
 ): Promise<Response> {
+  // Compose two abort sources: the per-request timeout AND the
+  // queue-supplied cancellation signal (raised by `cancelByTag` when
+  // the underlying entity is deleted). The combined controller aborts
+  // as soon as either source fires.
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  const forwardCancel = (): void => controller.abort();
+  if (cancelSignal.aborted) {
+    controller.abort();
+  } else {
+    cancelSignal.addEventListener("abort", forwardCancel, { once: true });
+  }
   try {
     return await fetch(url, { ...init, signal: controller.signal });
   } catch (cause) {
+    // If cancellation drove the abort, re-throw the AbortError as-is
+    // so the queue can translate it to RequestCancelledError; only
+    // wrap genuine network failures.
+    if (cancelSignal.aborted) throw cause;
     throw new SpotifyNetworkError(cause);
   } finally {
     clearTimeout(timer);
+    cancelSignal.removeEventListener("abort", forwardCancel);
   }
 }
 
@@ -324,7 +345,7 @@ async function fetchWithTimeout(
  * window expires and the next caller becomes the half-open probe.
  */
 async function submitRaw(
-  send: () => Promise<Response>,
+  send: (signal: AbortSignal) => Promise<Response>,
   context: { path: string; tag?: string; guard?: () => boolean },
 ): Promise<Response> {
   // Breaker check is synchronous and happens BEFORE enqueueing — a
@@ -345,14 +366,14 @@ async function submitRaw(
   // so the success path (where close() also clears probeInFlight via
   // its own reset) remains correct.
   try {
-    return await queue.enqueue(async () => {
+    return await queue.enqueue(async (signal) => {
       // Another caller may have tripped the breaker while we were
       // queued; non-probe callers respect the new window.
       if (!isProbe && breaker.remainingMs() > 0) {
         throw new SpotifyRateLimitError(breaker.remainingMs());
       }
 
-      const response = await send();
+      const response = await send(signal);
       if (response.status !== RATE_LIMIT_STATUS) {
         if (isProbe) breaker.close();
         return response;
@@ -403,11 +424,14 @@ export async function submitSpotifyRequest<T>(
   clientId: string,
   options: SubmitOptions = {},
 ): Promise<T> {
-  const response = await submitRaw(() => sendOnce(request, clientId), {
-    path: request.path,
-    tag: options.tag,
-    guard: options.guard,
-  });
+  const response = await submitRaw(
+    (signal) => sendOnce(request, clientId, signal),
+    {
+      path: request.path,
+      tag: options.tag,
+      guard: options.guard,
+    },
+  );
   return mapStatusToResult<T>(response, request);
 }
 
@@ -435,7 +459,12 @@ export async function submitTokenRequest(
   send: () => Promise<Response>,
   path = "/api/token",
 ): Promise<Response> {
-  return submitRaw(send, { path });
+  // Token requests are untagged (no entity to associate with), so the
+  // cancel-by-tag path never targets them. We discard the queue-
+  // supplied signal here; the per-request timeout still applies via
+  // the breaker + queue's normal handling. Auth-side `fetch` callers
+  // retain whatever timeout discipline they bring in themselves.
+  return submitRaw(() => send(), { path });
 }
 
 /** Back-compat alias used by authFlow.ts. */

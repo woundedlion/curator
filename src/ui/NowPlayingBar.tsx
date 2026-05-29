@@ -26,10 +26,14 @@ export function NowPlayingBar() {
   // events. Commit the seek once the user releases.
   const [dragValue, setDragValue] = useState<number | null>(null);
 
-  // If the current track changes mid-drag (e.g. SDK loads a new uri), drop
-  // the pending drag value rather than seeking the new track to the prior
-  // position. Reset during render via prev-state pattern so we don't
-  // trigger a cascading re-render from inside an effect.
+  // If the current track changes mid-drag (e.g. SDK loads a new uri),
+  // drop the pending drag value rather than seeking the new track to
+  // the prior position. This is the documented "storing information
+  // from previous renders" pattern
+  // (https://react.dev/reference/react/useState#storing-information-from-previous-renders),
+  // not a side-effect-in-render violation — comparing a tracked prior
+  // value to the current render's value and resetting derived state
+  // during render is the explicit React idiom.
   const [lastTrackId, setLastTrackId] = useState(currentTrackId);
   if (lastTrackId !== currentTrackId) {
     setLastTrackId(currentTrackId);

@@ -141,8 +141,8 @@ export async function enrichTrack(
   let cacheHit = false;
   if (!options.bypassCache) {
     const cached = await readCachedCandidates(cacheKey);
-    if (cached && cached.length > 0) {
-      primaryScored = scoreCandidates(track, cached);
+    if (cached.kind === "cached" && cached.candidates.length > 0) {
+      primaryScored = scoreCandidates(track, cached.candidates);
       cacheHit = true;
     }
   }

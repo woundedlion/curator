@@ -8,6 +8,31 @@ import { arrayMove } from "@dnd-kit/sortable";
 import { usePlaylistStore } from "../store/playlistStore";
 import { moveSelectionMaintainingShape } from "../store/selectionHelpers";
 
+// Given a preview/visible order and an `over` row that turned out to
+// be a selected row (the live preview slid it under the cursor), find
+// the closest UNSELECTED row in the same order. Searches forward
+// then backward from the over-position so the result is the nearest
+// drop target the user could plausibly have meant. Returns null when
+// every row in the order is selected — in that case the move would
+// be a no-op anyway.
+export function nearestUnselectedFallback(
+  order: ReadonlyArray<string>,
+  overId: string,
+  selection: ReadonlySet<string>,
+): string | null {
+  const overIndex = order.indexOf(overId);
+  if (overIndex === -1) return null;
+  for (let i = overIndex + 1; i < order.length; i++) {
+    const id = order[i]!;
+    if (!selection.has(id)) return id;
+  }
+  for (let i = overIndex - 1; i >= 0; i--) {
+    const id = order[i]!;
+    if (!selection.has(id)) return id;
+  }
+  return null;
+}
+
 export type DragAndDropHandlers = {
   onDragStart: (event: DragStartEvent) => void;
   onDragOver: (event: DragOverEvent) => void;
@@ -64,20 +89,23 @@ export function usePlaylistDragAndDrop(
     null,
   );
   const [dragOverlayCount, setDragOverlayCount] = useState(0);
-  // dnd-kit's `over.id` can settle on a selected row while the preview is
-  // shifting things around (a non-active selected row slides under the
-  // cursor's screen position). The drop semantics treat "over a selected
-  // row" as a no-op, which would silently abort the move the user just
-  // built up visually. To avoid that, we remember the most recent
-  // UNSELECTED over-id we saw during the drag and use it on release as a
-  // fallback anchor when the final over-id is on a selected row. Cleared
-  // at drag start/cancel.
-  const lastUnselectedOverIdRef = useRef<string | null>(null);
+  // Synchronous mirror of `dragPreviewIds`. React batches state writes
+  // (especially under StrictMode and inside the `act(...)` blocks the
+  // tests use), so a fresh write from `onDragOver` is NOT visible via
+  // the `dragPreviewIds` state closure when `onDragEnd` runs in the
+  // same tick. The ref captures the latest preview synchronously so
+  // the fallback at drop time always sees the order the user
+  // actually released on. State remains the source of truth for
+  // rendering; the ref is an internal implementation detail.
+  const dragPreviewIdsRef = useRef<string[] | null>(null);
+  const setDragPreviewBoth = (value: string[] | null): void => {
+    dragPreviewIdsRef.current = value;
+    setDragPreviewIds(value);
+  };
 
   const onDragStart = useCallback(
     (event: DragStartEvent) => {
       const activeId = String(event.active.id);
-      lastUnselectedOverIdRef.current = null;
       setActiveDragTrackId(activeId);
       // If the dragged row isn't part of the current selection, the drag
       // should affect only that row. Make this visible by replacing the
@@ -104,7 +132,7 @@ export function usePlaylistDragAndDrop(
       // Only multi-row drags need a preview override — dnd-kit handles
       // the single-row case natively.
       if (selection.size <= 1 || !selection.has(activeId)) {
-        if (dragPreviewIds !== null) setDragPreviewIds(null);
+        if (dragPreviewIdsRef.current !== null) setDragPreviewBoth(null);
         return;
       }
       // Hovering over a selected row keeps the last preview as-is (the
@@ -112,7 +140,6 @@ export function usePlaylistDragAndDrop(
       // but the user's intent hasn't moved — keep showing the last valid
       // landing).
       if (selection.has(overId)) return;
-      lastUnselectedOverIdRef.current = overId;
       const next = moveSelectionMaintainingShape(
         visibleTrackIds,
         selection,
@@ -120,23 +147,25 @@ export function usePlaylistDragAndDrop(
         overId,
       );
       if (next === visibleTrackIds) {
-        if (dragPreviewIds !== null) setDragPreviewIds(null);
-      } else if (next !== dragPreviewIds) {
-        setDragPreviewIds(next);
+        if (dragPreviewIdsRef.current !== null) setDragPreviewBoth(null);
+      } else if (next !== dragPreviewIdsRef.current) {
+        setDragPreviewBoth(next);
       }
     },
-    [visibleTrackIds, dragPreviewIds],
+    [visibleTrackIds],
   );
 
   const onDragEnd = useCallback(
     (event: DragEndEvent) => {
       const { active, over } = event;
-      const lastUnselectedOver = lastUnselectedOverIdRef.current;
-      setDragPreviewIds(null);
+      // Read the preview from the synchronous ref — `dragPreviewIds`
+      // state may not be committed yet if onDragOver and onDragEnd
+      // batched in the same React tick.
+      const previewAtRelease = dragPreviewIdsRef.current;
+      setDragPreviewBoth(null);
       setMultiDragActive(false);
       setActiveDragTrackId(null);
       setDragOverlayCount(0);
-      lastUnselectedOverIdRef.current = null;
       if (!over) return;
       const activeId = String(active.id);
       const overFromEvent = String(over.id);
@@ -146,13 +175,28 @@ export function usePlaylistDragAndDrop(
       const currentSelection = usePlaylistStore.getState().selectedTrackIds;
 
       if (currentSelection.size > 1) {
-        // Prefer the live event's over-id, but if it landed on a selected
-        // row (because the preview shifted things under the cursor), fall
-        // back to the last unselected over we saw. Without this fallback
-        // the user's deliberate multi-drag would silently no-op.
-        const overId = currentSelection.has(overFromEvent)
-          ? lastUnselectedOver
-          : overFromEvent;
+        // Prefer the live event's over-id, but if it landed on a
+        // selected row (because the preview shifted things under the
+        // cursor), derive the fallback from the preview order. The
+        // preview is only set when the user has hovered at least one
+        // UNSELECTED row during the drag — `onDragOver` returns early
+        // for selected overs and never writes the preview. So
+        // `previewAtRelease === null` is the signal that the user
+        // never crossed an unselected row, which we treat as "no real
+        // drop target picked" (no-op). When the preview exists,
+        // `nearestUnselectedFallback` walks it for the closest
+        // unselected slot near the release point — that's the row the
+        // user visually released on under the cursor.
+        let overId: string | null = overFromEvent;
+        if (currentSelection.has(overFromEvent)) {
+          overId = previewAtRelease
+            ? nearestUnselectedFallback(
+                previewAtRelease,
+                overFromEvent,
+                currentSelection,
+              )
+            : null;
+        }
         if (!overId || currentSelection.has(overId)) return;
         const newVisibleOrder = moveSelectionMaintainingShape(
           visibleTrackIds,
@@ -194,11 +238,10 @@ export function usePlaylistDragAndDrop(
   );
 
   const onDragCancel = useCallback(() => {
-    setDragPreviewIds(null);
+    setDragPreviewBoth(null);
     setMultiDragActive(false);
     setActiveDragTrackId(null);
     setDragOverlayCount(0);
-    lastUnselectedOverIdRef.current = null;
   }, []);
 
   return {

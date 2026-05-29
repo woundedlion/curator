@@ -48,8 +48,55 @@ vi.mock("../services/cancelTrackRequests", () => ({
 }));
 
 import { usePlaylistStore } from "../store/playlistStore";
-import { usePlaylistDragAndDrop } from "./usePlaylistDragAndDrop";
+import {
+  nearestUnselectedFallback,
+  usePlaylistDragAndDrop,
+} from "./usePlaylistDragAndDrop";
 import type { Track } from "../types";
+
+describe("nearestUnselectedFallback", () => {
+  it("returns the next unselected id after the over-index when one exists", () => {
+    // Forward walk is preferred — when the user releases on a
+    // selected row, the row visually one slot further down is the
+    // most natural reading of "where they let go."
+    expect(
+      nearestUnselectedFallback(
+        ["a", "b", "c", "d"],
+        "b",
+        new Set(["a", "b"]),
+      ),
+    ).toBe("c");
+  });
+
+  it("falls back to the nearest unselected id BEFORE the over-index when forward exhausts", () => {
+    // No unselected row remains after `c`, so the walk reverses and
+    // lands on `b`. Preserves the invariant that the drop anchor is
+    // always an unselected row.
+    expect(
+      nearestUnselectedFallback(
+        ["a", "b", "c", "d"],
+        "d",
+        new Set(["a", "c", "d"]),
+      ),
+    ).toBe("b");
+  });
+
+  it("returns null when every row is selected (no real drop target)", () => {
+    expect(
+      nearestUnselectedFallback(
+        ["a", "b", "c"],
+        "b",
+        new Set(["a", "b", "c"]),
+      ),
+    ).toBeNull();
+  });
+
+  it("returns null when the over-id is not in the order (defensive)", () => {
+    expect(
+      nearestUnselectedFallback(["a", "b"], "ghost", new Set(["a"])),
+    ).toBeNull();
+  });
+});
 
 // ─── helpers ─────────────────────────────────────────────────────────
 
@@ -393,12 +440,13 @@ describe("usePlaylistDragAndDrop — onDragEnd multi-row", () => {
     ]);
   });
 
-  it("multi-row drag where over.id is a selected row: falls back to lastUnselectedOverIdRef", () => {
+  it("multi-row drag where over.id is a selected row: derives fallback from the live preview", () => {
     // The user dragged across an unselected row (d) THEN the preview
     // scooted a selected row (b) under the cursor by release time.
     // dnd-kit reports over.id=b — a selected row. Without the
     // fallback the move silently no-ops. WITH the fallback, the hook
-    // uses d (the last unselected over) and the move commits.
+    // walks the preview order at release time for the nearest
+    // unselected row and the move commits against that.
     setupPlaylist(["a", "b", "c", "d"]);
     usePlaylistStore.setState({
       selectedTrackIds: new Set(["a", "b"]),
@@ -409,8 +457,8 @@ describe("usePlaylistDragAndDrop — onDragEnd multi-row", () => {
     );
     act(() => {
       result.current.onDragStart(startEvent("a"));
-      result.current.onDragOver(overEvent("a", "d")); // records d as lastUnselectedOver
-      result.current.onDragEnd(endEvent("a", "b")); // over=selected; should fall back to d
+      result.current.onDragOver(overEvent("a", "d")); // preview becomes [c, d, a, b]
+      result.current.onDragEnd(endEvent("a", "b")); // over=selected; fallback walks the preview
     });
     expect(usePlaylistStore.getState().playlist.trackIds).toEqual([
       "c",
@@ -420,10 +468,11 @@ describe("usePlaylistDragAndDrop — onDragEnd multi-row", () => {
     ]);
   });
 
-  it("multi-row drag where every observed over was selected: no fallback to commit, no-op", () => {
-    // No unselected over was ever recorded — the fallback is null and
-    // the hook bails. The user's drag effectively didn't pick a
-    // target.
+  it("multi-row drag where every observed over was selected: no preview → no-op", () => {
+    // The hook only writes a preview when the user hovers an
+    // UNSELECTED row, so `previewAtRelease === null` means the user
+    // never crossed an unselected target — we treat that as "no real
+    // drop target" and bail without committing a move.
     setupPlaylist(["a", "b", "c", "d"]);
     usePlaylistStore.setState({
       selectedTrackIds: new Set(["a", "b"]),

@@ -198,16 +198,16 @@ describe("read/write round-trip", () => {
         artist: "RADIOHEAD",
         album: "OK Computer",
       });
-      expect(out).toEqual(candidates);
+      expect(out).toEqual({ kind: "cached", candidates });
     })();
   });
 
-  it("returns null on a miss", async () => {
-    // A miss must be distinguishable from an empty hit — the caller
-    // uses null to mean "go fetch", and [] to mean "we already tried
-    // and got nothing." The cache returns null for missing rows.
+  it("returns a miss when no row exists", async () => {
+    // The caller distinguishes "miss" from "cached-empty" off the
+    // discriminator — a miss means go fetch; cached-empty means a
+    // prior search returned nothing and the caller should honor it.
     const out = await readCachedCandidates({ title: "nope", artist: "nobody" });
-    expect(out).toBeNull();
+    expect(out).toEqual({ kind: "miss" });
   });
 
   it("stamps the entry with the current MB_CACHE_VERSION", async () => {
@@ -234,7 +234,7 @@ describe("read/write round-trip", () => {
       version: MB_CACHE_VERSION - 1,
     } as MBCacheEntry);
     const out = await readCachedCandidates({ title: "Old", artist: "Old" });
-    expect(out).toBeNull();
+    expect(out).toEqual({ kind: "miss" });
   });
 
   it("ignores a row with no version field (legacy pre-versioning data)", async () => {
@@ -247,7 +247,7 @@ describe("read/write round-trip", () => {
       cachedAt: 1,
     } as MBCacheEntry);
     const out = await readCachedCandidates({ title: "Legacy", artist: "Legacy" });
-    expect(out).toBeNull();
+    expect(out).toEqual({ kind: "miss" });
   });
 });
 
@@ -367,6 +367,6 @@ describe("writeCachedCandidates with empty input", () => {
     // persist an empty result (true no-query negative-cache slots).
     await writeCachedCandidates({ title: "Q", artist: "Q" }, []);
     const out = await readCachedCandidates({ title: "Q", artist: "Q" });
-    expect(out).toEqual([]);
+    expect(out).toEqual({ kind: "cached", candidates: [] });
   });
 });

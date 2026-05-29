@@ -79,11 +79,23 @@ export class RequestCancelledError extends Error {
 }
 
 type Task<T> = {
-  run: () => Promise<T>;
+  run: (signal: AbortSignal) => Promise<T>;
   resolve: (value: T) => void;
   reject: (reason: unknown) => void;
   tag: string | undefined;
   guard: (() => boolean) | undefined;
+};
+
+// Track for each in-flight task so `cancelByTag` can abort the
+// underlying fetch on the wire — without this, a cancelled in-flight
+// request still costs a slot against Spotify's rolling 30s bucket. The
+// `cancelled` flag lets the drain loop swap the resulting AbortError
+// for a `RequestCancelledError` so callers see the same typed error
+// from pending and in-flight cancellation paths.
+type InFlightSlot = {
+  tag: string | undefined;
+  controller: AbortController;
+  cancelled: boolean;
 };
 
 export class IntervalQueue {
@@ -91,6 +103,7 @@ export class IntervalQueue {
   private readonly persistKey: string | undefined;
   private readonly persistedCapMs: number;
   private readonly pending: Task<unknown>[] = [];
+  private readonly inFlightSlots = new Set<InFlightSlot>();
   private inFlight = 0;
   private draining = false;
   private nextRunAt: number;
@@ -142,7 +155,7 @@ export class IntervalQueue {
    * `RequestCancelledError`.
    */
   enqueue<T>(
-    run: () => Promise<T>,
+    run: (signal: AbortSignal) => Promise<T>,
     options: EnqueueOptions = {},
   ): Promise<T> {
     return new Promise<T>((resolve, reject) => {
@@ -161,26 +174,45 @@ export class IntervalQueue {
 
   /**
    * Remove every PENDING task whose tag matches `tag` from the FIFO,
-   * rejecting each one's promise with `RequestCancelledError`.
-   * Returns the number of tasks cancelled.
+   * rejecting each one's promise with `RequestCancelledError`. Also
+   * aborts every IN-FLIGHT task with the same tag — the drain loop
+   * translates the resulting AbortError into `RequestCancelledError`
+   * so callers see one typed error regardless of where the cancel
+   * landed in the request's lifecycle.
    *
-   * Tasks that are ALREADY IN FLIGHT are NOT cancelled — once a
-   * network request is on the wire we can't unsend it, and the
-   * response is the cheaper thing to discard than to add an
-   * AbortSignal contract through every HTTP path. Callers that
-   * receive the in-flight response should detect that the
-   * underlying entity is gone (e.g. the trackId no longer exists in
-   * the store) and discard the result themselves.
+   * Aborting an in-flight `fetch` closes the connection at the
+   * network layer. If the request hasn't reached Spotify's edge yet,
+   * it doesn't count against the rolling-30s bucket. If it already
+   * has, Spotify has already counted it — but we still benefit from
+   * not waiting for a response we'd discard anyway.
+   *
+   * Returns the total number of tasks cancelled (pending + in-flight).
    */
   cancelByTag(tag: string): number {
-    if (this.pending.length === 0) return 0;
+    let aborted = 0;
+    if (this.inFlightSlots.size > 0) {
+      for (const slot of this.inFlightSlots) {
+        if (slot.tag === tag && !slot.cancelled) {
+          slot.cancelled = true;
+          slot.controller.abort();
+          aborted++;
+        }
+      }
+    }
+    if (this.pending.length === 0) {
+      if (aborted > 0) this.notify();
+      return aborted;
+    }
     const survivors: Task<unknown>[] = [];
     const cancelled: Task<unknown>[] = [];
     for (const task of this.pending) {
       if (task.tag === tag) cancelled.push(task);
       else survivors.push(task);
     }
-    if (cancelled.length === 0) return 0;
+    if (cancelled.length === 0) {
+      if (aborted > 0) this.notify();
+      return aborted;
+    }
     // Swap the array contents in place so any external references
     // to `pending` (there shouldn't be any, but be defensive) stay
     // valid.
@@ -192,7 +224,7 @@ export class IntervalQueue {
     const cancelError = new RequestCancelledError();
     for (const task of cancelled) task.reject(cancelError);
     this.notify();
-    return cancelled.length;
+    return cancelled.length + aborted;
   }
 
   /**
@@ -216,6 +248,16 @@ export class IntervalQueue {
    */
   reset(): void {
     this.pending.length = 0;
+    // Aborting in-flight controllers on reset is the safe default —
+    // an in-flight `fetch` that resolves after a test that wiped the
+    // queue would otherwise write into a torn-down store. Tests that
+    // care about the next state immediately after reset see clean
+    // counters; tests that don't aren't affected.
+    for (const slot of this.inFlightSlots) {
+      slot.cancelled = true;
+      slot.controller.abort();
+    }
+    this.inFlightSlots.clear();
     this.inFlight = 0;
     this.draining = false;
     this.setNextRunAt(0);
@@ -261,13 +303,27 @@ export class IntervalQueue {
         }
         this.inFlight++;
         this.setNextRunAt(Date.now() + this.intervalMs);
+        const slot: InFlightSlot = {
+          tag: task.tag,
+          controller: new AbortController(),
+          cancelled: false,
+        };
+        this.inFlightSlots.add(slot);
         this.notify();
         try {
-          const value = await task.run();
+          const value = await task.run(slot.controller.signal);
           task.resolve(value);
         } catch (error) {
-          task.reject(error);
+          // When `cancelByTag` aborted us, the underlying fetch throws
+          // an AbortError. Translate it to the canonical
+          // `RequestCancelledError` so callers (and toasts) see the
+          // same typed signal regardless of whether the cancel landed
+          // pre-dispatch or mid-flight.
+          task.reject(
+            slot.cancelled ? new RequestCancelledError() : error,
+          );
         } finally {
+          this.inFlightSlots.delete(slot);
           this.inFlight--;
           this.notify();
         }

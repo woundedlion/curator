@@ -153,22 +153,36 @@ function sleep(ms: number): Promise<void> {
 async function fetchWithTimeout(
   url: string,
   contactEmail: string,
+  cancelSignal: AbortSignal,
 ): Promise<Response> {
   // The rate-limited queue serializes work — one hung request pins the
   // entire enrichment pipeline. Cap each fetch so a network stall
-  // becomes a normal failure instead of a deadlock.
+  // becomes a normal failure instead of a deadlock. The cancelSignal
+  // is the queue-supplied AbortSignal raised by `cancelByTag` when
+  // the underlying track is deleted; we compose it with the timeout
+  // so either source aborts the in-flight fetch.
   const controller = new AbortController();
   let timedOut = false;
   const timeoutId = setTimeout(() => {
     timedOut = true;
     controller.abort();
   }, SEARCH_TIMEOUT_MS);
+  const forwardCancel = (): void => controller.abort();
+  if (cancelSignal.aborted) {
+    controller.abort();
+  } else {
+    cancelSignal.addEventListener("abort", forwardCancel, { once: true });
+  }
   try {
     return await fetch(url, {
       headers: buildRequestHeaders(contactEmail),
       signal: controller.signal,
     });
   } catch (error) {
+    // If cancellation drove the abort, propagate the AbortError so
+    // the queue can translate it to RequestCancelledError. Only
+    // wrap a true timeout in our user-facing timeout message.
+    if (cancelSignal.aborted) throw error;
     // Translate any abort-shape error into a user-meaningful timeout.
     // `instanceof DOMException` is too narrow — fetch in some browsers
     // (Safari, some polyfills) throws an Error subclass with
@@ -192,6 +206,7 @@ async function fetchWithTimeout(
     throw error;
   } finally {
     clearTimeout(timeoutId);
+    cancelSignal.removeEventListener("abort", forwardCancel);
   }
 }
 
@@ -202,11 +217,11 @@ async function runOneSearch(
   tag: string | undefined,
   guard: (() => boolean) | undefined,
 ): Promise<MBCandidate[]> {
-  return queue.enqueue(async () => {
+  return queue.enqueue(async (signal) => {
     const url = buildSearchUrl(query, contactEmail, dismax);
     let attempts = 0;
     while (true) {
-      const response = await fetchWithTimeout(url, contactEmail);
+      const response = await fetchWithTimeout(url, contactEmail, signal);
 
       if (response.status === SERVICE_UNAVAILABLE_STATUS) {
         // MB asks for a backoff via Retry-After. Honor it once, then

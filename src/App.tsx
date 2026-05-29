@@ -4,6 +4,7 @@ import { useVisibleTrackIds } from "./hooks/useVisibleTrackIds";
 import { useSettingsStore } from "./store/settingsStore";
 import { usePlaylistStore } from "./store/playlistStore";
 import { EmptyFilterState } from "./ui/EmptyFilterState";
+import { ErrorBoundary } from "./ui/ErrorBoundary";
 import {
   importPlaylistById,
   ingestDroppedFiles,
@@ -59,48 +60,53 @@ export function App() {
 
   return (
     <div className="flex h-full flex-col">
-      <Toolbar hiddenCount={hiddenCount} onPickFolder={pickFolderAndIngest} />
-      <div className="flex min-h-0 flex-1">
-        <Sidebar />
-        <main className="flex min-w-0 flex-1 flex-col">
-          {trackCount === 0 ? (
-            <EmptyState onPickFolder={pickFolderAndIngest} />
-          ) : visibleTrackIds.length === 0 ? (
-            <EmptyFilterState hiddenCount={hiddenCount} />
-          ) : (
-            <PlaylistTable
-              visibleTrackIds={visibleTrackIds}
-              onPickSpotifyMatch={setSpotifyPickerTrackId}
-              onPickEnrichmentMatch={setEnrichmentPickerTrackId}
-              onReEnrich={handleReEnrich}
-            />
-          )}
-          <CreatePlaylistPanel />
-        </main>
-      </div>
-      <NowPlayingBar />
+      {/* ToastList sits OUTSIDE the boundary so toasts (incl. ones the
+          boundary itself might want to emit later) survive a render
+          crash in the main tree. */}
+      <ErrorBoundary>
+        <Toolbar hiddenCount={hiddenCount} onPickFolder={pickFolderAndIngest} />
+        <div className="flex min-h-0 flex-1">
+          <Sidebar />
+          <main className="flex min-w-0 flex-1 flex-col">
+            {trackCount === 0 ? (
+              <EmptyState onPickFolder={pickFolderAndIngest} />
+            ) : visibleTrackIds.length === 0 ? (
+              <EmptyFilterState hiddenCount={hiddenCount} />
+            ) : (
+              <PlaylistTable
+                visibleTrackIds={visibleTrackIds}
+                onPickSpotifyMatch={setSpotifyPickerTrackId}
+                onPickEnrichmentMatch={setEnrichmentPickerTrackId}
+                onReEnrich={handleReEnrich}
+              />
+            )}
+            <CreatePlaylistPanel />
+          </main>
+        </div>
+        <NowPlayingBar />
 
-      <DropZone
-        onFilesDropped={handleFiles}
-        onPlaylistDropped={handlePlaylistDrop}
-        recursive={recursive}
-      />
-      <SettingsDialog />
-      {spotifyPickerTrackId !== null && (
-        // `key` gives each picker session a fresh component instance so
-        // the dialog's form state initializes via standard useState,
-        // not a render-phase reset (see useState §"Storing information
-        // from previous renders" — equivalent semantic, clearer intent).
-        <AmbiguousMatchDialog
-          key={spotifyPickerTrackId}
-          trackId={spotifyPickerTrackId}
-          onClose={() => setSpotifyPickerTrackId(null)}
+        <DropZone
+          onFilesDropped={handleFiles}
+          onPlaylistDropped={handlePlaylistDrop}
+          recursive={recursive}
         />
-      )}
-      <AmbiguousEnrichmentDialog
-        trackId={enrichmentPickerTrackId}
-        onClose={() => setEnrichmentPickerTrackId(null)}
-      />
+        <SettingsDialog />
+        {spotifyPickerTrackId !== null && (
+          // `key` gives each picker session a fresh component instance so
+          // the dialog's form state initializes via standard useState,
+          // not a render-phase reset (see useState §"Storing information
+          // from previous renders" — equivalent semantic, clearer intent).
+          <AmbiguousMatchDialog
+            key={spotifyPickerTrackId}
+            trackId={spotifyPickerTrackId}
+            onClose={() => setSpotifyPickerTrackId(null)}
+          />
+        )}
+        <AmbiguousEnrichmentDialog
+          trackId={enrichmentPickerTrackId}
+          onClose={() => setEnrichmentPickerTrackId(null)}
+        />
+      </ErrorBoundary>
       <ToastList />
     </div>
   );

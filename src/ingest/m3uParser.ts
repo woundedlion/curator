@@ -1,7 +1,7 @@
 import { v4 as uuid } from "uuid";
 import { ARTIST_TITLE_SEPARATOR } from "../constants";
 import type { Track } from "../types";
-import { normalizeText } from "../util/textNormalize";
+import { normalizeText, readBlobAsText } from "../util/textNormalize";
 
 const EXTINF_PREFIX = "#EXTINF:";
 
@@ -77,6 +77,12 @@ export function parseM3uContent(text: string): Track[] {
 }
 
 export async function parseM3uFile(file: File): Promise<Track[]> {
-  const content = await file.text();
+  // `.m3u` (non-`.m3u8`) is conventionally Latin-1/Windows-1252 — the
+  // `8` in `.m3u8` is the legacy spec's marker for "UTF-8 encoded."
+  // `readBlobAsText` tries strict UTF-8 first (handles `.m3u8` and any
+  // ASCII-safe `.m3u`) and falls back to Windows-1252 on decode
+  // failure, which covers VLC/iTunes-exported playlists that still
+  // carry Latin-1 accented characters.
+  const content = await readBlobAsText(file);
   return parseM3uContent(content);
 }

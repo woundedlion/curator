@@ -250,20 +250,28 @@ describe("IntervalQueue.cancelByTag", () => {
     expect(Date.now()).toBe(firstStartedAt + 1_000);
   });
 
-  it("cancelling an in-flight task is a no-op (cancelByTag only affects pending)", async () => {
+  it("aborts an in-flight task and counts it in the return", async () => {
     const queue = new IntervalQueue({ intervalMs: 50 });
-    let releaseTask: (v: string) => void = () => undefined;
-    const taskPromise = new Promise<string>((resolve) => {
-      releaseTask = resolve;
-    });
-    const p = queue.enqueue(() => taskPromise, { tag: "doomed" });
+    // The task awaits the queue-supplied AbortSignal so it surfaces
+    // the cancellation via the standard signal path — same shape any
+    // real `fetch`-based caller would use.
+    const p = queue.enqueue(
+      (signal) =>
+        new Promise<string>((_, reject) => {
+          if (signal.aborted) return reject(new Error("aborted"));
+          signal.addEventListener("abort", () => reject(new Error("aborted")), {
+            once: true,
+          });
+        }),
+      { tag: "doomed" },
+    );
+    const rejection = expect(p).rejects.toBeInstanceOf(RequestCancelledError);
     await vi.advanceTimersByTimeAsync(0);
-
-    // Task is now in flight, not pending.
-    expect(queue.cancelByTag("doomed")).toBe(0);
-
-    releaseTask("done");
-    expect(await p).toBe("done");
+    // Task is now in flight, not pending. cancelByTag aborts it via
+    // the signal and the drain loop translates the resulting error
+    // into the canonical RequestCancelledError.
+    expect(queue.cancelByTag("doomed")).toBe(1);
+    await rejection;
   });
 });
 

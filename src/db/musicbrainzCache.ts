@@ -62,15 +62,27 @@ function isCurrentVersion(entry: MBCacheEntry | undefined): boolean {
   return entry?.version === MB_CACHE_VERSION;
 }
 
+// Explicit tri-state read result. A `miss` (no row, or row exists at a
+// stale version) means the caller should fetch from MB. A `cached`
+// result is authoritative — its `candidates` array may be empty if a
+// prior search was deliberately persisted as a negative-cache slot,
+// and the caller should NOT re-fetch in that case. The previous
+// `MBCandidate[] | null` signature collapsed "miss" and "cached-empty"
+// at the type level even though the storage layer kept them apart, so
+// callers couldn't tell them apart without guessing.
+export type CachedCandidatesResult =
+  | { kind: "miss" }
+  | { kind: "cached"; candidates: MBCandidate[] };
+
 export async function readCachedCandidates(
   key: MBCacheKey,
-): Promise<MBCandidate[] | null> {
+): Promise<CachedCandidatesResult> {
   const db = await getDatabase();
   const entry = (await db.get(STORE_MB_CACHE, buildCacheKey(key))) as
     | MBCacheEntry
     | undefined;
-  if (!isCurrentVersion(entry)) return null;
-  return entry?.candidates ?? null;
+  if (!isCurrentVersion(entry) || !entry) return { kind: "miss" };
+  return { kind: "cached", candidates: entry.candidates };
 }
 
 export async function writeCachedCandidates(

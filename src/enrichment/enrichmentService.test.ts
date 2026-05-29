@@ -1,8 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { MBCandidate, Track } from "../types";
 
+type CachedCandidatesResult =
+  | { kind: "miss" }
+  | { kind: "cached"; candidates: MBCandidate[] };
+
 const searchRecordingsMock = vi.fn<(query: string, contact: string) => Promise<MBCandidate[]>>();
-const readCacheMock = vi.fn<(key: unknown) => Promise<MBCandidate[] | null>>();
+const readCacheMock = vi.fn<(key: unknown) => Promise<CachedCandidatesResult>>();
 const writeCacheMock = vi.fn<(key: unknown, candidates: MBCandidate[]) => Promise<void>>();
 
 vi.mock("./musicbrainzClient", () => ({
@@ -53,7 +57,7 @@ describe("enrichTrack", () => {
     searchRecordingsMock.mockReset();
     readCacheMock.mockReset();
     writeCacheMock.mockReset();
-    readCacheMock.mockResolvedValue(null);
+    readCacheMock.mockResolvedValue({ kind: "miss" });
     writeCacheMock.mockResolvedValue(undefined);
   });
 
@@ -119,7 +123,7 @@ describe("enrichTrack", () => {
   });
 
   it("short-circuits on a cache hit when the cache auto-matches and altQuery isn't needed", async () => {
-    readCacheMock.mockResolvedValue([candidate()]);
+    readCacheMock.mockResolvedValue({ kind: "cached", candidates: [candidate()] });
     const track = trackOf({ title: "Karma Police", artist: "Radiohead" });
 
     const outcome = await enrichTrack(track, "me@example.test", 0.75);
@@ -129,7 +133,7 @@ describe("enrichTrack", () => {
   });
 
   it("does NOT rewrite the cache on a cache hit (no churn on cachedAt)", async () => {
-    readCacheMock.mockResolvedValue([candidate()]);
+    readCacheMock.mockResolvedValue({ kind: "cached", candidates: [candidate()] });
     const track = trackOf({ title: "Karma Police", artist: "Radiohead" });
 
     await enrichTrack(track, "me@example.test", 0.75);
@@ -144,11 +148,14 @@ describe("enrichTrack", () => {
     // altQuery (or before altQuery was derived) would then get a
     // permanently degraded match — every subsequent re-enrich would
     // early-return on the cache hit and the altQuery would never fire.
-    readCacheMock.mockResolvedValue([
-      // Cached primary candidate scores poorly against the track —
-      // wrong title and artist mean classifyOutcome → ambiguous.
-      candidate({ title: "Some Other Song", artist: "Some Other Artist" }),
-    ]);
+    readCacheMock.mockResolvedValue({
+      kind: "cached",
+      candidates: [
+        // Cached primary candidate scores poorly against the track —
+        // wrong title and artist mean classifyOutcome → ambiguous.
+        candidate({ title: "Some Other Song", artist: "Some Other Artist" }),
+      ],
+    });
     searchRecordingsMock.mockResolvedValueOnce([
       candidate({
         recordingId: "alt-hit",
@@ -173,9 +180,10 @@ describe("enrichTrack", () => {
   });
 
   it("bypassCache option skips the cache read but still writes results", async () => {
-    readCacheMock.mockResolvedValue([
-      candidate({ recordingId: "stale", title: "Stale Cached" }),
-    ]);
+    readCacheMock.mockResolvedValue({
+      kind: "cached",
+      candidates: [candidate({ recordingId: "stale", title: "Stale Cached" })],
+    });
     searchRecordingsMock.mockResolvedValue([candidate({ recordingId: "fresh" })]);
     const track = trackOf({ title: "Karma Police", artist: "Radiohead" });
 
