@@ -178,6 +178,7 @@ export function CreatePlaylistPanel() {
           value={playlist.name}
           onChange={(e) => setMeta({ name: e.target.value })}
           placeholder="Playlist name"
+          aria-label="Playlist name"
           className="flex-1 rounded border border-neutral-700 bg-neutral-950 px-2 py-1 text-sm"
         />
         <label className="flex items-center gap-1 text-xs">
@@ -221,6 +222,7 @@ export function CreatePlaylistPanel() {
         value={playlist.description ?? ""}
         onChange={(e) => setMeta({ description: e.target.value })}
         placeholder="Description (optional)"
+        aria-label="Playlist description"
         rows={1}
         className="rounded border border-neutral-700 bg-neutral-950 px-2 py-1 text-sm"
       />

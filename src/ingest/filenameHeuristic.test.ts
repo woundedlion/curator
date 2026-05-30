@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { deriveHintsFromFileName } from "./filenameHeuristic";
+import {
+  classifySegments,
+  deriveHintsFromFileName,
+} from "./filenameHeuristic";
 
 describe("deriveHintsFromFileName", () => {
   it("parses Artist - Title", () => {
@@ -111,5 +114,33 @@ describe("deriveHintsFromFileName", () => {
     // as a leading numeric title than to claim it's track 456.
     const result = deriveHintsFromFileName("456 - Track.mp3");
     expect(result.trackNo).toBeUndefined();
+  });
+});
+
+describe("classifySegments (shared with text-list parser, FIX 2)", () => {
+  it("detects an embedded track number in a 4-segment string", () => {
+    // The text parser (textParser.ts) routes through this same helper, so
+    // pinning it here pins both parsers' behavior for the aligned case.
+    expect(
+      classifySegments(["Radiohead", "In Rainbows", "03", "Nude"]),
+    ).toEqual({
+      trackNo: 3,
+      artist: "Radiohead",
+      album: "In Rainbows",
+      title: "Nude",
+    });
+  });
+
+  it("matches deriveHintsFromFileName for the same separated string", () => {
+    const fromName = deriveHintsFromFileName(
+      "Radiohead - In Rainbows - 03 - Nude.mp3",
+    );
+    const fromSegments = classifySegments([
+      "Radiohead",
+      "In Rainbows",
+      "03",
+      "Nude",
+    ]);
+    expect(fromSegments).toEqual(fromName);
   });
 });

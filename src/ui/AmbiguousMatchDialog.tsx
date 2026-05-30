@@ -287,14 +287,15 @@ export function AmbiguousMatchDialog({ trackId, onClose }: Props) {
       : undefined;
 
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-label="Pick a Spotify match"
-      className="fixed inset-0 z-40 flex items-center justify-center bg-black/70 p-4"
-    >
+    <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/70 p-4">
       <div
         ref={dialogRef}
+        // role/aria-modal/aria-label live on the focus-trapped panel, not
+        // the backdrop, so a screen reader entering the dialog lands on the
+        // element that actually carries the dialog semantics.
+        role="dialog"
+        aria-modal="true"
+        aria-label="Pick a Spotify match"
         tabIndex={-1}
         className="flex max-h-[85vh] w-full max-w-2xl flex-col rounded-lg bg-neutral-900 p-4 shadow-xl"
       >

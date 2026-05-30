@@ -25,6 +25,31 @@ describe("parseTextContent", () => {
     });
   });
 
+  it("splits Album - Track# - Artist - Title (four segments, track at -3)", () => {
+    // Mirrors the filename heuristic: a track-number-looking segment is
+    // detected and the line does NOT collapse into album/artist/title only.
+    const tracks = parseTextContent("Dancehall 1 - 15 - Buju Banton - Love Sponge");
+    expect(tracks[0]).toMatchObject({
+      trackNo: 15,
+      album: "Dancehall 1",
+      artist: "Buju Banton",
+      title: "Love Sponge",
+    });
+  });
+
+  it("splits Artist - Album - TrackNo - Title (four segments, track at -2)", () => {
+    // The aligned case from FIX 2: the text parser must detect the
+    // embedded track number exactly like the filename heuristic, so
+    // "Radiohead - In Rainbows - 03 - Nude" parses the same in both.
+    const tracks = parseTextContent("Radiohead - In Rainbows - 03 - Nude");
+    expect(tracks[0]).toMatchObject({
+      trackNo: 3,
+      artist: "Radiohead",
+      album: "In Rainbows",
+      title: "Nude",
+    });
+  });
+
   it("ignores blank lines and comments", () => {
     const tracks = parseTextContent("# header\n\nFoo\n# trailing");
     expect(tracks).toHaveLength(1);

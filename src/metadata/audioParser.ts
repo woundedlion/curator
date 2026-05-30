@@ -52,8 +52,17 @@ function altQueryIfDifferent(
   primary: IdentifyingFields,
   filenameDerived: IdentifyingFields,
 ): IdentifyingFields | undefined {
-  const titleMismatch = !caseFoldedEquals(primary.title, filenameDerived.title);
-  const artistMismatch = !caseFoldedEquals(primary.artist, filenameDerived.artist);
+  // Only count a field as differing when the filename actually SUPPLIES
+  // it. A field the filename lacks (e.g. a single-segment "Title.mp3" with
+  // no artist) adds no new search angle over the primary query, so it must
+  // not trigger an alt query that's merely a subset of the primary — that
+  // would fire a redundant second Spotify/MB search for nothing.
+  const titleMismatch =
+    filenameDerived.title !== undefined &&
+    !caseFoldedEquals(primary.title, filenameDerived.title);
+  const artistMismatch =
+    filenameDerived.artist !== undefined &&
+    !caseFoldedEquals(primary.artist, filenameDerived.artist);
   if (!titleMismatch && !artistMismatch) return undefined;
   const alt: IdentifyingFields = {};
   if (filenameDerived.title) alt.title = filenameDerived.title;

@@ -22,8 +22,9 @@ type Props = {
   displayIndex: number;
   selected: boolean;
   // True iff this row holds the keyboard cursor (the grid's active
-  // descendant). Drives the visible focus ring — DOM focus stays on the
-  // container, so the ring is the only cue that this is the active row.
+  // descendant). Renders the same seamless green highlight as a selected
+  // row (no focus ring) — DOM focus stays on the container, and the cursor
+  // is exposed to assistive tech via aria-activedescendant, not a border.
   isCursor: boolean;
   // True when the row immediately below is also selected. When set, the
   // row drops its bottom divider so a multi-row selection reads as one
@@ -142,22 +143,20 @@ function SortableTrackRowImpl({
 
   // Selection background uses the Spotify-green tint at 10% alpha plus a
   // small left accent strip so a glance at the edge confirms multi-select
-  // without competing with the data inside the row. When the next row is
-  // also selected we drop the bottom divider so the block reads as one
+  // without competing with the data inside the row. The keyboard cursor
+  // (active-descendant) row gets the *same* seamless highlight rather than
+  // a focus ring/box border — DOM focus lives on the grid container, so
+  // there is no :focus styling to land here; the cursor position is
+  // conveyed to assistive tech via aria-activedescendant (see
+  // PlaylistTable), not a visible border. When the next row is also part
+  // of the highlight we drop the bottom divider so the block reads as one
   // continuous tinted area.
-  const selectionClasses = selected
+  const highlighted = selected || isCursor;
+  const selectionClasses = highlighted
     ? "bg-matched/10 border-l-2 border-l-matched"
     : "border-l-2 border-l-transparent";
   const dividerClass =
-    selected && nextSelected ? "" : "border-b border-neutral-900";
-  // Visible cursor ring for the keyboard-focused (active-descendant)
-  // row. DOM focus lives on the grid container, so :focus styling never
-  // lands here — this inset ring is the only cue that arrow-key nav is
-  // sitting on this row. inset so it doesn't shift layout or get clipped
-  // by the virtualizer's absolutely-positioned wrapper.
-  const cursorClass = isCursor
-    ? "ring-2 ring-inset ring-matched"
-    : "";
+    highlighted && nextSelected ? "" : "border-b border-neutral-900";
 
   return (
     <div
@@ -173,7 +172,7 @@ function SortableTrackRowImpl({
       tabIndex={-1}
       aria-rowindex={ariaRowIndex}
       aria-selected={selected}
-      className={`flex h-full items-center ${dividerClass} px-2 text-sm ${selectionClasses} ${cursorClass} ${
+      className={`flex h-full items-center ${dividerClass} px-2 text-sm ${selectionClasses} ${
         isMuted ? "text-neutral-500" : "text-neutral-100"
       } focus:outline-none`}
       data-track-id={track.id}

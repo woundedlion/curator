@@ -14,12 +14,16 @@ import type { SpotifyMatch } from "../types";
 // Per-batch first-error tracking. Each batch (matchAll / rematch) owns its
 // own flag so two concurrent batches don't share state — the previous
 // module-level boolean would silently drop the second batch's errors.
-type ErrorReporter = (error: unknown) => void;
+// Returns whether THIS call was the first error of the batch, so the
+// caller can gate its own per-track console output to a single line:
+// under a rate-limit storm every track fails, and logging each one buries
+// the one signal that matters in N identical lines.
+type ErrorReporter = (error: unknown) => boolean;
 
 function createErrorReporter(): ErrorReporter {
   let reported = false;
   return (error: unknown) => {
-    if (reported) return;
+    if (reported) return false;
     reported = true;
     const ui = useUiStore.getState();
     if (error instanceof SpotifyAuthExpiredError) {
@@ -27,7 +31,7 @@ function createErrorReporter(): ErrorReporter {
         kind: "error",
         message: "Spotify session expired — reconnect in Settings",
       });
-      return;
+      return true;
     }
     if (error instanceof SpotifyRateLimitError) {
       ui.pushToast({
@@ -35,13 +39,14 @@ function createErrorReporter(): ErrorReporter {
         message:
           "Spotify rate limit hit too many times — wait a minute, then re-enrich",
       });
-      return;
+      return true;
     }
     const detail = error instanceof Error ? error.message : "see console";
     ui.pushToast({
       kind: "error",
       message: `Spotify search failed: ${detail}`,
     });
+    return true;
   };
 }
 
@@ -125,8 +130,16 @@ async function matchOne(
     // nothing to update and nothing to toast. updateTrack would be
     // a no-op anyway but skipping is clearer.
     if (error instanceof RequestCancelledError) return;
-    console.error("Spotify match failed", { trackId, error });
-    reportFirstError(error);
+    // Only log the FIRST failure of the batch to the console. The toast
+    // is already deduped to one per batch by the reporter; mirroring that
+    // for the console keeps a rate-limit storm (every track 429s) from
+    // printing N identical lines and burying the single real signal.
+    // Subsequent failures still flow through the reporter (which no-ops
+    // after the first) so user-facing behavior is unchanged.
+    const wasFirstError = reportFirstError(error);
+    if (wasFirstError) {
+      console.error("Spotify match failed", { trackId, error });
+    }
     // Same late-result guard as the success path. A nuke between
     // markPending and the failing response means the row is back at
     // idle; writing "missing" here would silently un-do the nuke.

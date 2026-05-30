@@ -11,6 +11,7 @@ import { useUiStore } from "./uiStore";
 // actually reloaded.
 let quotaToastShown = false;
 let genericPersistToastShown = false;
+let settingsToastShown = false;
 
 /**
  * Surface a draft-persist failure to the user. Quota errors get their
@@ -43,5 +44,29 @@ export function notifyPersistFailure(error: unknown): void {
     kind: "error",
     message:
       "Couldn't save draft to browser storage. Recent edits may be lost on reload — export to .curator.txt to preserve your work.",
+  });
+}
+
+/**
+ * Surface a settings-persist failure to the user. `localStorage.setItem`
+ * can throw on quota exhaustion or in Safari Private Browsing (quota
+ * effectively zero); the settings store swallows the throw so the
+ * in-memory commit still lands, and routes here for the notification.
+ *
+ * Latched once like the draft toasts above — settings writes fire on
+ * every edit, and once writes are failing they'll keep failing, so a
+ * single warning per session (until a full page reload re-evaluates this
+ * module) keeps the user informed without spamming them. The recovery is
+ * the same shape as the generic draft case: settings won't survive a
+ * reload until storage is freed.
+ */
+export function notifySettingsPersistFailure(error: unknown): void {
+  console.error("persistSettings: settings write failed", error);
+  if (settingsToastShown) return;
+  settingsToastShown = true;
+  useUiStore.getState().pushToast({
+    kind: "error",
+    message:
+      "Couldn't save settings to browser storage — changes may be lost on reload. Free up space and try again.",
   });
 }

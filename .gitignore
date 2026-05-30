@@ -5,3 +5,6 @@ dist
 *.tsbuildinfo
 .vscode/*
 !.vscode/extensions.json
+
+# Local Claude Code settings
+.claude/

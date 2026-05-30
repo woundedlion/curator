@@ -149,7 +149,15 @@ export async function loadDraft(
 export async function clearDraft(playlistId: string): Promise<void> {
   const db = await getDatabase();
   const tx = db.transaction([STORE_PLAYLISTS, STORE_TRACKS], "readwrite");
-  await tx.objectStore(STORE_PLAYLISTS).delete(playlistId);
-  await tx.objectStore(STORE_TRACKS).clear();
+  // Fire both requests synchronously inside the transaction, then await
+  // them as a batch. Awaiting the delete() before issuing the clear()
+  // would let the transaction's request queue drain and auto-commit
+  // between the two, raising TransactionInactiveError on the clear().
+  // Mirrors writeDraftOnce / loadDraft's batch-then-await pattern.
+  const requests: Promise<unknown>[] = [
+    tx.objectStore(STORE_PLAYLISTS).delete(playlistId),
+    tx.objectStore(STORE_TRACKS).clear(),
+  ];
+  await Promise.all(requests);
   await tx.done;
 }

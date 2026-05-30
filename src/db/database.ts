@@ -64,6 +64,26 @@ export function getDatabase(): Promise<IDBPDatabase> {
             "Curator: another tab holds an older IndexedDB version open. Close it and reload.",
           );
         },
+        blocking() {
+          // A newer-version connection (another tab on a freshly deployed
+          // build) is waiting to upgrade and is blocked by THIS open
+          // connection. If we hold the connection open the other tab's
+          // `upgradeneeded` never fires and its open hangs indefinitely.
+          // Close our connection so the upgrade can proceed, and null the
+          // cache so the next getDatabase() call re-opens at the new
+          // version rather than handing back the now-closed handle.
+          //
+          // idb's `blocking` callback doesn't hand us the db, so close via
+          // the cached promise — by the time this fires the open has
+          // resolved, so the handle is available. Reading `opened` (the
+          // pre-`.catch` promise) rather than `dbPromise` avoids racing
+          // the null-out below.
+          console.warn(
+            "Curator: closing IndexedDB connection so another tab can upgrade.",
+          );
+          void opened.then((db) => db.close()).catch(() => undefined);
+          dbPromise = null;
+        },
         terminated() {
           // Connection dropped unexpectedly (storage cleared, profile
           // wiped, etc.) — drop the cached promise so the next call

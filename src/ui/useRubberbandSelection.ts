@@ -27,7 +27,6 @@ type PendingPointerState = {
   startClientX: number;
   startClientY: number;
   startContainerY: number;
-  startScrollTop: number;
   // Whether shift/meta/ctrl was held at press-down — additive vs replace.
   additive: boolean;
   // Selection ids before the rubber-band started (used for additive merge).
@@ -110,7 +109,6 @@ export function useRubberbandSelection(
         startClientX: e.clientX,
         startClientY: e.clientY,
         startContainerY: e.clientY - rect.top + container.scrollTop,
-        startScrollTop: container.scrollTop,
         additive,
         baselineSelection: new Set(selectedTrackIds),
         baselineAnchorId: usePlaylistStore.getState().selectionAnchorId,

@@ -2,6 +2,7 @@ import { v4 as uuid } from "uuid";
 import { ARTIST_TITLE_SEPARATOR } from "../constants";
 import type { Track } from "../types";
 import { normalizeText, readBlobAsText } from "../util/textNormalize";
+import { classifySegments } from "./filenameHeuristic";
 import {
   buildTracksFromExport,
   tryParseCuratorExport,
@@ -18,7 +19,6 @@ function splitOnSeparator(line: string): string[] {
 
 function buildTrackFromLine(line: string): Track {
   const segments = splitOnSeparator(line);
-  const [first, second, third] = segments;
 
   const base: Track = {
     id: uuid(),
@@ -27,27 +27,20 @@ function buildTrackFromLine(line: string): Track {
     spotify: { status: "idle" },
   };
 
-  // 4+ segments: last is the title, second-to-last the artist, and the
-  // leading segments collapse into the album — mirroring the filename
-  // heuristic's no-track-number fallback (filenameHeuristic.ts) so the
-  // same string parses the same way whether it came from a filename or a
-  // text list. Previously these lines silently dropped everything past the
-  // first segment and mislabeled it as the title.
-  if (segments.length >= 4) {
-    const title = segments[segments.length - 1];
-    const artist = segments[segments.length - 2];
-    const album = segments
-      .slice(0, segments.length - 2)
-      .join(ARTIST_TITLE_SEPARATOR);
-    return { ...base, artist, album: album || undefined, title };
-  }
-  if (segments.length === 3) {
-    return { ...base, artist: first, album: second, title: third };
-  }
-  if (segments.length === 2) {
-    return { ...base, artist: first, title: second };
-  }
-  return { ...base, title: first };
+  // Route through the shared segment classifier (filenameHeuristic.ts) so
+  // a text line and a filename carrying the same ` - `-separated string
+  // parse identically — including embedded track numbers in 4-segment
+  // shapes like "Radiohead - In Rainbows - 03 - Nude". Previously this
+  // path duplicated (and diverged from) the heuristic, dropping the
+  // track-number detection.
+  const hint = classifySegments(segments);
+  return {
+    ...base,
+    artist: hint.artist,
+    album: hint.album,
+    title: hint.title,
+    trackNo: hint.trackNo,
+  };
 }
 
 export function parseTextContent(text: string): Track[] {

@@ -40,7 +40,7 @@ export function getMbCandidates(
   enrichment: Enrichment,
 ): readonly MBCandidate[] | undefined {
   // matched / failed / ambiguous all expose `candidates`; the remaining
-  // arms (idle / searching) don't. One narrowing check covers all three.
+  // arms (idle / pending) don't. One narrowing check covers all three.
   if (
     enrichment.status === "matched" ||
     enrichment.status === "failed" ||

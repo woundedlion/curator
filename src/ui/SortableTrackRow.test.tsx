@@ -7,8 +7,9 @@
 //   - the row exposes the stable id the grid container points
 //     aria-activedescendant at, and is NOT itself a tab stop (focus is
 //     managed on the container);
-//   - the cursor row paints a visible focus ring (the only cue, since DOM
-//     focus lives on the container, not the row).
+//   - the cursor row paints the same seamless green selection highlight as
+//     a selected row (no focus ring/box border) — the cursor is conveyed to
+//     assistive tech via the container's aria-activedescendant, not a border.
 //
 // The row uses dnd-kit's useSortable, so it must render inside a
 // DndContext + SortableContext.
@@ -79,10 +80,12 @@ describe("SortableTrackRow — grid semantics", () => {
     expect(row.getAttribute("tabindex")).toBe("-1");
   });
 
-  it("paints a focus ring on the cursor row and not on others", () => {
+  it("highlights the cursor row with the seamless green selection background and no focus ring", () => {
     const { rerender } = renderRow({ isCursor: true });
     let row = screen.getByRole("row");
-    expect(row.className).toContain("ring-2");
+    // Cursor row gets the same highlight as a selected row, never a ring.
+    expect(row.className).toContain("bg-matched/10");
+    expect(row.className).not.toContain("ring-2");
 
     rerender(
       <DndContext>
@@ -106,6 +109,8 @@ describe("SortableTrackRow — grid semantics", () => {
       </DndContext>,
     );
     row = screen.getByRole("row");
+    // A row that is neither selected nor the cursor has no highlight.
+    expect(row.className).not.toContain("bg-matched/10");
     expect(row.className).not.toContain("ring-2");
   });
 

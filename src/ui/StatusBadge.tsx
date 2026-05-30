@@ -54,6 +54,10 @@ export function StatusBadge<S extends string>({
   }
   return (
     <span
+      // role="img" so the aria-label is reliably announced — a bare
+      // aria-label on a generic <span> has no host role to attach the
+      // accessible name to, and several screen readers skip it.
+      role="img"
       aria-label={labels[status]}
       title={labels[status]}
       className={className}

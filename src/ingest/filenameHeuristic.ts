@@ -1,6 +1,6 @@
 import { ARTIST_TITLE_SEPARATOR } from "../constants";
 
-type FilenameHint = {
+export type FilenameHint = {
   artist?: string;
   album?: string;
   trackNo?: number;
@@ -137,14 +137,23 @@ function hintFromSingleSegment(segment: string): FilenameHint {
   return { title: segment };
 }
 
+// The single source of truth for turning a list of ` - `-separated
+// segments into artist/album/trackNo/title. Both the filename heuristic
+// and the text-line parser (ingest/textParser.ts) route through this so
+// the same string parses identically regardless of whether it arrived as
+// a filename or a line in a text list — including the 4-segment
+// track-number detection (e.g. "Radiohead - In Rainbows - 03 - Nude").
+export function classifySegments(segments: string[]): FilenameHint {
+  if (segments.length >= 4) return hintFromFourOrMoreSegments(segments);
+  if (segments.length === 3) return hintFromThreeSegments(segments);
+  if (segments.length === 2) return hintFromTwoSegments(segments);
+  return hintFromSingleSegment(segments[0] ?? "");
+}
+
 export function deriveHintsFromFileName(fileName: string): FilenameHint {
   const base = stripExtension(fileName);
   const segments = base
     .split(ARTIST_TITLE_SEPARATOR)
     .map((segment) => segment.trim());
-
-  if (segments.length >= 4) return hintFromFourOrMoreSegments(segments);
-  if (segments.length === 3) return hintFromThreeSegments(segments);
-  if (segments.length === 2) return hintFromTwoSegments(segments);
-  return hintFromSingleSegment(segments[0] ?? "");
+  return classifySegments(segments);
 }

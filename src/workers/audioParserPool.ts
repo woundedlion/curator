@@ -40,8 +40,11 @@ class AudioParserPool {
   private nextId = 1;
   private started = false;
 
-  private ensureStarted(): void {
-    if (this.started) return;
+  // Returns true once at least one worker is live. Returns false when the
+  // spawn yielded zero workers, so parse() can reject the triggering
+  // request instead of leaving its promise to hang.
+  private ensureStarted(): boolean {
+    if (this.started) return true;
     this.started = true;
     const size = decidePoolSize();
     let spawned = 0;
@@ -51,11 +54,14 @@ class AudioParserPool {
     if (spawned === 0) {
       // CSP-blocked workers, sandboxed iframes, or unsupported browsers
       // surface here as zero successful spawns. Reset `started` so a
-      // future parse() retries the spawn; queued pending requests are
-      // failed below so callers see a real error instead of hanging.
+      // future parse() retries the spawn; already-queued pending requests
+      // are failed here, and parse() rejects its own (not-yet-queued)
+      // request so callers see a real error instead of hanging.
       this.started = false;
       this.failQueuedRequests("Audio parser workers are unavailable in this browser");
+      return false;
     }
+    return true;
   }
 
   private failQueuedRequests(message: string): void {
@@ -177,8 +183,16 @@ class AudioParserPool {
   }
 
   parse(file: File): Promise<ParsedFields> {
-    this.ensureStarted();
     return new Promise<ParsedFields>((resolve, reject) => {
+      // Spawn before queueing so a zero-spawn failure rejects THIS request
+      // rather than hanging it: ensureStarted() only fails already-queued
+      // pendings, so a request pushed afterwards would never be settled.
+      if (!this.ensureStarted()) {
+        reject(
+          new Error("Audio parser workers are unavailable in this browser"),
+        );
+        return;
+      }
       const id = this.nextId++;
       const pending: Pending = { id, resolve, reject };
       this.queue.push({ request: { id, file }, pending });

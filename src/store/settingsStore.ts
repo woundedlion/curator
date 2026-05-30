@@ -5,6 +5,7 @@ import {
   SETTINGS_STORAGE_KEY,
 } from "../constants";
 import type { Settings } from "../types";
+import { notifySettingsPersistFailure } from "./persistNotifications";
 
 const defaultSettings: Settings = {
   spotifyClientId: undefined,
@@ -72,7 +73,18 @@ function loadSettingsFromStorage(): Settings {
 
 function persistSettings(settings: Settings): void {
   if (typeof window === "undefined") return;
-  localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
+  // localStorage.setItem can throw — quota exceeded, or a SecurityError in
+  // Safari Private Browsing where the quota is effectively zero. This runs
+  // inside the Zustand `set` updater (see `update` below), so an uncaught
+  // throw would propagate out of `set` and interrupt the state commit,
+  // leaving the in-memory store unchanged. Swallow it here so the commit
+  // always lands; surface a single latched toast so the user knows their
+  // settings won't survive a reload.
+  try {
+    localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(settings));
+  } catch (error) {
+    notifySettingsPersistFailure(error);
+  }
 }
 
 type SettingsStore = {
@@ -86,7 +98,9 @@ export const useSettingsStore = create<SettingsStore>((set) => ({
     // Use the functional `set` form so the patch sees the latest state
     // (matters if two updates race) and we can collapse read+write into
     // one atomic step. persistSettings is called inside set so the
-    // localStorage and store states stay aligned.
+    // localStorage and store states stay aligned — and it swallows its
+    // own write failures (see persistSettings) so a storage throw can't
+    // interrupt this state commit. The in-memory update always lands.
     set((state) => {
       const next = { ...state.settings, ...patch };
       persistSettings(next);

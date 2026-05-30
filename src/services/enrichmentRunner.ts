@@ -106,11 +106,24 @@ async function applyCoverArtIfAvailable(
   // changed (different mbRecordingId picked, or a Spotify candidate
   // selected) during the cover-art HEAD probe.
   const current = usePlaylistStore.getState().tracksById[trackId];
+  // Gate on status === "matched" too, not just recordingId equality. A
+  // nukeEnrichmentState firing during the HEAD probe resets the row to
+  // an idle/failed arm whose recordingId is undefined; if `recordingId`
+  // were ALSO undefined (matched outcome with no recordingId — rare but
+  // possible) the bare `currentRecordingId === recordingId` check would
+  // pass (undefined === undefined) and repaint cover art onto a freshly
+  // nuked row. The explicit status check mirrors the main body's
+  // late-result guard and makes the intent — "only write if the row is
+  // still the same matched recording" — unambiguous.
   const currentRecordingId =
     current?.enrichment.status === "matched"
       ? current.enrichment.mbRecordingId
       : undefined;
-  if (current && currentRecordingId === recordingId) {
+  if (
+    current &&
+    current.enrichment.status === "matched" &&
+    currentRecordingId === recordingId
+  ) {
     usePlaylistStore
       .getState()
       .fillMissingDisplayFields(trackId, { coverUrl: probe.url });

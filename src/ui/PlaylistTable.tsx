@@ -80,6 +80,9 @@ export function PlaylistTable({
   );
 
   const parentRef = useRef<HTMLDivElement | null>(null);
+  // Ref to the grid container so useTableKeyboardNav can scope its
+  // window-level listener to "focus is within the grid".
+  const gridRef = useRef<HTMLDivElement | null>(null);
   // Mirror visibleTrackIds into a ref synced via a commit-phase effect
   // so the row-click callback can read it without listing the array in
   // its useCallback deps. Without this, every status flip that mutates
@@ -93,8 +96,27 @@ export function PlaylistTable({
   useEffect(() => {
     visibleIdsRef.current = visibleTrackIds;
   });
+
+  const {
+    onDragStart,
+    onDragOver,
+    onDragEnd,
+    onDragCancel,
+    dragPreviewIds,
+    multiDragActive,
+    activeDragTrackId,
+    dragOverlayCount,
+  } = usePlaylistDragAndDrop(visibleTrackIds, allTrackIds);
+
+  // Render order: the live drag preview when present, else the canonical
+  // visible-id order. The preview is a permutation, so it's always the
+  // same length — basing the virtualizer's `count` on orderedIds (rather
+  // than visibleTrackIds) makes that invariant explicit instead of
+  // assumed, so the two can never desync into stale/blank rows.
+  const orderedIds = dragPreviewIds ?? visibleTrackIds;
+
   const rowVirtualizer = useVirtualizer({
-    count: visibleTrackIds.length,
+    count: orderedIds.length,
     getScrollElement: () => parentRef.current,
     estimateSize: () => ROW_HEIGHT_PX,
     overscan: 8,
@@ -111,17 +133,6 @@ export function PlaylistTable({
 
   const { onContainerPointerDown, rubberbandRect, suppressClickRef } =
     useRubberbandSelection(parentRef, visibleTrackIds);
-
-  const {
-    onDragStart,
-    onDragOver,
-    onDragEnd,
-    onDragCancel,
-    dragPreviewIds,
-    multiDragActive,
-    activeDragTrackId,
-    dragOverlayCount,
-  } = usePlaylistDragAndDrop(visibleTrackIds, allTrackIds);
 
   // ─── Confirm-dialog state for destructive bulk deletes ───────────────────
   // `pendingDeleteIds` is the snapshot taken at the moment the user requested
@@ -187,6 +198,7 @@ export function PlaylistTable({
     getPageSize,
     scrollToIndex,
     onDeleteSelection: deleteSelectionWithConfirm,
+    gridRef,
   });
 
   // ─── Row click: selection w/ modifiers ──────────────────────────────────
@@ -224,10 +236,6 @@ export function PlaylistTable({
     ],
   );
 
-  // Render order: the live drag preview when present, else the canonical
-  // visible-id order. Always the same length, so the virtualizer's `count`
-  // stays in sync.
-  const orderedIds = dragPreviewIds ?? visibleTrackIds;
   const orderedTracks = useMemo<Track[]>(
     () =>
       orderedIds
@@ -250,6 +258,7 @@ export function PlaylistTable({
 
   return (
     <div
+      ref={gridRef}
       className="flex min-h-0 flex-1 select-none flex-col focus:outline-none"
       role="grid"
       aria-label="Playlist tracks"

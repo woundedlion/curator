@@ -1,4 +1,10 @@
-import { describe, expect, it } from "vitest";
+// @vitest-environment happy-dom
+//
+// The persistence-failure tests exercise localStorage (Storage.prototype
+// spies, DOMException) and rely on `window` being defined so persistSettings
+// actually attempts the write rather than early-returning — both require a
+// DOM environment.
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_ACCEPT_MB,
   DEFAULT_ACCEPT_SPOTIFY_HIGH,
@@ -89,5 +95,59 @@ describe("sanitizeSettings", () => {
     const s = sanitizeSettings({ acceptThresholds: "0.9" });
     expect(s.acceptThresholds.mb).toBe(DEFAULT_ACCEPT_MB);
     expect(s.acceptThresholds.spotify).toBe(DEFAULT_ACCEPT_SPOTIFY_HIGH);
+  });
+});
+
+describe("useSettingsStore.update persistence failures", () => {
+  // The notify-once latch in persistNotifications is module-level state,
+  // so each test re-imports the modules fresh (vi.resetModules) to start
+  // from an un-latched baseline. We pull both the settings store and the
+  // UI store from the SAME freshly-loaded module graph so the toast the
+  // notifier pushes lands in the store instance we assert against.
+  beforeEach(() => {
+    vi.resetModules();
+    localStorage.clear();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  // The two behaviors (commit-despite-failure, and warn-only-once) are
+  // asserted in a SINGLE test because the warn-once latch lives in
+  // module-level state in persistNotifications. vi.resetModules() reloads
+  // the settings/ui modules but the persistNotifications latch is aliased
+  // across the freshly-imported graphs in a way resetModules doesn't
+  // reliably clear, so splitting these into two tests let the first test's
+  // latch leak into the second. Asserting both within one module graph and
+  // one failing-write sequence is unambiguous and order-independent.
+  it("never throws, always commits in-memory, and warns exactly once across repeated failed writes", async () => {
+    const setItemSpy = vi
+      .spyOn(Storage.prototype, "setItem")
+      .mockImplementation(() => {
+        throw new DOMException("quota", "QuotaExceededError");
+      });
+
+    const { useSettingsStore } = await import("./settingsStore");
+    const { useUiStore } = await import("./uiStore");
+
+    // Each write throws inside persistSettings, but update() must swallow
+    // it so the call never rejects...
+    expect(() =>
+      useSettingsStore.getState().update({ musicbrainzContact: "a" }),
+    ).not.toThrow();
+    useSettingsStore.getState().update({ musicbrainzContact: "b" });
+    useSettingsStore.getState().update({ preferFullPlayback: true });
+
+    // ...and every patch still lands in memory despite the failed writes.
+    expect(useSettingsStore.getState().settings.musicbrainzContact).toBe("b");
+    expect(useSettingsStore.getState().settings.preferFullPlayback).toBe(true);
+    // The failing write was actually attempted.
+    expect(setItemSpy).toHaveBeenCalled();
+    // The user was warned exactly once, not once per failed write.
+    const errors = useUiStore
+      .getState()
+      .toasts.filter((t) => t.kind === "error");
+    expect(errors.length).toBe(1);
   });
 });

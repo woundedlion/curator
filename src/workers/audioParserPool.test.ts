@@ -14,6 +14,10 @@ const { FakeWorker } = vi.hoisted(() => {
   type Listener = (event: unknown) => void;
   class FakeWorker {
     static instances: FakeWorker[] = [];
+    // When set, the Worker constructor throws — simulates CSP-blocked /
+    // unsupported-browser worker spawns so the zero-spawn path can be
+    // exercised.
+    static throwOnConstruct = false;
     posted: ParseRequest[] = [];
     terminated = false;
     // When set, the NEXT postMessage throws (then clears) — simulates a
@@ -23,6 +27,9 @@ const { FakeWorker } = vi.hoisted(() => {
     private messageListeners: Listener[] = [];
     private errorListeners: Listener[] = [];
     constructor() {
+      if (FakeWorker.throwOnConstruct) {
+        throw new Error("Worker construction blocked");
+      }
       FakeWorker.instances.push(this);
     }
     addEventListener(type: string, cb: Listener): void {
@@ -65,6 +72,7 @@ function workerWithLatestPost(): InstanceType<typeof FakeWorker> {
 
 beforeEach(() => {
   FakeWorker.instances.length = 0;
+  FakeWorker.throwOnConstruct = false;
 });
 
 afterEach(() => {
@@ -159,6 +167,32 @@ describe("AudioParserPool", () => {
       fields: { title: "after recovery" },
     });
     await expect(p2).resolves.toEqual({ title: "after recovery" });
+  });
+
+  it("REGRESSION: the first parse() REJECTS (does not hang) when no worker can spawn", async () => {
+    // Every Worker construction throws (CSP-blocked / unsupported browser),
+    // so the pool spawns zero workers. The request that triggered the spawn
+    // is pushed AFTER ensureStarted() in the buggy code, so it would never
+    // be failed and its promise would hang forever. Use fake timers and a
+    // racing timeout to assert the promise actually settles (rejects).
+    vi.useFakeTimers();
+    FakeWorker.throwOnConstruct = true;
+    const p = parseAudioInPool(fakeFile());
+    const captured = captureRejection(p);
+    const settled = Promise.race([
+      captured.then((e) => ({ kind: "settled" as const, error: e })),
+      // If parse() hangs, this timeout wins and the assertion below fails.
+      new Promise<{ kind: "hung" }>((resolve) =>
+        setTimeout(() => resolve({ kind: "hung" }), 60_000),
+      ),
+    ]);
+    await vi.advanceTimersByTimeAsync(60_000);
+    const outcome = await settled;
+    expect(outcome.kind).toBe("settled");
+    if (outcome.kind === "settled") {
+      expect(String(outcome.error)).toContain("unavailable");
+    }
+    expect(FakeWorker.instances.length).toBe(0);
   });
 
   it("terminate() rejects every in-flight request", async () => {

@@ -7,6 +7,7 @@ import {
   replaceAndPushTracks,
 } from "../spotify/playlists";
 import { usePlaylistStore } from "../store/playlistStore";
+import { useUiStore } from "../store/uiStore";
 
 export type PublishMode =
   | { kind: "create" }
@@ -62,44 +63,54 @@ export async function publishPlaylist(
   mode: PublishMode,
   onProgress?: (progress: PlaylistPushProgress) => void,
 ): Promise<PublishResult> {
-  const uris = collectPushableUris();
-  const draft = usePlaylistStore.getState().playlist;
+  // Bracket the whole publish in the global busy counter like every other
+  // orchestrator entry point (reenrichAll, reenrichTrack, the picker's
+  // post-pick enrichment). A publish is a multi-second, rate-limited round
+  // trip (create + paged track pushes); without this the global spinner
+  // never engages and the UI looks idle mid-publish. withBusy returns the
+  // callback's value, so the function's return contract is unchanged — an
+  // EmptyReplaceError thrown inside still propagates out (withBusy
+  // decrements in a finally regardless of throw).
+  return useUiStore.getState().withBusy(async () => {
+    const uris = collectPushableUris();
+    const draft = usePlaylistStore.getState().playlist;
 
-  // Refuse both create and update when there's nothing to push. The
-  // alternative for create is a Spotify playlist that exists but has no
-  // tracks — the user almost certainly intended the publish action as a
-  // commit of *content*, not a metadata-only operation.
-  if (uris.length === 0) throw new EmptyReplaceError();
+    // Refuse both create and update when there's nothing to push. The
+    // alternative for create is a Spotify playlist that exists but has no
+    // tracks — the user almost certainly intended the publish action as a
+    // commit of *content*, not a metadata-only operation.
+    if (uris.length === 0) throw new EmptyReplaceError();
 
-  if (mode.kind === "update") {
-    const progress = await replaceAndPushTracks(
-      mode.playlistId,
-      uris,
+    if (mode.kind === "update") {
+      const progress = await replaceAndPushTracks(
+        mode.playlistId,
+        uris,
+        clientId,
+        { onProgress },
+      );
+      return {
+        playlistId: mode.playlistId,
+        playlistUrl: playlistWebUrl(mode.playlistId),
+        progress,
+      };
+    }
+
+    const created = await createPlaylist(
+      {
+        name: draft.name,
+        description: draft.description,
+        public: draft.public,
+        collaborative: draft.collaborative,
+      },
       clientId,
-      { onProgress },
     );
+    const progress = await pushTracksToPlaylist(created.id, uris, clientId, {
+      onProgress,
+    });
     return {
-      playlistId: mode.playlistId,
-      playlistUrl: playlistWebUrl(mode.playlistId),
+      playlistId: created.id,
+      playlistUrl: playlistWebUrl(created.id),
       progress,
     };
-  }
-
-  const created = await createPlaylist(
-    {
-      name: draft.name,
-      description: draft.description,
-      public: draft.public,
-      collaborative: draft.collaborative,
-    },
-    clientId,
-  );
-  const progress = await pushTracksToPlaylist(created.id, uris, clientId, {
-    onProgress,
   });
-  return {
-    playlistId: created.id,
-    playlistUrl: playlistWebUrl(created.id),
-    progress,
-  };
 }

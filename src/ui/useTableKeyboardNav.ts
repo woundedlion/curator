@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, type RefObject } from "react";
 import { usePlaylistStore } from "../store/playlistStore";
 import {
   computeKeyboardNavStep,
@@ -27,6 +27,13 @@ export type TableKeyboardNavOptions = {
    * keyboard hook deliberately stays out of UI policy decisions).
    */
   onDeleteSelection: () => void;
+  /**
+   * Ref to the grid container. The window-level handler only acts on
+   * table-nav keys when keyboard focus is within the grid (or nothing
+   * outside it holds focus), so arrows / Delete aren't hijacked when the
+   * user is interacting with an unrelated focusable elsewhere on the page.
+   */
+  gridRef?: RefObject<HTMLElement | null>;
 };
 
 function targetIsTypingSurface(target: EventTarget | null): boolean {
@@ -57,7 +64,7 @@ function targetIsTypingSurface(target: EventTarget | null): boolean {
  * their own Enter/Space/Delete semantics and inline forms aren't hijacked.
  */
 export function useTableKeyboardNav(options: TableKeyboardNavOptions): void {
-  const { visibleTrackIds, getPageSize, scrollToIndex, onDeleteSelection } =
+  const { visibleTrackIds, getPageSize, scrollToIndex, onDeleteSelection, gridRef } =
     options;
 
   // Mirror the live arguments into refs synced via a commit-phase
@@ -72,16 +79,35 @@ export function useTableKeyboardNav(options: TableKeyboardNavOptions): void {
   const getPageSizeRef = useRef(getPageSize);
   const scrollToIndexRef = useRef(scrollToIndex);
   const onDeleteSelectionRef = useRef(onDeleteSelection);
+  const gridRefRef = useRef(gridRef);
   useEffect(() => {
     visibleIdsRef.current = visibleTrackIds;
     getPageSizeRef.current = getPageSize;
     scrollToIndexRef.current = scrollToIndex;
     onDeleteSelectionRef.current = onDeleteSelection;
+    gridRefRef.current = gridRef;
   });
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
       if (targetIsTypingSurface(e.target)) return;
+
+      // Scope to the grid: if some focusable element OUTSIDE the grid
+      // currently holds focus, let it own the keystroke rather than
+      // hijacking arrows / Delete into table navigation. We deliberately
+      // do NOT bail when focus is on <body> (nothing focused) so the table
+      // still responds as the page's primary content; targetIsTypingSurface
+      // above already excludes inputs/buttons/anchors.
+      const gridEl = gridRefRef.current?.current ?? null;
+      const active = document.activeElement;
+      if (
+        gridEl &&
+        active &&
+        active !== document.body &&
+        !gridEl.contains(active)
+      ) {
+        return;
+      }
 
       const store = usePlaylistStore.getState();
       const selection = store.selectedTrackIds;

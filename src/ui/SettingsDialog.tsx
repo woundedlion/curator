@@ -117,14 +117,15 @@ export function SettingsDialog() {
   const circuitRemainingMs = remainingMs;
 
   return (
-    <div
-      role="dialog"
-      aria-modal="true"
-      aria-label="Settings"
-      className="fixed inset-0 z-40 flex items-center justify-center bg-black/70 p-4"
-    >
+    <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/70 p-4">
       <div
         ref={dialogRef}
+        // role/aria-modal/aria-label live on the focus-trapped panel, not
+        // the backdrop, so a screen reader entering the dialog lands on the
+        // element that actually carries the dialog semantics.
+        role="dialog"
+        aria-modal="true"
+        aria-label="Settings"
         tabIndex={-1}
         className="w-full max-w-lg rounded-lg bg-neutral-900 p-5 shadow-xl"
       >
