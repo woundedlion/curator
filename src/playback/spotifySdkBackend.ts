@@ -24,6 +24,13 @@ export class SpotifySdkBackend implements Backend {
   private clientId: string;
   private observer: BackendObserver | null = null;
   private poller: ReturnType<typeof setInterval> | null = null;
+  // Bumped every time the poller is torn down (stop/dispose). A
+  // getCurrentState() RPC dispatched on the last tick before stop() can
+  // resolve AFTER stop() ran — the captured generation lets its `.then`
+  // detect that the poller it belonged to is gone and drop the stale
+  // state instead of emitting a position/phase event after the Player
+  // already moved on.
+  private pollGeneration = 0;
   private stateListener: SpotifyPlayerListener | null = null;
   // Cached last-emitted phase so applyState can dedupe paused/playing
   // emissions on every poll tick. The 500ms poller fires twice per
@@ -151,14 +158,31 @@ export class SpotifySdkBackend implements Backend {
 
   private startPoller(): void {
     if (this.poller !== null) return;
+    const generation = this.pollGeneration;
+    // Re-entrancy guard: getCurrentState() can occasionally take longer
+    // than the 500ms interval. Without this, a slow RPC lets a second
+    // fire before the first resolves, and out-of-order resolution could
+    // emit a position that jumps backwards.
+    let inFlight = false;
     this.poller = setInterval(() => {
+      if (inFlight) return;
+      inFlight = true;
       void this.player
         .getCurrentState()
-        .then((state) => this.applyState(state))
+        .then((state) => {
+          // Drop a result that resolved after this poller was torn down
+          // (stop/dispose) or superseded by a new load — applyState would
+          // otherwise emit a stale event after the Player moved on.
+          if (generation !== this.pollGeneration) return;
+          this.applyState(state);
+        })
         .catch(() => {
           // getCurrentState rejects when the device is no longer
           // active. Don't spam the console; the event listener will
           // fire if state actually changes.
+        })
+        .finally(() => {
+          inFlight = false;
         });
     }, POLL_INTERVAL_MS);
   }
@@ -168,6 +192,9 @@ export class SpotifySdkBackend implements Backend {
       clearInterval(this.poller);
       this.poller = null;
     }
+    // Invalidate any getCurrentState() still in flight so its late
+    // resolution can't emit into a stopped backend.
+    this.pollGeneration++;
   }
 
   private applyState(state: SpotifyPlayerSdkState | null): void {

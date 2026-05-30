@@ -14,55 +14,6 @@ export function rangeBetween(
   return visibleIds.slice(lo, hi + 1);
 }
 
-// Reorder `allIds` so that every id in `selectedIds` becomes a single
-// contiguous block inserted just before `targetId` (in the surviving order).
-// Non-contiguous selections collapse: gaps between selected rows close.
-//
-// Rules:
-// - If `targetId` is itself in `selectedIds`, no move (returns input).
-// - The block preserves the relative order from `allIds`, not the order
-//   the selection was built up in.
-// - Returns the same reference if nothing changes.
-export function moveSelectionBlock(
-  allIds: string[],
-  selectedIds: ReadonlyArray<string> | ReadonlySet<string>,
-  targetId: string,
-): string[] {
-  const selectedSet =
-    selectedIds instanceof Set ? selectedIds : new Set(selectedIds);
-  if (selectedSet.size === 0) return allIds;
-  if (selectedSet.has(targetId)) return allIds;
-
-  const block: string[] = [];
-  const rest: string[] = [];
-  for (const id of allIds) {
-    if (selectedSet.has(id)) block.push(id);
-    else rest.push(id);
-  }
-  if (block.length === 0) return allIds;
-
-  const insertAt = rest.indexOf(targetId);
-  if (insertAt === -1) return allIds;
-
-  const next = [
-    ...rest.slice(0, insertAt),
-    ...block,
-    ...rest.slice(insertAt),
-  ];
-
-  // Fast no-op check.
-  let changed = next.length !== allIds.length;
-  if (!changed) {
-    for (let i = 0; i < next.length; i++) {
-      if (next[i] !== allIds[i]) {
-        changed = true;
-        break;
-      }
-    }
-  }
-  return changed ? next : allIds;
-}
-
 // Move a multi-row selection while preserving its *shape* (the gaps between
 // selected rows) as much as the array's bounds allow. This is the drop
 // semantics used by the table's group-drag (§4.2): selected items keep
@@ -83,8 +34,7 @@ export function moveSelectionBlock(
 // `activeId` must be one of the selected ids — it's the row the user
 // physically grabbed, and its target position drives the placement of the
 // rest of the block. `overId` is the unselected drop target (a row in
-// `selectedIds` returns the input unchanged, matching the "drop on self"
-// guard in the existing `moveSelectionBlock`).
+// `selectedIds` returns the input unchanged — the "drop on self" guard).
 //
 // Returns the same reference when nothing changes.
 export function moveSelectionMaintainingShape(
@@ -175,35 +125,4 @@ export function moveSelectionMaintainingShape(
     }
   }
   return changed ? (result as string[]) : visibleIds;
-}
-
-// Move the selection block to the very end of `allIds` (used when the user
-// drops past the last row).
-export function moveSelectionBlockToEnd(
-  allIds: string[],
-  selectedIds: ReadonlyArray<string> | ReadonlySet<string>,
-): string[] {
-  const selectedSet =
-    selectedIds instanceof Set ? selectedIds : new Set(selectedIds);
-  if (selectedSet.size === 0) return allIds;
-
-  const block: string[] = [];
-  const rest: string[] = [];
-  for (const id of allIds) {
-    if (selectedSet.has(id)) block.push(id);
-    else rest.push(id);
-  }
-  if (block.length === 0) return allIds;
-
-  const next = [...rest, ...block];
-  let changed = next.length !== allIds.length;
-  if (!changed) {
-    for (let i = 0; i < next.length; i++) {
-      if (next[i] !== allIds[i]) {
-        changed = true;
-        break;
-      }
-    }
-  }
-  return changed ? next : allIds;
 }

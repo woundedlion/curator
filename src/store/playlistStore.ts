@@ -3,11 +3,7 @@ import { DEFAULT_PLAYLIST_NAME, DRAFT_PLAYLIST_ID } from "../constants";
 import { loadDraft, saveDraft } from "../db/draftRepository";
 import { cancelTrackRequests } from "../services/cancelTrackRequests";
 import { notifyPersistFailure } from "./persistNotifications";
-import {
-  moveSelectionBlock,
-  moveSelectionBlockToEnd,
-  rangeBetween,
-} from "./selectionHelpers";
+import { rangeBetween } from "./selectionHelpers";
 import { sortTrackIds } from "./sortComparator";
 import {
   captureSelection,
@@ -65,10 +61,6 @@ type PlaylistStore = {
   removeTrack: (id: string) => void;
   removeTracks: (ids: string[]) => void;
   reorderTracks: (orderedIds: string[]) => void;
-  moveSelectionTo: (
-    targetId: string | "end",
-    movingIds?: ReadonlyArray<string>,
-  ) => void;
   setSort: (field: SortField) => void;
   clearSort: () => void;
   setHideUnmatched: (hide: boolean) => void;
@@ -318,7 +310,16 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => {
 
   addTracks(tracks) {
     const changed = mutate((state) => {
-      const additions = tracks.filter((t) => !state.tracksById[t.id]);
+      // Dedup against existing tracks AND within the incoming batch: two
+      // entries sharing an id would otherwise both pass the existing-id
+      // filter (neither is in tracksById yet), pushing a duplicate id into
+      // trackIds while only one survives in tracksById.
+      const seen = new Set<string>();
+      const additions = tracks.filter((t) => {
+        if (state.tracksById[t.id] || seen.has(t.id)) return false;
+        seen.add(t.id);
+        return true;
+      });
       if (additions.length === 0) return state;
       const nextById = { ...state.tracksById };
       for (const track of additions) nextById[track.id] = track;
@@ -443,36 +444,6 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => {
     if (changed) {
       // A manual reorder IS the new manual order — any captured pre-sort
       // order is now stale.
-      preSortManualOrder = null;
-      schedulePersist();
-    }
-  },
-
-  moveSelectionTo(targetId, movingIds) {
-    const changed = mutate((state) => {
-      const moving =
-        movingIds && movingIds.length > 0
-          ? new Set(movingIds)
-          : state.selectedTrackIds;
-      if (moving.size === 0) return state;
-      const nextIds =
-        targetId === "end"
-          ? moveSelectionBlockToEnd(state.playlist.trackIds, moving)
-          : moveSelectionBlock(state.playlist.trackIds, moving, targetId);
-      if (nextIds === state.playlist.trackIds) return state;
-      return {
-        playlist: { ...state.playlist, trackIds: nextIds, sort: null },
-        undoStack: pushBounded(
-          state.undoStack,
-          snapshotReorderEntry(
-            state.playlist.trackIds,
-            state.playlist.sort,
-            captureSelection(state.selectedTrackIds, state.selectionAnchorId),
-          ),
-        ),
-      };
-    });
-    if (changed) {
       preSortManualOrder = null;
       schedulePersist();
     }

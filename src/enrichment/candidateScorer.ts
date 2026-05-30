@@ -1,4 +1,4 @@
-import Fuse from "fuse.js";
+import Fuse, { type IFuseOptions } from "fuse.js";
 import type { MBCandidate, Track } from "../types";
 import { normalizeForMatching } from "../metadata/normalizers";
 
@@ -14,21 +14,14 @@ const YEAR_WEIGHT = 0.05;
 const YEAR_FULL_CREDIT_YEARS = 1;
 const YEAR_HALF_CREDIT_YEARS = 3;
 
-// Module-level Fuse instance reused across calls via `setCollection`.
-// Each scoring pass works on a fresh candidate list, but the Fuse
-// object itself plus its (frozen) options + key-store can be shared —
-// constructor allocation of the option parser was the only real cost.
-//
-// INVARIANT — `scoreCandidates` MUST stay fully synchronous between
-// `sharedFuse.setCollection(...)` and `sharedFuse.search(...)`. The
-// collection is mutable module-level state on the SHARED instance, so
-// any `await` (or yielding to another scoring call) between those two
-// lines would let a concurrent `scoreCandidates` swap the collection
-// out from under us — `search` would then run against the wrong
-// candidate list and return corrupt `refIndex` → score mappings.
-// scoreCandidates today has no await; keep it that way (or give each
-// call its own Fuse) if this function ever needs to do async work.
-const sharedFuse = new Fuse<Scorable>([], {
+// Fuse options are a frozen constant; the instance itself is built
+// per-call (below) over that call's candidate list. MB returns a small
+// working set (MB_SEARCH_LIMIT, dedup'd further), so the constructor
+// cost is negligible — and a per-call instance removes the shared
+// mutable-collection hazard entirely: there is no module-level state a
+// concurrent scoring pass could swap out from under `search`, so the
+// `refIndex → score` mapping can never be corrupted by interleaving.
+const FUSE_OPTIONS: IFuseOptions<Scorable> = {
   includeScore: true,
   keys: [
     { name: "title", weight: FIELD_WEIGHTS.title },
@@ -37,7 +30,7 @@ const sharedFuse = new Fuse<Scorable>([], {
   ],
   threshold: 1,
   ignoreLocation: true,
-});
+};
 
 function yearCredit(candidateYear?: number, trackYear?: number): number {
   if (typeof candidateYear !== "number" || typeof trackYear !== "number") return 0;
@@ -73,10 +66,10 @@ export function scoreCandidates(
     album: normalizeForMatching(track.album),
   };
 
-  sharedFuse.setCollection(candidates.map(buildFuseTarget));
+  const fuse = new Fuse<Scorable>(candidates.map(buildFuseTarget), FUSE_OPTIONS);
 
   const fuseScoresByIndex = new Map<number, number>();
-  for (const result of sharedFuse.search(query)) {
+  for (const result of fuse.search(query)) {
     fuseScoresByIndex.set(result.refIndex, fuseDistanceToScore(result.score));
   }
 

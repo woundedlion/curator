@@ -209,9 +209,12 @@ export async function enrichTrack(
     // primary one — the alt branch only runs when primary failed the
     // threshold, so primary's top is by definition not strong enough
     // to defend its position against alt.
-    const mergedCandidates = mergeCandidatesPreferringPrimary(primaryScored, altScored)
-      .slice()
-      .sort((a, b) => b.score - a.score);
+    // mergeCandidatesPreferringPrimary already returns a fresh array, so
+    // sort it in place — no defensive copy needed.
+    const mergedCandidates = mergeCandidatesPreferringPrimary(
+      primaryScored,
+      altScored,
+    ).sort((a, b) => b.score - a.score);
     // Apples-to-apples classification: because scores were computed
     // against DIFFERENT references (primary vs altScoringTrack), the
     // similarity gate must compare each candidate against the SAME
@@ -247,8 +250,12 @@ export async function enrichTrack(
     await writeCachedCandidates(cacheKey, primaryScored);
   } else if (
     outcome.status === "failed" &&
-    primaryFields.title === undefined &&
-    primaryFields.artist === undefined &&
+    // Treat empty/whitespace title+artist as "no query" too, not just
+    // `undefined`: a blank-string field produces an empty Lucene query
+    // exactly like a missing one, so both should classify as `no-query`
+    // (not `no-results`).
+    !primaryFields.title?.trim() &&
+    !primaryFields.artist?.trim() &&
     !shouldTryAlt
   ) {
     // True "no-query": primary had nothing to query AND alt either

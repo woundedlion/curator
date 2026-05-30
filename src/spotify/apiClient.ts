@@ -445,8 +445,12 @@ async function submitRaw(
       }
 
       const retryMs = readRetryAfterMs(response, context.path);
-      pushRateLimitToast(retryMs);
+      // Trip first, then toast the breaker's ACTUAL open window: escalation
+      // (consecutive 429s double the wait) and the minOpenMs clamp mean the
+      // realized lockout can exceed the raw Retry-After, so reporting
+      // `retryMs` would understate how long requests are actually paused.
       breaker.trip(retryMs);
+      pushRateLimitToast(breaker.remainingMs());
       // No `queue.recordExternalPause` here. The breaker is the
       // authoritative cool-off — every queued/future caller checks
       // it and fails fast. If we also pushed the queue's next-run-at

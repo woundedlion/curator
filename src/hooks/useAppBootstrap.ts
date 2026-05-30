@@ -50,7 +50,12 @@ export function useAppBootstrap(): void {
       await usePlaylistStore.getState().hydrateFromStorage();
       promoteSingleCandidateMatches();
     })();
-    void bootstrapSpotify();
+    bootstrapSpotify().catch((error) => {
+      // doBootstrap handles its own user-facing errors; this is a
+      // belt-and-suspenders guard so an unexpected throw can't surface as
+      // an unhandled rejection.
+      console.error("bootstrapSpotify crashed", error);
+    });
     // Eagerly drop MB cache rows from prior `MB_CACHE_VERSION`s. Reads
     // already skip them (see `isCurrentVersion`), so this is a quota
     // reclaim, not a correctness fix — but a long-lived profile that

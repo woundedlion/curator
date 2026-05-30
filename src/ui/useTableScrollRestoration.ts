@@ -79,9 +79,14 @@ export function useTableScrollRestoration(
   useEffect(() => {
     const el = parentRef.current;
     if (!el) return;
+    // Trailing debounce: write once, 100 ms after the user stops
+    // scrolling, capturing the true resting position. A leading-edge
+    // throttle records a position mid-fling and can settle a few pixels
+    // off where the user actually stopped; debouncing the trailing edge
+    // records exactly the final position with a single write.
     let pending: number | null = null;
     function onScroll() {
-      if (pending !== null) return;
+      if (pending !== null) clearTimeout(pending);
       pending = window.setTimeout(() => {
         pending = null;
         if (el) writeSavedScrollTop(el.scrollTop);

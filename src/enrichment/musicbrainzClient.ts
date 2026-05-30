@@ -154,7 +154,18 @@ function earliestRelease(
   return earliest ?? releases[0];
 }
 
-function recordingToCandidate(recording: MBRecording): MBCandidate {
+function recordingToCandidate(recording: MBRecording): MBCandidate | null {
+  // MB scalar fields are typed `string`, but the response is untrusted
+  // JSON (maintenance HTML, schema drift, a truncated body). A recording
+  // without a usable id/title can't be matched or cached coherently — the
+  // id seeds the cover-art lookup and the title seeds the cache key — so
+  // drop it rather than letting `undefined` flow into a `string` slot.
+  if (typeof recording.id !== "string" || recording.id.length === 0) {
+    return null;
+  }
+  if (typeof recording.title !== "string" || recording.title.length === 0) {
+    return null;
+  }
   const artist = (recording["artist-credit"] ?? [])
     .map((credit) => credit.name)
     .join(", ");
@@ -311,7 +322,10 @@ async function runOneAttempt(
   try {
     const json = (await response.json()) as MBSearchResponse;
     const recordings = json.recordings ?? [];
-    return { kind: "done", candidates: recordings.map(recordingToCandidate) };
+    const candidates = recordings
+      .map(recordingToCandidate)
+      .filter((c): c is MBCandidate => c !== null);
+    return { kind: "done", candidates };
   } catch (error) {
     // MB occasionally serves HTML during maintenance windows; a
     // SyntaxError from `response.json()` shouldn't kill the row with

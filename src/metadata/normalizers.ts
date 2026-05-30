@@ -61,8 +61,8 @@ function stripInvisibles(value: string): string {
 
 function normalizeUnicode(value: string): string {
   // NFKD decomposes diacritics into combining marks, which we then strip.
-  // Result is the closest ASCII-ish skeleton: "café" → "cafe", "ß" → "ss"
-  // (NFKD), etc.
+  // Result is the closest ASCII-ish skeleton: "café" → "cafe", etc.
+  // (Note: NFKD does NOT expand "ß" → "ss"; it stays "ß" → lowercased "ß".)
   return value
     .normalize("NFKD")
     .replace(COMBINING_DIACRITICS, "")

@@ -33,7 +33,7 @@ A browser-based playlist builder that ingests local music files or song lists, e
 | HTTP | **fetch + a small queued client** | Need request queueing for MusicBrainz's 1-req/sec rate limit. |
 | Persistence | **IndexedDB (via `idb`)** for MB cache + draft playlists; **sessionStorage** for Spotify tokens | Tokens in sessionStorage limit XSS blast radius; cached lookups in IDB so re-imports are instant. |
 | Styling | **Tailwind CSS** | Fastest path to a dense, table-like UI. |
-| Testing | **Vitest + React Testing Library + Playwright** | Vitest matches Vite; Playwright for the drag-drop flows that unit tests can't cover. |
+| Testing | **Vitest + React Testing Library** (happy-dom) | Vitest matches Vite; RTL + happy-dom cover component/interaction logic. A Playwright e2e layer for the drag-drop / OAuth flows is still on the wishlist (§9, §10) — not yet wired up, so no Playwright dependency is installed. |
 
 **Alternatives considered:**
 - *Tauri/Electron* desktop app — would unlock direct filesystem access without prompts. Skipped for v1 because the browser File System Access API and drag-drop are sufficient and deployment is trivial.

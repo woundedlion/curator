@@ -33,23 +33,30 @@
 //
 // Exponential backoff on consecutive trips: Spotify hides Retry-After
 // behind CORS (no Access-Control-Expose-Headers), so a multi-hour ban
-// reaches the breaker as the 5-min default fallback. Without
-// escalation, the breaker would probe every 5 min for the entire ban
-// — each probe a fresh violation Spotify counts (incidents observed
-// 5-min defaults compounding into ~12h bans this way). Each trip
-// since the last successful close doubles the open window:
+// reaches the breaker as the 10-min default fallback (see
+// DEFAULT_RETRY_AFTER_SECONDS in apiClient.ts). Without escalation, the
+// breaker would probe every 10 min for the entire ban — each probe a
+// fresh violation Spotify counts (incidents observed defaults
+// compounding into ~23h bans this way). Each trip since the last
+// successful close doubles the open window:
 //
-//   trip #1: retryMs * 1     (typically 5 min)
-//   trip #2: retryMs * 2     (10 min)
-//   trip #3: retryMs * 4     (20 min)
-//   trip #4: retryMs * 8     (40 min)
-//   trip #5: retryMs * 16    (80 min → cap)
+//   trip #1: retryMs * 1     (typically 10 min)
+//   trip #2: retryMs * 2     (20 min)
+//   trip #3: retryMs * 4     (40 min)
+//   trip #4: retryMs * 8     (80 min)
+//   trip #5: retryMs * 16    (160 min)
+//   …capped at 2^6 = 64× (~10.6h from the 10-min default), and again
+//    by maxOpenMs (12h).
 //
 // A successful probe (`close()`) resets the count. State is persisted
-// to localStorage so a page refresh honors both the open window AND
-// the escalation count — Spotify enforces the penalty per app
-// (client_id), not per tab, so a fresh tab that started over at trip
-// #1 would probe back into the ban.
+// to localStorage so a page refresh DURING an active open window honors
+// both the window AND the escalation count — Spotify enforces the
+// penalty per app (client_id), not per tab, so a fresh tab that started
+// over at trip #1 would probe back into the ban. Crucially, the count
+// is only carried across reload while the window is still in the future;
+// once it has fully elapsed the escalation memory is stale (see the
+// constructor) and is dropped, so a lone transient 429 after a long idle
+// can't be treated as trip #(n+1) and escalate straight to hours.
 
 import {
   SPOTIFY_CIRCUIT_FAILURE_COUNT_KEY,
@@ -79,11 +86,34 @@ export class CircuitBreaker {
   private consecutiveFailures: number;
 
   constructor(private readonly options: CircuitBreakerOptions) {
-    this.openUntil = readPersistedFutureTimestamp(
-      SPOTIFY_CIRCUIT_OPEN_UNTIL_KEY,
-      options.maxOpenMs,
-    );
-    this.consecutiveFailures = readPersistedFailureCount();
+    const now = Date.now();
+    const rawOpenUntil = readPersistedTimestamp(SPOTIFY_CIRCUIT_OPEN_UNTIL_KEY);
+
+    if (rawOpenUntil !== null && rawOpenUntil > now) {
+      // Window still active: honor it (capped) and keep escalating across
+      // the reload — Spotify enforces the penalty per app, so a fresh tab
+      // must not restart at trip #1 mid-ban.
+      this.openUntil = Math.min(rawOpenUntil, now + options.maxOpenMs);
+      this.consecutiveFailures = readPersistedFailureCount();
+    } else {
+      // Window already closed. We MUST keep the escalation count while the
+      // ban is still being discovered — a multi-hour ban reaches us as the
+      // 10-min default, so we ride it out by re-escalating across reloads
+      // even after each window elapses (covered by rateLimit.test.ts).
+      // BUT a count that's been idle a long time is stale: resuming a
+      // days-old escalation on a single transient 429 would jump straight
+      // to hours. Keep the count only if the window closed within one
+      // max-open window; beyond that, decay to trip #1.
+      this.openUntil = 0;
+      const closedRecently =
+        rawOpenUntil !== null && now - rawOpenUntil < options.maxOpenMs;
+      if (closedRecently) {
+        this.consecutiveFailures = readPersistedFailureCount();
+      } else {
+        this.consecutiveFailures = 0;
+        persistFailureCount(0);
+      }
+    }
   }
 
   /** ms until the breaker closes, 0 if already closed. */
@@ -154,15 +184,18 @@ export class CircuitBreaker {
   }
 }
 
-function readPersistedFutureTimestamp(key: string, capMs: number): number {
+// Read the raw persisted timestamp (does NOT zero out an expired value —
+// the constructor needs to know HOW stale a closed window is to decide
+// whether the escalation count has decayed). Returns null when absent or
+// unparseable.
+function readPersistedTimestamp(key: string): number | null {
   try {
     const raw = localStorage.getItem(key);
-    if (!raw) return 0;
+    if (!raw) return null;
     const parsed = Number.parseInt(raw, 10);
-    if (!Number.isFinite(parsed) || parsed <= Date.now()) return 0;
-    return Math.min(parsed, Date.now() + capMs);
+    return Number.isFinite(parsed) ? parsed : null;
   } catch {
-    return 0;
+    return null;
   }
 }
 

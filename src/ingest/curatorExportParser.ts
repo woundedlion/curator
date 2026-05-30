@@ -34,6 +34,26 @@ function asBool(value: unknown): boolean | undefined {
   return typeof value === "boolean" ? value : undefined;
 }
 
+// Export files are user-editable plain text, so the resolved ids are
+// untrusted input. A row only gets restored to `matched` (bypassing the
+// search/enrichment score gate) when its id is well-formed, so a hand-
+// edited or hostile file can't smuggle an arbitrary string into
+// `spotify.uri` (which is later pushed to the Spotify API) or into the
+// MB recording id. A malformed id is dropped → the row comes back `idle`
+// and re-runs the normal resolution flow.
+const SPOTIFY_TRACK_URI_RE = /^spotify:track:[A-Za-z0-9]{22}$/;
+const MB_RECORDING_ID_RE =
+  /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+
+function asSpotifyTrackUri(value: unknown): string | undefined {
+  const s = asString(value);
+  return s && SPOTIFY_TRACK_URI_RE.test(s) ? s : undefined;
+}
+function asMbRecordingId(value: unknown): string | undefined {
+  const s = asString(value);
+  return s && MB_RECORDING_ID_RE.test(s) ? s : undefined;
+}
+
 // Reconstruct a faithful source line for a round-tripped row. Exports
 // don't carry the original `rawLine`, so we synthesize the canonical
 // "Artist - Title" form (the same separator the text-list parser uses)
@@ -60,8 +80,8 @@ function readTrack(raw: unknown): CuratorExportedTrack | null {
     discNo: asNumber(obj.discNo),
     durationMs: asNumber(obj.durationMs),
     coverUrl: asString(obj.coverUrl),
-    spotifyUri: asString(obj.spotifyUri),
-    mbRecordingId: asString(obj.mbRecordingId),
+    spotifyUri: asSpotifyTrackUri(obj.spotifyUri),
+    mbRecordingId: asMbRecordingId(obj.mbRecordingId),
   };
 }
 

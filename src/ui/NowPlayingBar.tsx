@@ -1,13 +1,15 @@
 import { useCallback, useState, type KeyboardEvent } from "react";
 import { usePlaybackStore } from "../playback/playbackStore";
+import type { PlaybackSource } from "../playback/playbackSource";
 import { formatDuration } from "../util/duration";
 import { PauseIcon, PlayIcon, StopIcon } from "./icons";
 
-function sourceLabel(kind: string): string {
-  if (kind === "local") return "Local file";
-  if (kind === "spotify-sdk") return "Spotify (full track)";
-  if (kind === "spotify-preview") return "Spotify preview (30s)";
-  return "—";
+// Read the authoritative label off the source itself rather than
+// re-deriving one from `kind` — the source already carries the canonical
+// string (see createPlaybackSource), so duplicating the mapping here would
+// silently drift if a label is ever reworded in one place.
+function sourceLabel(source: PlaybackSource): string {
+  return source.kind === "none" ? "—" : source.label;
 }
 
 export function NowPlayingBar() {
@@ -115,7 +117,7 @@ export function NowPlayingBar() {
             {currentDisplay?.title ?? "Now playing"}
           </div>
           <div className="truncate text-xs text-neutral-400">
-            {currentDisplay?.artist ?? "—"} · {sourceLabel(currentSource.kind)}
+            {currentDisplay?.artist ?? "—"} · {sourceLabel(currentSource)}
           </div>
         </div>
       </div>

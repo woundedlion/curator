@@ -27,6 +27,20 @@ function buildTrackFromLine(line: string): Track {
     spotify: { status: "idle" },
   };
 
+  // 4+ segments: last is the title, second-to-last the artist, and the
+  // leading segments collapse into the album — mirroring the filename
+  // heuristic's no-track-number fallback (filenameHeuristic.ts) so the
+  // same string parses the same way whether it came from a filename or a
+  // text list. Previously these lines silently dropped everything past the
+  // first segment and mislabeled it as the title.
+  if (segments.length >= 4) {
+    const title = segments[segments.length - 1];
+    const artist = segments[segments.length - 2];
+    const album = segments
+      .slice(0, segments.length - 2)
+      .join(ARTIST_TITLE_SEPARATOR);
+    return { ...base, artist, album: album || undefined, title };
+  }
   if (segments.length === 3) {
     return { ...base, artist: first, album: second, title: third };
   }

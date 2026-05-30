@@ -32,6 +32,10 @@ type PendingPointerState = {
   additive: boolean;
   // Selection ids before the rubber-band started (used for additive merge).
   baselineSelection: ReadonlySet<string>;
+  // Selection anchor before the rubber-band started. Preserved through the
+  // drag so a following Shift+Click / Shift+Arrow still extends from the
+  // same origin — a marquee should not destroy the shift-extend pivot.
+  baselineAnchorId: string | null;
   // Once movement exceeds the threshold we flip to true and start rendering.
   active: boolean;
   pointerId: number;
@@ -109,6 +113,7 @@ export function useRubberbandSelection(
         startScrollTop: container.scrollTop,
         additive,
         baselineSelection: new Set(selectedTrackIds),
+        baselineAnchorId: usePlaylistStore.getState().selectionAnchorId,
         active: false,
         pointerId: e.pointerId,
       };
@@ -158,8 +163,10 @@ export function useRubberbandSelection(
           if (id) ids.add(id);
         }
       }
-      // Apply selection; we don't move the anchor while rubber-banding.
-      setSelection(ids);
+      // Apply selection, preserving the pre-drag anchor. Passing it through
+      // explicitly is required: `setSelection(ids)` would default the anchor
+      // to null, silently destroying the shift-extend pivot.
+      setSelection(ids, pending.baselineAnchorId);
 
       // Render rectangle in viewport coords (fixed-positioned overlay).
       const left = Math.min(pending.startClientX, e.clientX);

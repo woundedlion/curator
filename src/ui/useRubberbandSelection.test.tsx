@@ -402,6 +402,46 @@ describe("useRubberbandSelection — drag selection", () => {
     expect(selection).toEqual(["a", "b", "d"]);
   });
 
+  it("preserves the pre-drag selection anchor through a marquee", () => {
+    // Regression: the marquee must not destroy the shift-extend pivot.
+    // A previous version called setSelection(ids) with no anchor, which
+    // defaulted selectionAnchorId to null — so a following Shift+Click /
+    // Shift+Arrow degraded to single-select.
+    usePlaylistStore.setState({
+      tracksById: {
+        a: makeTrack("a"),
+        b: makeTrack("b"),
+        c: makeTrack("c"),
+        d: makeTrack("d"),
+      },
+      playlist: {
+        id: "active-draft",
+        name: "T",
+        description: "",
+        public: false,
+        collaborative: false,
+        trackIds: ["a", "b", "c", "d"],
+        sort: null,
+        hideUnmatched: false,
+      },
+      selectedTrackIds: new Set(["d"]),
+      selectionAnchorId: "d",
+    });
+    const { getByTestId } = render(
+      <Harness visibleTrackIds={["a", "b", "c", "d"]} />,
+    );
+    const container = getByTestId("container");
+    fireEvent.pointerDown(container, {
+      button: 0,
+      clientX: 50,
+      clientY: 100,
+      pointerId: 1,
+    });
+    fireWindowPointer("pointermove", { clientX: 50, clientY: 150 });
+    // Selection was replaced by the marquee, but the anchor is preserved.
+    expect(usePlaylistStore.getState().selectionAnchorId).toBe("d");
+  });
+
   it("non-additive press REPLACES the prior selection", () => {
     usePlaylistStore.setState({
       tracksById: {

@@ -337,6 +337,34 @@ describe("SpotifySdkBackend — 500ms polling cycle", () => {
     expect(player.getCurrentState.mock.calls.length).toBe(callsAfterFirstTick);
   });
 
+  it("REGRESSION: a getCurrentState resolving AFTER stop() does not emit a stale event", async () => {
+    // The poll RPC is async. A getCurrentState() dispatched on the tick
+    // just before stop() can resolve after stop() ran. stop() doesn't
+    // null the observer (only dispose() does), so without a generation
+    // guard the late resolution would emit a position/phase event into a
+    // backend the Player has already moved on from.
+    let resolveState!: (s: SpotifyPlayerSdkState) => void;
+    player.getCurrentState.mockImplementationOnce(
+      () =>
+        new Promise<SpotifyPlayerSdkState>((resolve) => {
+          resolveState = resolve;
+        }),
+    );
+    await backend.load({
+      kind: "spotify-sdk",
+      uri: "spotify:track:abc",
+      label: "Spotify (full track)",
+    });
+    // Fire the tick that dispatches getCurrentState (still pending).
+    await vi.advanceTimersByTimeAsync(500);
+    await backend.stop();
+    events.length = 0;
+    // The in-flight poll now resolves — must be dropped.
+    resolveState({ paused: false, position: 9_999, duration: 30_000 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(events).toEqual([]);
+  });
+
   it("a getCurrentState rejection is swallowed silently (no observer error event)", async () => {
     // The comment in startPoller says rejection happens when the device
     // is no longer active and we don't want to spam errors — the SDK

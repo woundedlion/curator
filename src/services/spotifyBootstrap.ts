@@ -129,7 +129,18 @@ async function doBootstrap(): Promise<void> {
   // ?error= (see markAutoReconnectSuppressed above) — without that
   // guard, denial would loop back to Spotify on every refresh.
   if (isAutoReconnectSuppressed()) return;
-  await beginAuthFlow(clientId, settings.spotifyRedirectUri);
+  try {
+    await beginAuthFlow(clientId, settings.spotifyRedirectUri);
+  } catch (error) {
+    // beginAuthFlow can reject (PKCE/crypto/storage failure building the
+    // redirect). Don't let it escape doBootstrap as an unhandled
+    // rejection — surface it and let the user retry from Settings.
+    console.error("auto-reconnect beginAuthFlow failed", error);
+    useUiStore.getState().pushToast({
+      kind: "error",
+      message: "Couldn't reconnect to Spotify — open Settings to retry",
+    });
+  }
 }
 
 export function bootstrapSpotify(): Promise<void> {

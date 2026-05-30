@@ -72,7 +72,20 @@ export function SettingsDialog() {
     // Explicit user action overrides the auto-reconnect suppression that
     // a prior denial would have set.
     clearAutoReconnectSuppression();
-    await beginAuthFlow(settings.spotifyClientId, settings.spotifyRedirectUri);
+    // Catch internally so this stays a fire-and-forget onClick handler that
+    // never rejects: a redirect/build failure surfaces as a toast instead
+    // of an unhandled promise rejection.
+    try {
+      await beginAuthFlow(
+        settings.spotifyClientId,
+        settings.spotifyRedirectUri,
+      );
+    } catch (error) {
+      console.error("beginAuthFlow failed", error);
+      const detail =
+        error instanceof Error ? error.message : "see console for details";
+      pushToast({ kind: "error", message: `Could not connect to Spotify: ${detail}` });
+    }
   }
 
   function requestClearCache() {
@@ -81,8 +94,16 @@ export function SettingsDialog() {
 
   async function confirmClearCache() {
     setPendingClearCache(false);
-    await clearMusicbrainzCache();
-    pushToast({ kind: "info", message: "MusicBrainz cache cleared" });
+    try {
+      await clearMusicbrainzCache();
+      pushToast({ kind: "info", message: "MusicBrainz cache cleared" });
+    } catch (error) {
+      console.error("clearMusicbrainzCache failed", error);
+      pushToast({
+        kind: "error",
+        message: "Could not clear the MusicBrainz cache — see console",
+      });
+    }
   }
 
   function resetSpotifyRateLimit() {

@@ -241,6 +241,12 @@ export function AmbiguousMatchDialog({ trackId, onClose }: Props) {
   }
 
   function runSearchAgain() {
+    // Guard against overlapping searches. The Search button is disabled
+    // while `searching`, but the inputs' Enter-key handlers are not, so
+    // without this a user hammering Enter could fire concurrent searches
+    // whose responses resolve out of order — an older query overwriting a
+    // newer one's results.
+    if (searching) return;
     void runSearchWithFields(titleInput, artistInput);
   }
 

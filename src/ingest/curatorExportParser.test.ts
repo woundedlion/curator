@@ -5,6 +5,10 @@ import {
   tryParseCuratorExport,
 } from "./curatorExportParser";
 
+// Well-formed ids: a 22-char base62 Spotify track id and a canonical MBID.
+const SAMPLE_URI = "spotify:track:6xZtSE6xGXNHqdz3DCDExJ";
+const SAMPLE_MBID = "8d57c3a1-9b2e-4f0a-b1c2-d3e4f5a6b7c8";
+
 const SAMPLE = JSON.stringify({
   format: "curator-playlist-v1",
   name: "My Mix",
@@ -17,8 +21,8 @@ const SAMPLE = JSON.stringify({
       artist: "Radiohead",
       album: "OK Computer",
       year: 1997,
-      spotifyUri: "spotify:track:abc",
-      mbRecordingId: "mb-xyz",
+      spotifyUri: SAMPLE_URI,
+      mbRecordingId: SAMPLE_MBID,
     },
     {
       title: "Plain Song",
@@ -32,7 +36,37 @@ describe("tryParseCuratorExport", () => {
     expect(env).not.toBeNull();
     expect(env?.name).toBe("My Mix");
     expect(env?.tracks).toHaveLength(2);
-    expect(env?.tracks[0]!.spotifyUri).toBe("spotify:track:abc");
+    expect(env?.tracks[0]!.spotifyUri).toBe(SAMPLE_URI);
+  });
+
+  it("drops malformed spotifyUri / mbRecordingId so the row isn't falsely matched", () => {
+    // A hand-edited or hostile export must not be able to inject an
+    // arbitrary string into spotify.uri (pushed to the Spotify API) by
+    // claiming `matched`. Ill-formed ids are treated as absent.
+    const env = tryParseCuratorExport(
+      JSON.stringify({
+        format: "curator-playlist-v1",
+        tracks: [
+          {
+            title: "Bad Ids",
+            spotifyUri: "spotify:track:abc",
+            mbRecordingId: "mb-xyz",
+          },
+          {
+            title: "Injection",
+            spotifyUri: "javascript:alert(1)",
+            mbRecordingId: "../../etc/passwd",
+          },
+        ],
+      }),
+    );
+    expect(env?.tracks[0]!.spotifyUri).toBeUndefined();
+    expect(env?.tracks[0]!.mbRecordingId).toBeUndefined();
+    expect(env?.tracks[1]!.spotifyUri).toBeUndefined();
+    expect(env?.tracks[1]!.mbRecordingId).toBeUndefined();
+    const tracks = buildTracksFromExport(env!);
+    expect(tracks[0]!.spotify.status).toBe("idle");
+    expect(tracks[0]!.enrichment.status).toBe("idle");
   });
 
   it("returns null on non-JSON input", () => {
@@ -95,9 +129,10 @@ describe("buildTracksFromExport", () => {
     const spotify = tracks[0]!.spotify;
     const enrichment = tracks[0]!.enrichment;
     expect(spotify.status).toBe("matched");
-    if (spotify.status === "matched") expect(spotify.uri).toBe("spotify:track:abc");
+    if (spotify.status === "matched") expect(spotify.uri).toBe(SAMPLE_URI);
     expect(enrichment.status).toBe("matched");
-    if (enrichment.status === "matched") expect(enrichment.mbRecordingId).toBe("mb-xyz");
+    if (enrichment.status === "matched")
+      expect(enrichment.mbRecordingId).toBe(SAMPLE_MBID);
   });
 
   it("leaves unresolved tracks idle so runners pick them up", () => {

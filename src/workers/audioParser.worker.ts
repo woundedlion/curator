@@ -19,7 +19,14 @@ type ParseResponse =
   | { id: number; ok: false; error: string };
 
 function durationToMs(durationSec: number | undefined): number | undefined {
-  if (typeof durationSec !== "number") return undefined;
+  // music-metadata can surface a NaN or Infinity duration for some
+  // containers/streams. `typeof NaN === "number"`, so a bare type check
+  // would let it through and poison Track.durationMs (sort/scoring/UI).
+  // Require a finite, non-negative value.
+  if (typeof durationSec !== "number" || !Number.isFinite(durationSec)) {
+    return undefined;
+  }
+  if (durationSec < 0) return undefined;
   return Math.round(durationSec * 1000);
 }
 

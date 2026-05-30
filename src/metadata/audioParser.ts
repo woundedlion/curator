@@ -29,6 +29,15 @@ function saneYear(value: number | undefined): number | undefined {
   return value;
 }
 
+function saneDuration(value: number | undefined): number | undefined {
+  // The worker already drops NaN/Infinity/negative durations, but repeat
+  // the guard here so a direct buildTrackFromParsed caller can't leak a
+  // junk duration into the Track (matches the worker's durationToMs).
+  if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
+  if (value < 0) return undefined;
+  return value;
+}
+
 function pickArtistFromParsed(fields: ParsedFields): string | undefined {
   return blankToUndefined(fields.artist) ?? blankToUndefined(fields.albumartist);
 }
@@ -79,7 +88,7 @@ function buildTrackFromParsed(
     trackNo: sanePosition(parsed.trackNo) ?? filenameHint.trackNo,
     trackOf: sanePosition(parsed.trackOf),
     discNo: sanePosition(parsed.discNo),
-    durationMs: parsed.durationMs,
+    durationMs: saneDuration(parsed.durationMs),
     localFile: file,
     altQuery,
     enrichment: { status: "idle" },
