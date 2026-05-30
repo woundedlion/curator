@@ -17,7 +17,7 @@ import { useSettingsStore } from "../store/settingsStore";
 import { useUiStore } from "../store/uiStore";
 import {
   initializeSpotifyPlayer,
-  setSpotifyPlayerHandlers,
+  type SpotifyPlayerHandlers,
 } from "../spotify/spotifyPlayer";
 import { HtmlAudioBackend } from "./htmlAudioBackend";
 import {
@@ -117,46 +117,45 @@ export const usePlaybackStore = create<PlaybackState>((set, get) => {
       return null;
     }
     set({ sdk: { status: "loading" } });
-    const result = await initializeSpotifyPlayer(clientId);
+    // Post-init SDK event handlers wired through the init call so the
+    // SDK's `playback_error` / `not_ready` listeners route to us from
+    // the moment they could fire. `playback_error`: DRM hiccup, decode
+    // failure, network drop mid-track. `not_ready`: device dropped out
+    // (sleep, tab took over the device). Both demand user-visible
+    // feedback and SDK teardown so the next play doesn't issue commands
+    // against a dead device id.
+    const handlers: SpotifyPlayerHandlers = {
+      onError: (message) => {
+        useUiStore.getState().pushToast({
+          kind: "error",
+          message: `Spotify playback error: ${message}`,
+        });
+      },
+      onNotReady: () => {
+        // Mark unavailable so candidate/track target construction
+        // stops feeding the SDK path until a reload. Stop any
+        // in-flight playback so the now-playing bar doesn't pin to
+        // silent audio.
+        set({
+          sdk: {
+            status: "unavailable",
+            reason: "device dropped out",
+          },
+        });
+        void storeRef.player?.stop();
+        useUiStore.getState().pushToast({
+          kind: "error",
+          message:
+            "Spotify playback device disconnected — falling back to 30-second previews this session (reload to retry)",
+        });
+      },
+    };
+    const result = await initializeSpotifyPlayer(clientId, handlers);
     if (result.ok) {
       const backend = new SpotifySdkBackend({
         player: result.player,
         deviceId: result.deviceId,
         clientId,
-      });
-      // Wire post-init SDK event handlers exactly once — these fire
-      // AFTER the init promise has settled, so they're not part of
-      // the init result and would otherwise land on the floor.
-      // `playback_error`: DRM hiccup, decode failure, network drop
-      // mid-track. `not_ready`: device dropped out (sleep, tab took
-      // over the device). Both demand user-visible feedback and SDK
-      // teardown so the next play doesn't issue commands against a
-      // dead device id.
-      setSpotifyPlayerHandlers({
-        onError: (message) => {
-          useUiStore.getState().pushToast({
-            kind: "error",
-            message: `Spotify playback error: ${message}`,
-          });
-        },
-        onNotReady: () => {
-          // Mark unavailable so candidate/track target construction
-          // stops feeding the SDK path until a reload. Stop any
-          // in-flight playback so the now-playing bar doesn't pin to
-          // silent audio.
-          set({
-            sdk: {
-              status: "unavailable",
-              reason: "device dropped out",
-            },
-          });
-          void storeRef.player?.stop();
-          useUiStore.getState().pushToast({
-            kind: "error",
-            message:
-              "Spotify playback device disconnected — falling back to 30-second previews this session (reload to retry)",
-          });
-        },
       });
       set({ sdk: { status: "ready" } });
       return backend;

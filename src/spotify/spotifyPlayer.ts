@@ -66,6 +66,13 @@ export type PlayerInitResult =
   | { ok: true; deviceId: string; player: SpotifyPlayerInstance }
   | { ok: false; reason: "not-premium" | "auth" | "unknown"; message: string };
 
+export type SpotifyPlayerHandlers = {
+  /** Device dropped out after init (sleep, takeover, network drop). */
+  onNotReady?: () => void;
+  /** Post-init playback error (DRM, decode, etc.) — SDK-supplied message. */
+  onError?: (message: string) => void;
+};
+
 // Cache the in-flight init promise + resolved success result. Every
 // caller that asks for a Player gets the same instance — re-instantiating
 // would create a duplicate Spotify Connect device and waste a WebSocket
@@ -73,16 +80,6 @@ export type PlayerInitResult =
 let activeInitPromise: Promise<PlayerInitResult> | null = null;
 let activeOkPlayer: SpotifyPlayerInstance | null = null;
 let activeOkDeviceId: string | null = null;
-let playerNotReadyHandler: (() => void) | null = null;
-let playerErrorHandler: ((message: string) => void) | null = null;
-
-export function setSpotifyPlayerHandlers(handlers: {
-  onNotReady?: () => void;
-  onError?: (message: string) => void;
-}): void {
-  playerNotReadyHandler = handlers.onNotReady ?? null;
-  playerErrorHandler = handlers.onError ?? null;
-}
 
 export async function destroySpotifyPlayer(): Promise<void> {
   if (activeOkPlayer) {
@@ -99,6 +96,7 @@ export async function destroySpotifyPlayer(): Promise<void> {
 
 export function initializeSpotifyPlayer(
   clientId: string,
+  handlers: SpotifyPlayerHandlers = {},
 ): Promise<PlayerInitResult> {
   if (activeOkPlayer && activeOkDeviceId) {
     return Promise.resolve({
@@ -108,7 +106,7 @@ export function initializeSpotifyPlayer(
     });
   }
   if (activeInitPromise) return activeInitPromise;
-  activeInitPromise = doInitializeSpotifyPlayer(clientId).then((result) => {
+  activeInitPromise = doInitializeSpotifyPlayer(clientId, handlers).then((result) => {
     if (result.ok) {
       activeOkPlayer = result.player;
       activeOkDeviceId = result.deviceId;
@@ -124,6 +122,7 @@ export function initializeSpotifyPlayer(
 
 async function doInitializeSpotifyPlayer(
   clientId: string,
+  handlers: SpotifyPlayerHandlers,
 ): Promise<PlayerInitResult> {
   await loadSdk();
   const SpotifyNs = window.Spotify;
@@ -170,7 +169,7 @@ async function doInitializeSpotifyPlayer(
     // another tab). Notify so the playback store can reset to "idle"
     // instead of issuing play commands against a dead device id.
     player.addListener("not_ready", () => {
-      if (playerNotReadyHandler) playerNotReadyHandler();
+      handlers.onNotReady?.();
     });
 
     // Generic playback error from the SDK (DRM failures, codec issues,
@@ -179,7 +178,7 @@ async function doInitializeSpotifyPlayer(
     player.addListener("playback_error", (data) => {
       const message =
         (data as { message?: string }).message ?? "playback failed";
-      if (playerErrorHandler) playerErrorHandler(message);
+      handlers.onError?.(message);
     });
 
     player.addListener("initialization_error", (data) => {

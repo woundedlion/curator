@@ -21,6 +21,22 @@ const YEAR_HALF_DELTA = 3;
 const DURATION_FULL_DELTA_MS = 2_000;
 const DURATION_HALF_DELTA_MS = 10_000;
 
+type SpotifyScorable = { title: string; artist: string; album: string };
+
+// Module-level Fuse instance reused across calls via `setCollection`.
+// Search runs are single-threaded (Spotify pacer ensures one in flight)
+// so sharing one instance is safe; the candidate set is swapped per call.
+const sharedFuse = new Fuse<SpotifyScorable>([], {
+  includeScore: true,
+  keys: [
+    { name: "title", weight: 0.5 },
+    { name: "artist", weight: 0.3 },
+    { name: "album", weight: 0.2 },
+  ],
+  threshold: 1,
+  ignoreLocation: true,
+});
+
 function escapeQuoted(value: string): string {
   return value.replace(/"/g, "");
 }
@@ -79,22 +95,12 @@ function scoreSpotifyCandidates(
 ): SpotifyCandidate[] {
   if (candidates.length === 0) return candidates;
 
-  const fuse = new Fuse(
+  sharedFuse.setCollection(
     candidates.map((candidate) => ({
       title: normalizeForMatching(candidate.title),
       artist: normalizeForMatching(candidate.artist),
       album: normalizeForMatching(candidate.album),
     })),
-    {
-      includeScore: true,
-      keys: [
-        { name: "title", weight: 0.5 },
-        { name: "artist", weight: 0.3 },
-        { name: "album", weight: 0.2 },
-      ],
-      threshold: 1,
-      ignoreLocation: true,
-    },
   );
 
   const query = {
@@ -104,7 +110,7 @@ function scoreSpotifyCandidates(
   };
 
   const fuseScoresByIndex = new Map<number, number>();
-  for (const result of fuse.search(query)) {
+  for (const result of sharedFuse.search(query)) {
     fuseScoresByIndex.set(result.refIndex, 1 - (result.score ?? 1));
   }
 

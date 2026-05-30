@@ -48,6 +48,12 @@ export const DEFAULT_ACCEPT_MB = 0.75;
 export const DEFAULT_ACCEPT_SPOTIFY_HIGH = 0.9;
 export const SPOTIFY_AUTOPICK_GAP = 0.15;
 export const SPOTIFY_SEARCH_LIMIT = 10;
+// MB returns a smaller working set than Spotify per query — its match
+// quality is high enough that the top-5 covers the realistic outcome
+// space, and asking for more burns the 1-req/sec budget for diminishing
+// returns. The dedup pass collapses release variants further before
+// scoring.
+export const MB_SEARCH_LIMIT = 5;
 
 export const ROW_HEIGHT_PX = 44;
 

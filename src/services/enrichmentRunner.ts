@@ -3,7 +3,10 @@ import {
   deleteCachedCandidates,
 } from "../db/musicbrainzCache";
 import { probeCoverArtUrl } from "../enrichment/coverArt";
-import { enrichTrack } from "../enrichment/enrichmentService";
+import {
+  enrichTrack,
+  type EnrichmentOutcome,
+} from "../enrichment/enrichmentService";
 import { RequestCancelledError } from "../util/intervalQueue";
 import { usePlaylistStore } from "../store/playlistStore";
 import { useSettingsStore } from "../store/settingsStore";
@@ -48,6 +51,73 @@ function markPending(trackId: string): void {
   });
 }
 
+// Translates an `EnrichmentOutcome` into the corresponding `Enrichment`
+// arm. `userOverride` is preserved from the live track because a bulk
+// re-enrich after a user picked a candidate via the ambiguous-MB
+// dialog must keep that bit set — shouldSkipTrack/isTrackPendingLookup
+// honor it elsewhere, but this layer is responsible for not dropping it
+// on the write back.
+function buildEnrichmentFromOutcome(
+  outcome: EnrichmentOutcome,
+  userOverride: boolean | undefined,
+): Enrichment {
+  if (outcome.status === "matched" && outcome.recordingId) {
+    return {
+      status: "matched",
+      mbRecordingId: outcome.recordingId,
+      score: outcome.topScore,
+      candidates: outcome.candidates,
+      userOverride,
+    };
+  }
+  if (outcome.status === "ambiguous") {
+    return {
+      status: "ambiguous",
+      candidates: outcome.candidates,
+      score: outcome.topScore,
+      userOverride,
+    };
+  }
+  return {
+    status: "failed",
+    candidates:
+      outcome.candidates.length > 0 ? outcome.candidates : undefined,
+    userOverride,
+  };
+}
+
+// Awaited inline by the caller so a transient probe failure can be
+// aggregated into the batch toast. Cost is bounded: probes run through
+// a 4-wide limiter and the MB queue (1 req/sec) is the actual
+// bottleneck — probes typically resolve well inside one MB pacer
+// interval. Returns whether the failure was a *transient* miss
+// (network/5xx) — confirmed 404s are absorbed by the negative cache
+// and reported as a non-failure here.
+async function applyCoverArtIfAvailable(
+  trackId: string,
+  recordingId: string | undefined,
+  releaseId: string | undefined,
+): Promise<boolean> {
+  if (!releaseId) return false;
+  const probe = await probeCoverArtUrl(releaseId);
+  if (probe.kind === "transient") return true;
+  if (probe.kind !== "ok") return false;
+  // Re-check: the track may have been removed, or its identity may have
+  // changed (different mbRecordingId picked, or a Spotify candidate
+  // selected) during the cover-art HEAD probe.
+  const current = usePlaylistStore.getState().tracksById[trackId];
+  const currentRecordingId =
+    current?.enrichment.status === "matched"
+      ? current.enrichment.mbRecordingId
+      : undefined;
+  if (current && currentRecordingId === recordingId) {
+    usePlaylistStore
+      .getState()
+      .fillMissingDisplayFields(trackId, { coverUrl: probe.url });
+  }
+  return false;
+}
+
 async function runOneTrack(
   trackId: string,
   options: { bypassCache?: boolean } = {},
@@ -85,7 +155,9 @@ async function runOneTrack(
     // `track` snapshot can no longer clobber a fresher value.
     const store = usePlaylistStore.getState();
     const liveTrack = store.tracksById[trackId];
-    if (!liveTrack) return { result: outcome.status, failureReason: outcome.failureReason };
+    if (!liveTrack) {
+      return { result: outcome.status, failureReason: outcome.failureReason };
+    }
 
     // Drop late results that arrive after a reset. The runner sets
     // `enrichment.status = "pending"` at start via markPending; if the
@@ -99,10 +171,6 @@ async function runOneTrack(
       return { result: outcome.status, failureReason: outcome.failureReason };
     }
 
-    // Preserve `userOverride` across re-enrichment — it survives a bulk
-    // pass via shouldSkipTrack/isUserOverridden, but if the user picked a
-    // candidate via the ambiguous-MB dialog and then a re-enrichment
-    // landed, we need to keep the bit set.
     if (outcome.status === "matched" && best) {
       store.fillMissingDisplayFields(trackId, {
         title: best.title,
@@ -112,55 +180,21 @@ async function runOneTrack(
         originalYear: best.originalYear,
       });
     }
-    const userOverride = liveTrack.enrichment.userOverride;
-    const enrichment: Enrichment =
-      outcome.status === "matched" && outcome.recordingId
-        ? {
-            status: "matched",
-            mbRecordingId: outcome.recordingId,
-            score: outcome.topScore,
-            candidates: outcome.candidates,
-            userOverride,
-          }
-        : outcome.status === "ambiguous"
-          ? {
-              status: "ambiguous",
-              candidates: outcome.candidates,
-              score: outcome.topScore,
-              userOverride,
-            }
-          : {
-              status: "failed",
-              candidates:
-                outcome.candidates.length > 0 ? outcome.candidates : undefined,
-              userOverride,
-            };
+    const enrichment = buildEnrichmentFromOutcome(
+      outcome,
+      liveTrack.enrichment.userOverride,
+    );
     store.updateTrack(trackId, { enrichment });
-    let coverArtTransientFailure = false;
-    if (outcome.status === "matched" && best?.releaseId) {
-      // Awaited inline so a transient probe failure can be aggregated into
-      // the batch toast. Cost is bounded: probes run through a 4-wide
-      // limiter and the MB queue (1 req/sec) is the actual bottleneck —
-      // probes typically resolve well inside one MB pacer interval.
-      const probe = await probeCoverArtUrl(best.releaseId);
-      if (probe.kind === "ok") {
-        // Re-check: the track may have been removed, or its identity may
-        // have changed (different mbRecordingId picked, or a Spotify
-        // candidate selected) during the cover-art HEAD probe.
-        const current = usePlaylistStore.getState().tracksById[trackId];
-        const currentRecordingId =
-          current?.enrichment.status === "matched"
-            ? current.enrichment.mbRecordingId
-            : undefined;
-        if (current && currentRecordingId === outcome.recordingId) {
-          usePlaylistStore
-            .getState()
-            .fillMissingDisplayFields(trackId, { coverUrl: probe.url });
-        }
-      } else if (probe.kind === "transient") {
-        coverArtTransientFailure = true;
-      }
-    }
+
+    const coverArtTransientFailure =
+      outcome.status === "matched"
+        ? await applyCoverArtIfAvailable(
+            trackId,
+            outcome.recordingId,
+            best?.releaseId,
+          )
+        : false;
+
     return {
       result: outcome.status,
       failureReason: outcome.failureReason,

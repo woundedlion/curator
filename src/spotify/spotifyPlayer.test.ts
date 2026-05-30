@@ -12,7 +12,7 @@
 //       must surface as `ok: false` instead of pinning playback in
 //       "loading" forever.
 //   C4. Post-init `playback_error` / `not_ready` events route through
-//       `setSpotifyPlayerHandlers`.
+//       handlers supplied at init time.
 //   C5. `pauseSpotifyPlayback` / `resumeSpotifyPlayback` /
 //       `seekSpotifyPlayback` call through to the SDK instance.
 //
@@ -38,7 +38,6 @@ import {
   playSpotifyTrackOnDevice,
   resumeSpotifyPlayback,
   seekSpotifyPlayback,
-  setSpotifyPlayerHandlers,
 } from "./spotifyPlayer";
 
 // ─── Fake SDK player ─────────────────────────────────────────────────
@@ -129,7 +128,6 @@ beforeEach(async () => {
   // The SUT caches the active init result/promise at module scope.
   // destroySpotifyPlayer() drops the cache so each test starts clean.
   await destroySpotifyPlayer();
-  setSpotifyPlayerHandlers({});
 });
 
 afterEach(() => {
@@ -370,11 +368,12 @@ describe("initializeSpotifyPlayer — SDK_INIT_TIMEOUT_MS bounds a hung init (C3
 
 // ─── 4. Post-init listener routing (C4) ──────────────────────────────
 
-describe("setSpotifyPlayerHandlers — routes post-init events (C4)", () => {
+describe("initializeSpotifyPlayer — routes post-init events through injected handlers (C4)", () => {
   it("playback_error fires onError with the SDK-provided message", async () => {
     const errors: string[] = [];
-    setSpotifyPlayerHandlers({ onError: (m) => errors.push(m) });
-    const p = initializeSpotifyPlayer("client-id");
+    const p = initializeSpotifyPlayer("client-id", {
+      onError: (m) => errors.push(m),
+    });
     await flushMicrotasks();
     lastPlayer!.fire("ready", { device_id: "d" });
     await p;
@@ -386,8 +385,9 @@ describe("setSpotifyPlayerHandlers — routes post-init events (C4)", () => {
 
   it("playback_error with no message falls back to 'playback failed'", async () => {
     const errors: string[] = [];
-    setSpotifyPlayerHandlers({ onError: (m) => errors.push(m) });
-    const p = initializeSpotifyPlayer("client-id");
+    const p = initializeSpotifyPlayer("client-id", {
+      onError: (m) => errors.push(m),
+    });
     await flushMicrotasks();
     lastPlayer!.fire("ready", { device_id: "d" });
     await p;
@@ -400,8 +400,7 @@ describe("setSpotifyPlayerHandlers — routes post-init events (C4)", () => {
     // or the laptop sleeps. The store needs to know so it stops
     // issuing play commands against a dead device id.
     const notReady = vi.fn();
-    setSpotifyPlayerHandlers({ onNotReady: notReady });
-    const p = initializeSpotifyPlayer("client-id");
+    const p = initializeSpotifyPlayer("client-id", { onNotReady: notReady });
     await flushMicrotasks();
     lastPlayer!.fire("ready", { device_id: "d" });
     await p;
@@ -409,30 +408,18 @@ describe("setSpotifyPlayerHandlers — routes post-init events (C4)", () => {
     expect(notReady).toHaveBeenCalledTimes(1);
   });
 
-  it("handlers can be re-set — only the most recent handler fires", async () => {
-    const first = vi.fn();
-    const second = vi.fn();
-    setSpotifyPlayerHandlers({ onError: first });
+  it("init without handlers means post-init events are silently dropped", async () => {
+    // The handlers arg defaults to {} — the listener callbacks use
+    // optional-chaining so missing handlers no-op cleanly.
     const p = initializeSpotifyPlayer("client-id");
     await flushMicrotasks();
     lastPlayer!.fire("ready", { device_id: "d" });
     await p;
-    setSpotifyPlayerHandlers({ onError: second });
-    lastPlayer!.fire("playback_error", { message: "boom" });
-    expect(first).not.toHaveBeenCalled();
-    expect(second).toHaveBeenCalledWith("boom");
-  });
-
-  it("clearing handlers (no onError) means playback_error is silently dropped", async () => {
-    setSpotifyPlayerHandlers({ onError: () => undefined });
-    const p = initializeSpotifyPlayer("client-id");
-    await flushMicrotasks();
-    lastPlayer!.fire("ready", { device_id: "d" });
-    await p;
-    setSpotifyPlayerHandlers({}); // unset
-    // Should not throw — handler is null.
     expect(() =>
       lastPlayer!.fire("playback_error", { message: "boom" }),
+    ).not.toThrow();
+    expect(() =>
+      lastPlayer!.fire("not_ready", { device_id: "d" }),
     ).not.toThrow();
   });
 });

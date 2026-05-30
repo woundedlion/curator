@@ -10,9 +10,14 @@
 // catch the narrow race window where a task has already shifted out
 // of pending but hasn't yet sent its HTTP call.
 //
-// In-flight requests cannot be aborted (no AbortSignal contract on
-// the HTTP path) — they complete naturally and the orchestrators
-// discard the result because the track is gone from the store.
+// In-flight HTTP requests ARE aborted at the network layer: the
+// IntervalQueue routes `cancelByTag` through the in-flight slot's
+// AbortController, which the apiClient/musicbrainzClient fetch
+// wrappers compose with their per-request timeout signal. The
+// orchestrators still discard any response that does manage to
+// arrive late, because the track is gone from the store — the
+// abort is a network-side resource reclaim, not a correctness
+// requirement.
 
 import { cancelSpotifyRequestsByTag } from "../spotify/apiClient";
 import { cancelMusicbrainzRequestsByTag } from "../enrichment/musicbrainzClient";

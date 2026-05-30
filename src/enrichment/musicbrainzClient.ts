@@ -1,5 +1,6 @@
 import {
   APP_VERSION,
+  MB_SEARCH_LIMIT,
   MUSICBRAINZ_API_BASE,
   MUSICBRAINZ_RATE_INTERVAL_MS,
 } from "../constants";
@@ -7,7 +8,6 @@ import type { MBCandidate } from "../types";
 import { parseRetryAfter } from "../spotify/apiClient";
 import { IntervalQueue } from "../util/intervalQueue";
 
-const SEARCH_LIMIT = 5;
 // MB serves traffic from a single global cluster; tail latency during
 // peak hours can climb above 10s on routine searches. Bumped to 30s so
 // a slow-but-successful response doesn't surface as a confusing
@@ -76,7 +76,7 @@ function buildSearchUrl(
   const params = new URLSearchParams({
     query,
     fmt: "json",
-    limit: String(SEARCH_LIMIT),
+    limit: String(MB_SEARCH_LIMIT),
     client: buildClientParam(contactEmail),
   });
   if (dismax) params.set("dismax", "true");

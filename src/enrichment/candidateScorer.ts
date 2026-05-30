@@ -14,6 +14,21 @@ const YEAR_WEIGHT = 0.05;
 const YEAR_FULL_CREDIT_YEARS = 1;
 const YEAR_HALF_CREDIT_YEARS = 3;
 
+// Module-level Fuse instance reused across calls via `setCollection`.
+// Each scoring pass works on a fresh candidate list, but the Fuse
+// object itself plus its (frozen) options + key-store can be shared —
+// constructor allocation of the option parser was the only real cost.
+const sharedFuse = new Fuse<Scorable>([], {
+  includeScore: true,
+  keys: [
+    { name: "title", weight: FIELD_WEIGHTS.title },
+    { name: "artist", weight: FIELD_WEIGHTS.artist },
+    { name: "album", weight: FIELD_WEIGHTS.album },
+  ],
+  threshold: 1,
+  ignoreLocation: true,
+});
+
 function yearCredit(candidateYear?: number, trackYear?: number): number {
   if (typeof candidateYear !== "number" || typeof trackYear !== "number") return 0;
   const delta = Math.abs(candidateYear - trackYear);
@@ -48,19 +63,10 @@ export function scoreCandidates(
     album: normalizeForMatching(track.album),
   };
 
-  const fuse = new Fuse(candidates.map(buildFuseTarget), {
-    includeScore: true,
-    keys: [
-      { name: "title", weight: FIELD_WEIGHTS.title },
-      { name: "artist", weight: FIELD_WEIGHTS.artist },
-      { name: "album", weight: FIELD_WEIGHTS.album },
-    ],
-    threshold: 1,
-    ignoreLocation: true,
-  });
+  sharedFuse.setCollection(candidates.map(buildFuseTarget));
 
   const fuseScoresByIndex = new Map<number, number>();
-  for (const result of fuse.search(query)) {
+  for (const result of sharedFuse.search(query)) {
     fuseScoresByIndex.set(result.refIndex, fuseDistanceToScore(result.score));
   }
 
