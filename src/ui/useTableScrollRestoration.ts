@@ -66,9 +66,14 @@ export function useTableScrollRestoration(
     // one frame so layout is committed before we assign scrollTop — without
     // this, the assignment can clamp to a too-small scrollHeight on first
     // render and the user lands a few pixels above their saved position.
-    requestAnimationFrame(() => {
+    //
+    // Capture the rAF handle so a fast unmount (Clear → re-add, route
+    // teardown, HMR) cancels the pending callback rather than touching a
+    // detached element a frame later.
+    const rafId = requestAnimationFrame(() => {
       el.scrollTop = saved;
     });
+    return () => cancelAnimationFrame(rafId);
   }, [parentRef, visibleCount]);
 
   useEffect(() => {

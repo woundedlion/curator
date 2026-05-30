@@ -284,6 +284,50 @@ describe("negative cache short-circuit", () => {
     expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 
+  it("REGRESSION: an in-session 404 recorded DURING hydration survives the IDB union (not lost)", async () => {
+    // The bug: `negativeCache` started null and was REPLACED with the
+    // IDB snapshot on hydration. A 404 recorded in the hydration window
+    // persisted to IDB but vanished from memory the moment the snapshot
+    // overwrote the Set — so the same dead release re-probed later in
+    // the session. The fix initializes an empty Set up front and UNIONs
+    // the IDB ids on hydration. This test holds hydration open, records
+    // a 404 for RELEASE_A while it's pending, then resolves hydration
+    // with a DISJOINT id (RELEASE_B). Afterward a re-probe of RELEASE_A
+    // must short-circuit (in-memory 404 survived) AND RELEASE_B must
+    // short-circuit (IDB id was merged in).
+    let resolveLoad: (ids: string[]) => void = () => undefined;
+    dbMocks.loadCoverArtNegativeCache.mockImplementationOnce(
+      () =>
+        new Promise<string[]>((resolve) => {
+          resolveLoad = resolve;
+        }),
+    );
+    const mod = await loadFreshCoverArt();
+    const fetchSpy = vi
+      .spyOn(global, "fetch")
+      // First probe (RELEASE_A) 404s while hydration is still pending.
+      .mockResolvedValueOnce(head404());
+
+    // Kick off the first probe; it awaits ensureHydrated (still pending)
+    // — but the 404 path records into the live in-memory Set regardless.
+    const firstProbe = mod.probeCoverArtUrl(RELEASE_A);
+    // Let the probe reach (and block on) ensureHydrated.
+    await Promise.resolve();
+    // Resolve hydration with a DISJOINT id so we can tell union from
+    // replace: if the code replaced the Set, RELEASE_A would be lost.
+    resolveLoad([RELEASE_B]);
+    expect(await firstProbe).toEqual({ kind: "missing" });
+
+    // Re-probe both. Neither should hit the network: RELEASE_A from the
+    // surviving in-session 404, RELEASE_B from the merged IDB id.
+    const a2 = await mod.probeCoverArtUrl(RELEASE_A);
+    const b2 = await mod.probeCoverArtUrl(RELEASE_B);
+    expect(a2).toEqual({ kind: "missing" });
+    expect(b2).toEqual({ kind: "missing" });
+    // Only the single initial HEAD (for the first RELEASE_A probe).
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
   it("a transient failure does NOT poison the cache — a retry can still succeed", async () => {
     // Mirror of the previous test: 5xx is retryable, so the second
     // probe must actually hit the network again and (in this case)

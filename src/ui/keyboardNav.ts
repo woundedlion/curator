@@ -127,6 +127,15 @@ export function computeKeyboardNavStep(
     case "End":
       nextIdx = last;
       break;
+    default: {
+      // Exhaustiveness guard: `key` is the closed NavKey union, so this
+      // branch is statically unreachable. Adding a 7th NavKey without a
+      // matching case makes `_exhaustive` fail to be assignable from
+      // `never` here — a compile error rather than a silent fall-through
+      // that would leave `nextIdx` unassigned.
+      const _exhaustive: never = key;
+      return _exhaustive;
+    }
   }
   // nextIdx is always clamped to [0, last], so visibleIds[nextIdx] is
   // defined as long as visibleIds is non-empty (guarded above).

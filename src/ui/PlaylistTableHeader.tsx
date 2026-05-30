@@ -41,8 +41,15 @@ export function PlaylistTableHeader({
       aria-rowindex={1}
       className="flex items-center border-b border-neutral-800 bg-neutral-900 px-2 text-xs font-semibold uppercase tracking-wide text-neutral-400"
     >
-      <div role="columnheader" aria-hidden className="w-6" />
-      <div role="columnheader" aria-hidden className="w-8" />
+      {/* Purely decorative spacer columns (drag handle, play button,
+          cover, action buttons). They carry no label, so a columnheader
+          role would announce an empty header — and pairing that role
+          with aria-hidden was self-contradictory (role says "I'm a
+          header", aria-hidden says "ignore me"). Plain aria-hidden divs
+          take them out of the grid's column-header set entirely, which
+          is what they are. */}
+      <div aria-hidden className="w-6" />
+      <div aria-hidden className="w-8" />
       {HEADERS.map((header) => (
         <Fragment key={header.field}>
           <div
@@ -66,7 +73,7 @@ export function PlaylistTableHeader({
             </button>
           </div>
           {header.field === "index" && (
-            <div role="columnheader" aria-hidden className="w-8" title="Cover" />
+            <div aria-hidden className="w-8" title="Cover" />
           )}
         </Fragment>
       ))}
@@ -84,8 +91,8 @@ export function PlaylistTableHeader({
       >
         <span aria-label="Spotify match status">♫</span>
       </div>
-      <div role="columnheader" aria-hidden className="w-8" />
-      <div role="columnheader" aria-hidden className="w-8" />
+      <div aria-hidden className="w-8" />
+      <div aria-hidden className="w-8" />
       {selectedCount > 0 && (
         <div className="ml-auto flex items-center gap-1">
           {selectedCount > 1 && (

@@ -307,6 +307,73 @@ describe("enrichTrack", () => {
     expect(outcome.failureReason).toBe("no-query");
   });
 
+  it("REGRESSION: gates each merged candidate against the reference it was scored against (no cross-reference accept)", async () => {
+    // Bug: after merging primary+alt, classifyOutcome ran the
+    // similarity gate against `altScoringTrack` for whichever candidate
+    // sorted FIRST — even a PRIMARY candidate (scored against the
+    // unmodified track). That made ranking and the gate incoherent: a
+    // primary candidate that does NOT resemble the track (so its primary
+    // similarity gate fails in pass 1 → ambiguous) could be wrongly
+    // ACCEPTED in the merged pass simply because its title happened to
+    // resemble the unrelated altQuery. The fix gates each candidate
+    // against the reference its score came from, so a primary candidate
+    // is always judged against the track fields — keeping it ambiguous.
+    //
+    // Setup: the primary candidate's title matches the ALT query, not
+    // the track. Pass 1 (primary vs track) → ambiguous (similarity vs
+    // track fails). The alt fires; its single candidate scores lower, so
+    // the primary candidate sorts first in the merged set. Under the OLD
+    // code that primary candidate would be gated vs the alt reference
+    // (which it matches) → spurious "matched". Under the fix it's gated
+    // vs the track (which it does not match) → stays "ambiguous".
+    searchRecordingsMock
+      .mockResolvedValueOnce([
+        // Primary candidate: artist matches the track (drives a decent
+        // Fuse score so it sorts first), but its TITLE does not resemble
+        // the track title — so the primary similarity gate fails. Its
+        // title/artist DO match the altQuery, which is the trap.
+        candidate({
+          recordingId: "primary-looks-like-alt",
+          title: "Xylophone Interlude",
+          artist: "Radiohead",
+          album: undefined,
+          year: undefined,
+        }),
+      ])
+      .mockResolvedValueOnce([
+        // Alt candidate: a terrible match for the altScoringTrack so it
+        // scores below the primary candidate and does NOT sort first.
+        candidate({
+          recordingId: "alt-weak",
+          title: "Qqqqqqq Unrelated",
+          artist: "Wwwwwww Nobody",
+        }),
+      ]);
+    const track = trackOf({
+      title: "Karma Police",
+      artist: "Radiohead",
+      // altQuery matches the primary candidate's fields exactly — the
+      // OLD code would gate the primary candidate against THIS and
+      // wrongly accept it.
+      altQuery: { title: "Xylophone Interlude", artist: "Radiohead" },
+    });
+
+    // Low threshold so scoreOk is satisfied for the top candidate — this
+    // isolates the SIMILARITY gate / reference choice as the deciding
+    // factor (the whole point of the regression).
+    const outcome = await enrichTrack(track, "me@example.test", 0.01);
+
+    // Both passes fired (primary then alt).
+    expect(searchRecordingsMock).toHaveBeenCalledTimes(2);
+    // The primary candidate sorts first but does NOT resemble the TRACK
+    // title, so with coherent per-candidate gating (vs the primary
+    // reference) it must NOT auto-match — even though it matches the
+    // altQuery. The OLD code accepted it; the fix keeps it ambiguous.
+    expect(outcome.candidates[0]!.recordingId).toBe("primary-looks-like-alt");
+    expect(outcome.status).toBe("ambiguous");
+    expect(outcome.recordingId).toBeUndefined();
+  });
+
   it("merges primary + alt candidates and dedupes by recordingId, preferring primary order", async () => {
     searchRecordingsMock
       .mockResolvedValueOnce([

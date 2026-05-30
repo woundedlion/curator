@@ -16,8 +16,15 @@ export type RowClickModifiers = {
 
 type Props = {
   track: Track;
+  // Stable DOM id (rowDomId(track.id)) so the grid container's
+  // aria-activedescendant can resolve to this row when it's the cursor.
+  rowId: string;
   displayIndex: number;
   selected: boolean;
+  // True iff this row holds the keyboard cursor (the grid's active
+  // descendant). Drives the visible focus ring — DOM focus stays on the
+  // container, so the ring is the only cue that this is the active row.
+  isCursor: boolean;
   // True when the row immediately below is also selected. When set, the
   // row drops its bottom divider so a multi-row selection reads as one
   // continuous tinted block instead of N separately-bordered rows.
@@ -53,8 +60,10 @@ function renderCell(value: string | number | undefined): string {
 
 function SortableTrackRowImpl({
   track,
+  rowId,
   displayIndex,
   selected,
+  isCursor,
   nextSelected,
   partOfActiveMultiDrag,
   ariaRowIndex,
@@ -141,40 +150,60 @@ function SortableTrackRowImpl({
     : "border-l-2 border-l-transparent";
   const dividerClass =
     selected && nextSelected ? "" : "border-b border-neutral-900";
+  // Visible cursor ring for the keyboard-focused (active-descendant)
+  // row. DOM focus lives on the grid container, so :focus styling never
+  // lands here — this inset ring is the only cue that arrow-key nav is
+  // sitting on this row. inset so it doesn't shift layout or get clipped
+  // by the virtualizer's absolutely-positioned wrapper.
+  const cursorClass = isCursor
+    ? "ring-2 ring-inset ring-matched"
+    : "";
 
   return (
     <div
       ref={setNodeRef}
+      id={rowId}
       style={style}
       onClick={handleClick}
       onKeyDown={handleKeyDown}
       role="row"
-      tabIndex={selected ? 0 : -1}
+      // Focus is managed at the grid container via aria-activedescendant
+      // (rows virtualize and can unmount), so individual rows are never
+      // tab stops.
+      tabIndex={-1}
       aria-rowindex={ariaRowIndex}
       aria-selected={selected}
-      className={`flex h-full items-center ${dividerClass} px-2 text-sm ${selectionClasses} ${
+      className={`flex h-full items-center ${dividerClass} px-2 text-sm ${selectionClasses} ${cursorClass} ${
         isMuted ? "text-neutral-500" : "text-neutral-100"
       } focus:outline-none`}
       data-track-id={track.id}
     >
-      <button
-        type="button"
-        {...attributes}
-        {...listeners}
-        className="w-6 cursor-grab text-neutral-500 hover:text-neutral-300"
-        aria-label="Drag to reorder (Space to lift, arrows to move, Space to drop)"
-        aria-keyshortcuts="Space ArrowUp ArrowDown"
-        title="Drag to reorder"
-      >
-        ⋮⋮
-      </button>
-      <div className="w-8 px-1">
+      {/* role="gridcell" on every cell so the role="grid" / role="row"
+          ancestors have valid grid children — AT can now report "row N,
+          column M" and navigate cells. The drag handle's own cell wraps
+          the button (a gridcell must be the row's child, the button the
+          gridcell's child). Layout is unchanged: the wrapper carries the
+          width class the button previously held. */}
+      <div role="gridcell" className="w-6">
+        <button
+          type="button"
+          {...attributes}
+          {...listeners}
+          className="cursor-grab text-neutral-500 hover:text-neutral-300"
+          aria-label="Drag to reorder (Space to lift, arrows to move, Space to drop)"
+          aria-keyshortcuts="Space ArrowUp ArrowDown"
+          title="Drag to reorder"
+        >
+          ⋮⋮
+        </button>
+      </div>
+      <div role="gridcell" className="w-8 px-1">
         <PlayButton track={track} />
       </div>
-      <div className="w-12 px-2 tabular-nums text-neutral-400">
+      <div role="gridcell" className="w-12 px-2 tabular-nums text-neutral-400">
         {displayIndex}
       </div>
-      <div className="flex w-8 items-center justify-center">
+      <div role="gridcell" className="flex w-8 items-center justify-center">
         {track.coverUrl ? (
           <img
             src={track.coverUrl}
@@ -186,8 +215,13 @@ function SortableTrackRowImpl({
           <div className="h-7 w-7 rounded bg-neutral-800/60" aria-hidden />
         )}
       </div>
-      <div className="w-48 truncate px-2">{renderCell(track.artist)}</div>
-      <div className="flex min-w-0 flex-1 items-baseline gap-2 px-2">
+      <div role="gridcell" className="w-48 truncate px-2">
+        {renderCell(track.artist)}
+      </div>
+      <div
+        role="gridcell"
+        className="flex min-w-0 flex-1 items-baseline gap-2 px-2"
+      >
         <span className="min-w-0 truncate">{renderCell(track.title)}</span>
         {track.durationMs !== undefined && (
           <span className="shrink-0 tabular-nums text-xs text-neutral-500">
@@ -195,25 +229,31 @@ function SortableTrackRowImpl({
           </span>
         )}
       </div>
-      <div className="w-16 px-2 tabular-nums">{renderCell(track.year)}</div>
-      <div className="w-16 px-2 tabular-nums text-neutral-400">
+      <div role="gridcell" className="w-16 px-2 tabular-nums">
+        {renderCell(track.year)}
+      </div>
+      <div role="gridcell" className="w-16 px-2 tabular-nums text-neutral-400">
         {renderCell(track.originalYear)}
       </div>
-      <div className="w-56 truncate px-2">{renderCell(track.album)}</div>
-      <div className="w-12 px-2 tabular-nums">{formatTrackNumber(track)}</div>
-      <div className="w-10 px-2">
+      <div role="gridcell" className="w-56 truncate px-2">
+        {renderCell(track.album)}
+      </div>
+      <div role="gridcell" className="w-12 px-2 tabular-nums">
+        {formatTrackNumber(track)}
+      </div>
+      <div role="gridcell" className="w-10 px-2">
         <EnrichmentGlyph
           status={track.enrichment.status}
           onPick={handlePickEnrichment}
         />
       </div>
-      <div className="w-10 px-2">
+      <div role="gridcell" className="w-10 px-2">
         <StatusGlyph
           status={track.spotify.status}
           onPick={handlePickSpotify}
         />
       </div>
-      <div className="w-8 px-1">
+      <div role="gridcell" className="w-8 px-1">
         <button
           type="button"
           onClick={handleReEnrich}
@@ -224,7 +264,7 @@ function SortableTrackRowImpl({
           ↻
         </button>
       </div>
-      <div className="w-8 px-1">
+      <div role="gridcell" className="w-8 px-1">
         <button
           type="button"
           onClick={handleRemove}

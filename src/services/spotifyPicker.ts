@@ -1,5 +1,6 @@
 import {
   type MBCacheKey,
+  cacheKeyForTrack,
   deleteCachedCandidates,
 } from "../db/musicbrainzCache";
 import { spotifyDisplayFieldsFromCandidate } from "../spotify/spotifyMappers";
@@ -55,12 +56,12 @@ export async function pickSpotifyCandidate(
   // on the follow-up enrichment masks the immediate symptom, but the
   // leak compounds across rows that get re-picked.
   const priorTrack = usePlaylistStore.getState().tracksById[trackId];
+  // Derive the key via the cache module's own helper rather than an
+  // inline literal, so the delete key can never drift from how entries
+  // are WRITTEN (cacheKeyForTrack) if the key shape or normalization
+  // ever changes. Otherwise a divergence would silently leak entries.
   const priorKey: MBCacheKey | null = priorTrack
-    ? {
-        title: priorTrack.title,
-        artist: priorTrack.artist,
-        album: priorTrack.album,
-      }
+    ? cacheKeyForTrack(priorTrack)
     : null;
   applyCandidateToTrack(trackId, candidate, candidates);
   if (priorKey) await clearMbCacheForKey(trackId, priorKey);

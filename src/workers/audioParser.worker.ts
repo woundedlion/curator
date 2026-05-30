@@ -23,6 +23,29 @@ function durationToMs(durationSec: number | undefined): number | undefined {
   return Math.round(durationSec * 1000);
 }
 
+// Malformed ID3/Vorbis tags routinely carry junk numbers (year "0",
+// track "-1", disc NaN, year 99999 from a corrupt frame). music-metadata
+// surfaces them verbatim, so we apply the same kind of light validation
+// filenameHeuristic uses for parsed positions: coerce anything that
+// isn't a sane, in-range value to undefined rather than letting it
+// poison the Track. Kept in sync with the equivalent guards in
+// metadata/audioParser.ts (the non-worker fallback consumer).
+function sanePosition(value: unknown): number | undefined {
+  // track/disc numbers: must be a finite positive integer.
+  if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
+  if (!Number.isInteger(value) || value <= 0) return undefined;
+  return value;
+}
+
+function saneYear(value: unknown): number | undefined {
+  // A plausible release year. The lower bound predates recorded music;
+  // the upper bound gives generous slack past "now" for mis-tagged or
+  // future-dated promo releases without admitting 5-digit garbage.
+  if (typeof value !== "number" || !Number.isInteger(value)) return undefined;
+  if (value < 1860 || value > 2200) return undefined;
+  return value;
+}
+
 async function parseOne(file: File): Promise<ParsedFields> {
   const result = await parseBlob(file, { duration: true });
   const { common, format } = result;
@@ -31,10 +54,10 @@ async function parseOne(file: File): Promise<ParsedFields> {
     artist: common.artist,
     albumartist: common.albumartist,
     album: common.album,
-    year: typeof common.year === "number" ? common.year : undefined,
-    trackNo: common.track?.no ?? undefined,
-    trackOf: common.track?.of ?? undefined,
-    discNo: common.disk?.no ?? undefined,
+    year: saneYear(common.year),
+    trackNo: sanePosition(common.track?.no),
+    trackOf: sanePosition(common.track?.of),
+    discNo: sanePosition(common.disk?.no),
     durationMs: durationToMs(format.duration),
   };
 }

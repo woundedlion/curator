@@ -366,6 +366,57 @@ describe("initializeSpotifyPlayer — SDK_INIT_TIMEOUT_MS bounds a hung init (C3
   });
 });
 
+// ─── 3b. loadSdk() ready-callback timeout (C3 / finding #5) ──────────
+
+describe("loadSdk — script loads but onSpotifyWebPlaybackSDKReady never fires", () => {
+  it("rejects after the timeout AND clears the cached promise so a later retry can re-attempt", async () => {
+    // The bug: loadSdk() only cleared sdkLoadPromise on script.onerror.
+    // If the <script> loaded but the SDK never called
+    // onSpotifyWebPlaybackSDKReady (CDN serves a non-initializing build,
+    // CSP blocks internal setup), the cached promise stayed pending
+    // forever and every retry reused the same dead promise. The fix adds
+    // a timeout that rejects + nulls the cache.
+    //
+    // window.Spotify must be ABSENT so loadSdk takes the script-append
+    // path (and never resolves, since we don't fire the ready callback).
+    clearSpotifyGlobal();
+    vi.useFakeTimers();
+    // Stub appendChild so the <script> is NEVER actually loaded — this
+    // suppresses happy-dom's synchronous onerror (which would otherwise
+    // exercise the script.onerror path, not the timeout). With no
+    // onerror and no ready callback, the ONLY way loadSdk can settle is
+    // the new timeout — exactly the path under test.
+    const appendSpy = vi
+      .spyOn(document.head, "appendChild")
+      .mockImplementation(((node: Node) => node) as typeof document.head.appendChild);
+
+    const p1 = initializeSpotifyPlayer("client-id");
+    await vi.advanceTimersByTimeAsync(0);
+    // 9.999s in — still hung, no resolution.
+    await vi.advanceTimersByTimeAsync(9_999);
+    // Cross the 10s boundary — loadSdk's timeout fires, rejects, and
+    // clears the cached promise; init surfaces ok:false (NOT a hang).
+    await vi.advanceTimersByTimeAsync(2);
+    const r1 = await p1;
+    expect(r1.ok).toBe(false);
+    if (!r1.ok) expect(r1.message).toMatch(/did not initialize/);
+
+    appendSpy.mockRestore();
+
+    // A retry must re-attempt: the cached sdkLoadPromise was cleared, so
+    // re-installing Spotify globally lets the next init resolve loadSdk
+    // immediately (window.Spotify present) and succeed — proving the
+    // dead promise wasn't reused.
+    installSpotifyGlobal();
+    const p2 = initializeSpotifyPlayer("client-id");
+    await vi.advanceTimersByTimeAsync(0);
+    lastPlayer!.fire("ready", { device_id: "after-retry" });
+    const r2 = await p2;
+    expect(r2.ok).toBe(true);
+    if (r2.ok) expect(r2.deviceId).toBe("after-retry");
+  });
+});
+
 // ─── 4. Post-init listener routing (C4) ──────────────────────────────
 
 describe("initializeSpotifyPlayer — routes post-init events through injected handlers (C4)", () => {

@@ -11,8 +11,14 @@
 export class ConcurrencyLimiter {
   private active = 0;
   private readonly waiters: (() => void)[] = [];
+  private readonly maxInFlight: number;
 
-  constructor(private readonly maxInFlight: number) {}
+  constructor(maxInFlight: number) {
+    // Clamp to >= 1. A 0 or negative cap would make `active < maxInFlight`
+    // never true, so every acquire() would queue forever — a silent
+    // deadlock. Treat a bad cap as "serialize" rather than hang.
+    this.maxInFlight = Math.max(1, maxInFlight);
+  }
 
   async run<T>(task: () => Promise<T>): Promise<T> {
     await this.acquire();

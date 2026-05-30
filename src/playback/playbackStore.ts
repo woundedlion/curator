@@ -16,6 +16,7 @@ import { usePlaylistStore } from "../store/playlistStore";
 import { useSettingsStore } from "../store/settingsStore";
 import { useUiStore } from "../store/uiStore";
 import {
+  destroySpotifyPlayer,
   initializeSpotifyPlayer,
   type SpotifyPlayerHandlers,
 } from "../spotify/spotifyPlayer";
@@ -28,6 +29,7 @@ import {
 } from "./player";
 import { createPlaybackSource, type PlaybackSource } from "./playbackSource";
 import { SpotifySdkBackend } from "./spotifySdkBackend";
+import { getSpotifyUri } from "../util/trackAccessors";
 
 export function candidatePlaybackId(uri: string): string {
   return `candidate:${uri}`;
@@ -57,6 +59,15 @@ type PlaybackState = {
 
   // ─── Actions ──────────────────────────────────────────────────────
   initialize: () => void;
+  /**
+   * Tear down all playback resources on app unmount: dispose the Player
+   * (stops backends, removes the <audio> element's DOM listeners, clears
+   * subscribers), disconnect the Spotify SDK device, and reset the store
+   * to its initial snapshot. Symmetric with initialize() — after
+   * teardown a fresh initialize() rebuilds everything cleanly. The
+   * bootstrap hook calls this on unmount.
+   */
+  teardownPlayback: () => void;
   toggle: (trackId: string) => void;
   playCandidate: (candidate: SpotifyCandidate) => void;
   stop: () => void;
@@ -252,10 +263,54 @@ export const usePlaybackStore = create<PlaybackState>((set, get) => {
       storeRef.player = p;
     },
 
+    teardownPlayback() {
+      const player = storeRef.player;
+      // Drop the module reference FIRST so any late action (toggle/seek)
+      // racing with teardown no-ops instead of touching a disposing
+      // Player. dispose() drains its own queue and removes listeners.
+      storeRef.player = null;
+      if (player) void player.dispose();
+      // The SDK device/WebSocket is owned by spotifyPlayer.ts, not the
+      // Player — tear it down here so a re-initialize() can build a fresh
+      // device instead of reusing a half-dead cached one.
+      void destroySpotifyPlayer();
+      // Reset the snapshot mirror so the UI doesn't paint a stale
+      // now-playing bar after unmount, and so re-init starts clean.
+      set({
+        currentTrackId: null,
+        currentSource: { kind: "none" },
+        currentDisplay: null,
+        isPlaying: false,
+        positionMs: 0,
+        durationMs: 0,
+        sdk: { status: "off" },
+      });
+    },
+
     toggle(trackId) {
       if (!storeRef.player) return;
       const target = buildTrackTarget(trackId);
-      if (!target) return;
+      if (!target) {
+        // buildTrackTarget returned null because the only in-app source
+        // would have been SDK full-track playback, but the SDK isn't
+        // ready (status not "ready" → createPlaybackSource skipped the
+        // spotify-sdk branch and fell to "none"). playCandidate already
+        // toasts in the equivalent situation; mirror that here so a play
+        // click on an SDK-only track before SDK init gives the user
+        // feedback instead of silently doing nothing. We only toast when
+        // a Spotify URI actually exists — a genuinely sourceless track
+        // (missing file, no URI) shouldn't surface a misleading message.
+        const track = usePlaylistStore.getState().tracksById[trackId];
+        if (track && !track.localFile && getSpotifyUri(track.spotify)) {
+          useUiStore.getState().pushToast({
+            kind: "info",
+            message: shouldTryEnableSdk()
+              ? "Connecting Spotify full-track playback — try again in a moment"
+              : "Enable Full-track playback in Settings to play this track (requires Spotify Premium)",
+          });
+        }
+        return;
+      }
       void storeRef.player.play(target);
     },
 

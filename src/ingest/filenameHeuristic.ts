@@ -12,10 +12,15 @@ function stripExtension(fileName: string): string {
   return dot === -1 ? fileName : fileName.slice(0, dot);
 }
 
-// A "track number" is at most 3 digits AND at most this value. 4-digit
-// numbers are years (1999, 2017) and never track positions. 200+ would
-// be unusual enough that we'd rather under-classify than treat a year
-// embedded in a title as a track number.
+// A "track number" is at most 3 digits (the segment regex below) AND at
+// most this value. The *value* guard — not the digit count — is what
+// rejects years: 4-digit numbers like 1999/2017 fail the regex anyway,
+// but the real protection is `<= 199`, which also rejects 3-digit values
+// (200+) that are too large to be plausible album positions. A 3-digit
+// number <= 199 (e.g. "007", "150") IS accepted as a track number.
+// We'd rather under-classify a large number as a leading title than
+// treat a year or catalog number embedded in a filename as a track
+// position.
 const MAX_TRACK_NUMBER = 199;
 
 function isValidTrackNumber(value: number): boolean {

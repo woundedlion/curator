@@ -41,7 +41,10 @@ function compareDefined(a: Comparable, b: Comparable, dir: SortDirection): numbe
   if (typeof a === "number" && typeof b === "number") {
     return dir === "asc" ? a - b : b - a;
   }
-  const cmp = stringCollator.compare(String(a ?? ""), String(b ?? ""));
+  // `a`/`b` are guaranteed non-missing here — sortTrackIds only calls
+  // compareDefined after both pass !isMissing — so the prior `?? ""`
+  // defensive fallback was unreachable and is dropped.
+  const cmp = stringCollator.compare(String(a), String(b));
   return dir === "asc" ? cmp : -cmp;
 }
 

@@ -105,7 +105,9 @@ A browser-based playlist builder that ingests local music files or song lists, e
 
 **Audio-file parsing** (§1b):
 - Filter by extension first, then run `music-metadata` on each file.
-- Extract: `artist`, `albumartist`, `album`, `title`, `year`, `track.no`, `track.of`, `disk.no`, `duration`, `genre`, `picture` (first cover).
+- Extract: `artist`, `albumartist`, `album`, `title`, `year`, `track.no`, `track.of`, `disk.no`, `duration`. These are the identity + ordering fields the table and the matchers consume.
+- **Cover art is NOT read from the embedded `picture` frame** in v1. Art is sourced from the Cover Art Archive (via the matched MB release) or from Spotify album images — both are URLs with no in-process blob lifecycle to manage. Reading the embedded picture would mean transferring image bytes out of the worker, minting an object URL per track, and revoking it on every removal/replace/clear — a memory-management surface we deliberately defer. (Embedded-art extraction is a reasonable v2 enhancement, e.g. as a fallback when CAA 404s.)
+- **`genre` is not extracted** — there is no genre column or genre-based behavior in v1, so the `Track` model carries no genre field.
 - Keep a reference to the original `File` handle (needed for previewing audio if we add that later — out of scope for v1 but free to retain).
 - Run extraction in a Web Worker pool (`navigator.hardwareConcurrency` workers, clamped 2–8) so a 2,000-file drop doesn't freeze the UI. The pool exposes a `shutdownAudioParserPool()` hook wired into `useAppBootstrap`'s cleanup; pending and queued parses are rejected with a clear error so SPA-style remounts don't leak worker instances. (Practically a dev-only concern under StrictMode double-mount.)
 

@@ -21,6 +21,7 @@ import { PlaylistTableHeader } from "./PlaylistTableHeader";
 import { RubberbandOverlay } from "./RubberbandOverlay";
 import type { RowClickModifiers } from "./SortableTrackRow";
 import { SortableTrackRow } from "./SortableTrackRow";
+import { rowDomId } from "./playlistRowId";
 import { usePlaylistDragAndDrop } from "./usePlaylistDragAndDrop";
 import { useRubberbandSelection } from "./useRubberbandSelection";
 import { useTableKeyboardNav } from "./useTableKeyboardNav";
@@ -54,6 +55,7 @@ export function PlaylistTable({
     removeTracks,
     allTrackIds,
     selectedTrackIds,
+    selectionAnchorId,
     selectOnly,
     toggleSelection,
     extendSelectionTo,
@@ -66,6 +68,10 @@ export function PlaylistTable({
       removeTracks: state.removeTracks,
       allTrackIds: state.playlist.trackIds,
       selectedTrackIds: state.selectedTrackIds,
+      // The keyboard cursor: the last id arrow/Home/End/Page nav landed
+      // on (selectOnly + setSelection both write it). Drives the grid's
+      // aria-activedescendant and the visible cursor ring below.
+      selectionAnchorId: state.selectionAnchorId,
       selectOnly: state.selectOnly,
       toggleSelection: state.toggleSelection,
       extendSelectionTo: state.extendSelectionTo,
@@ -232,12 +238,32 @@ export function PlaylistTable({
 
   const selectedCount = selectedTrackIds.size;
 
+  // The cursor row's DOM id, fed to aria-activedescendant below. Only
+  // set when the cursor points at a still-visible row — a stale anchor
+  // (e.g. the cursor row was filtered out by hide-unmatched) would
+  // otherwise dangle activedescendant at an id no row renders. Empty
+  // string clears the attribute (React omits it).
+  const activeDescendantId =
+    selectionAnchorId !== null && visibleTrackIds.includes(selectionAnchorId)
+      ? rowDomId(selectionAnchorId)
+      : undefined;
+
   return (
     <div
-      className="flex min-h-0 flex-1 select-none flex-col"
+      className="flex min-h-0 flex-1 select-none flex-col focus:outline-none"
       role="grid"
       aria-label="Playlist tracks"
       aria-rowcount={visibleTrackIds.length + 1}
+      // Focusable grid container with managed focus: rather than moving
+      // DOM focus onto individual (virtualized, unmountable) rows, the
+      // container keeps focus and points aria-activedescendant at the
+      // cursor row. This is the ARIA-recommended pattern for virtualized
+      // grids — keyboard nav (useTableKeyboardNav) updates the cursor in
+      // the store, the store update re-renders this with a new
+      // activedescendant, and the cursor row paints its own focus ring
+      // (see SortableTrackRow's `cursor` styling).
+      tabIndex={0}
+      aria-activedescendant={activeDescendantId}
     >
       <PlaylistTableHeader
         sort={sort}
@@ -273,6 +299,7 @@ export function PlaylistTable({
                 const track = orderedTracks[virtualRow.index];
                 if (!track) return null;
                 const isSelected = selectedTrackIds.has(track.id);
+                const isCursor = track.id === selectionAnchorId;
                 const nextTrack = orderedTracks[virtualRow.index + 1];
                 const nextSelected = nextTrack
                   ? selectedTrackIds.has(nextTrack.id)
@@ -291,9 +318,11 @@ export function PlaylistTable({
                   >
                     <SortableTrackRow
                       track={track}
+                      rowId={rowDomId(track.id)}
                       displayIndex={virtualRow.index + 1}
                       ariaRowIndex={virtualRow.index + 2}
                       selected={isSelected}
+                      isCursor={isCursor}
                       nextSelected={nextSelected}
                       partOfActiveMultiDrag={multiDragActive && isSelected}
                       onRowClick={handleRowClick}

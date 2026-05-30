@@ -36,7 +36,12 @@ type UiStore = {
 };
 
 let nextToastId = 1;
-const toastTimers = new Map<number, { fade: number; remove: number }>();
+// Store the raw timer handles so the cancel paths can clearTimeout them
+// without an `as unknown as number` double-cast — setTimeout's return type
+// differs between the DOM (number) and Node (Timeout) lib, so we let
+// ReturnType infer whichever this build targets.
+type TimerHandle = ReturnType<typeof setTimeout>;
+const toastTimers = new Map<number, { fade: TimerHandle; remove: TimerHandle }>();
 
 function clearTimersFor(id: number): void {
   const timers = toastTimers.get(id);
@@ -89,10 +94,7 @@ export const useUiStore = create<UiStore>((set, get) => {
       if (toast.kind === "error") return;
       const fade = setTimeout(() => beginFadeFor(id), TOAST_VISIBLE_MS);
       const remove = setTimeout(() => removeToastFor(id), TOAST_TOTAL_MS);
-      toastTimers.set(id, {
-        fade: fade as unknown as number,
-        remove: remove as unknown as number,
-      });
+      toastTimers.set(id, { fade, remove });
     },
 
     dismissToast(id) {

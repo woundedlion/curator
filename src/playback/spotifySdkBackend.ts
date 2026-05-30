@@ -53,6 +53,13 @@ export class SpotifySdkBackend implements Backend {
 
   async load(source: PlaybackSource): Promise<boolean> {
     if (source.kind !== "spotify-sdk") return false;
+    // Reset the phase dedupe cache on every load, not just stop(). The
+    // Player skips stop() on a same-backend SDK→SDK switch, so without
+    // this a new track that happens to start in the same paused/playing
+    // phase as the previous one ended would have its first phase event
+    // suppressed — leaving the UI showing the prior track's phase until
+    // the next real transition.
+    this.lastEmittedPaused = null;
     try {
       await playSpotifyTrackOnDevice(source.uri, this.deviceId, this.clientId);
       this.attachSdkListener();
@@ -102,6 +109,20 @@ export class SpotifySdkBackend implements Backend {
     } catch (error) {
       console.warn("Spotify SDK pause failed", error);
     }
+  }
+
+  /**
+   * Teardown hook called by Player.dispose(). Detaches the SDK state
+   * listener and halts the poller so no timer or listener outlives the
+   * Player. We deliberately do NOT disconnect the underlying SDK player
+   * here — that singleton is owned by spotifyPlayer.ts and torn down via
+   * destroySpotifyPlayer() (the store's teardown calls both). Idempotent.
+   */
+  dispose(): void {
+    this.detachSdkListener();
+    this.stopPoller();
+    this.lastEmittedPaused = null;
+    this.observer = null;
   }
 
   async seek(positionMs: number): Promise<void> {

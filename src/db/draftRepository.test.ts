@@ -638,6 +638,64 @@ describe("loadDraft", () => {
     expect(result.playlist).toBeNull();
     expect(result.tracks).toEqual([]);
   });
+
+  it("issues BOTH reads synchronously before either resolves — no autocommit gap", async () => {
+    // Regression: loadDraft used to `await get()` then `await getAll()`
+    // sequentially. The first await lets the readonly txn's request queue
+    // drain and auto-commit, so the getAll lands on an inactive txn
+    // (TransactionInactiveError). The fix fires both requests
+    // synchronously then awaits them as a batch. We assert that by the
+    // time the FIRST read settles, the SECOND has already been queued onto
+    // the same transaction.
+    const pl = makePlaylist({ id: "p1", trackIds: ["a"] });
+    await saveDraft(pl, [makeTrack({ id: "a" })]);
+
+    // Wrap the fake DB so we can observe how many read ops were queued on
+    // the load txn at the moment the first read resolves. If the source
+    // awaited sequentially, only ONE read would be queued when the first
+    // settles; the batched version queues BOTH first.
+    const realDb = await vi.mocked(getDatabase).getMockImplementation()!();
+    let readsQueuedAtFirstResolve = 0;
+    const wrappedDb = {
+      transaction(stores: string[], mode: string) {
+        const tx = (realDb as never as FakeDb).transaction(stores, mode);
+        return {
+          objectStore(name: string) {
+            const s = tx.objectStore(name);
+            const recordOnSettle = <T>(p: Promise<T>): Promise<T> => {
+              void p.then(() => {
+                const txn =
+                  dbState.transactions[dbState.transactions.length - 1]!;
+                const reads = txn.requests.filter(
+                  (rq) => rq.op === "get" || rq.op === "getAll",
+                ).length;
+                readsQueuedAtFirstResolve = Math.max(
+                  readsQueuedAtFirstResolve,
+                  reads,
+                );
+              });
+              return p;
+            };
+            return {
+              ...s,
+              get: (key: string) => recordOnSettle(s.get(key)),
+              getAll: () => recordOnSettle(s.getAll()),
+            };
+          },
+          get done(): Promise<void> {
+            return tx.done;
+          },
+        };
+      },
+    };
+    vi.mocked(getDatabase).mockResolvedValue(wrappedDb as never);
+
+    const result = await loadDraft("p1");
+    expect(result.playlist?.id).toBe("p1");
+    // Both the playlist get AND the tracks getAll were queued before the
+    // first one settled.
+    expect(readsQueuedAtFirstResolve).toBe(2);
+  });
 });
 
 describe("clearDraft", () => {

@@ -8,6 +8,7 @@ import {
 import { isTextFile } from "../ingest/fileExtension";
 import { walkDirectoryHandle } from "../ingest/folderWalker";
 import { ingestFiles } from "../ingest/ingestPipeline";
+import { readBlobAsText } from "../util/textNormalize";
 import { SpotifyForbiddenError } from "../spotify/apiClient";
 import { fetchPlaylistTracks } from "../spotify/playlists";
 import { usePlaylistStore } from "../store/playlistStore";
@@ -97,7 +98,14 @@ type Classification =
 async function classifyOne(file: File): Promise<Classification> {
   if (!isTextFile(file.name)) return { kind: "other", file };
   try {
-    const env = tryParseCuratorExport(await file.text());
+    // Read via the shared UTF-8-then-Windows-1252 fallback decoder used
+    // by the real text-ingest path (parseTextFile). The browser's
+    // `File.text()` is hard-coded to UTF-8 and replaces invalid bytes
+    // with U+FFFD, so a curator export saved as "ANSI" would have its
+    // accented characters mangled before tryParseCuratorExport ever saw
+    // them. Routing both detection and ingest through the same decoder
+    // keeps encoding handling consistent.
+    const env = tryParseCuratorExport(await readBlobAsText(file));
     return env ? { kind: "envelope", env } : { kind: "other", file };
   } catch {
     return { kind: "other", file };
@@ -146,15 +154,28 @@ async function importEnvelope(env: CuratorExportEnvelope): Promise<void> {
       message: `Imported ${stats.total} tracks (${stats.spotifyMatched} Spotify-matched, ${stats.mbMatched} MB-enriched)`,
     });
   });
-  // Resolved rows (matched status) are skipped by both runners; this
-  // pass picks up only the unresolved tracks if any are present.
-  queuePostIngestRunners();
+  // NOTE: queueing the post-ingest runner sweep is the CALLER's job.
+  // Dropping N export files would otherwise queue N redundant full
+  // match+enrich sweeps; ingestDroppedFiles queues a single sweep after
+  // the whole batch is imported instead. Resolved rows (matched status)
+  // are skipped by both runners, so the one sweep only touches whatever
+  // unresolved tracks the batch contributed.
 }
 
 export async function ingestDroppedFiles(files: File[]): Promise<void> {
   const { envelopes, others } = await partitionCuratorExports(files);
   for (const env of envelopes) await importEnvelope(env);
-  if (others.length > 0) await addAndEnrich(others);
+  // Audio/text "others" run through addAndEnrich, which queues its own
+  // sweep. Only queue an extra sweep for the envelope batch when there
+  // are no others to piggy-back on — otherwise the addAndEnrich sweep
+  // (serialized after these imports complete) already covers the
+  // unresolved rows the envelopes contributed, and a second queued sweep
+  // would be redundant.
+  if (others.length > 0) {
+    await addAndEnrich(others);
+  } else if (envelopes.length > 0) {
+    queuePostIngestRunners();
+  }
 }
 
 export async function importPlaylistById(playlistId: string): Promise<void> {

@@ -1063,3 +1063,65 @@ describe("probe-slot release on cancellation", () => {
     expect(cancelSpotifyRequestsByTag("nonexistent")).toBe(0);
   });
 });
+
+// replaceAndPushTracks issues a PUT /items, which is a clear-and-replace
+// on Spotify's side: PUT {uris: []} WIPES the destination playlist. The
+// destructive function must defend itself against an empty list rather
+// than relying solely on the caller's guard.
+describe("replaceAndPushTracks empty-uris guard (destructive PUT defense)", () => {
+  it("throws EmptyReplaceUrisError and issues NO request when uris is empty", async () => {
+    // Fresh module graph so playlists.ts and apiClient.ts share a clean
+    // breaker/queue (earlier tests in this file trip the breaker).
+    vi.resetModules();
+    localStorage.clear();
+    const { replaceAndPushTracks, EmptyReplaceUrisError } = await import(
+      "./playlists"
+    );
+    const realFetch = globalThis.fetch;
+    const fetchSpy = vi.fn(async () => ok());
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+    try {
+      const rej = captureRejection(
+        replaceAndPushTracks("destination-playlist", [], "client-id"),
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      expect(await rej).toBeInstanceOf(EmptyReplaceUrisError);
+      // The critical assertion: no clearing PUT (no fetch at all) went out.
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it("still issues the replace PUT when uris is non-empty (guard doesn't over-trigger)", async () => {
+    // Fresh module graph so the shared breaker/queue start clean.
+    vi.resetModules();
+    localStorage.clear();
+    const { replaceAndPushTracks } = await import("./playlists");
+    const realFetch = globalThis.fetch;
+    const calls: { method: string; body: unknown }[] = [];
+    const fetchSpy = vi.fn(async (_url: string, init: RequestInit) => {
+      calls.push({
+        method: init.method ?? "GET",
+        body: init.body ? JSON.parse(init.body as string) : undefined,
+      });
+      return ok();
+    });
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+    try {
+      const p = replaceAndPushTracks(
+        "destination-playlist",
+        ["spotify:track:a"],
+        "client-id",
+      );
+      await vi.advanceTimersByTimeAsync(5 * MIN_SPACING_MS);
+      await p;
+      // First (and only, for a single sub-chunk) outbound call is the PUT
+      // carrying the non-empty uris.
+      expect(calls[0]?.method).toBe("PUT");
+      expect(calls[0]?.body).toEqual({ uris: ["spotify:track:a"] });
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+});

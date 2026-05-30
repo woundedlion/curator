@@ -54,6 +54,17 @@ export async function walkDataTransferItems(
   items: DataTransferItemList,
   options: { recursive: boolean },
 ): Promise<File[]> {
+  // CRITICAL: snapshot every item's entry SYNCHRONOUSLY, before the
+  // first `await`. A DataTransferItemList (and the DataTransferItem
+  // objects it holds) is only valid during the synchronous portion of
+  // the drop event handler — the browser invalidates it the moment the
+  // event task yields. `webkitGetAsEntry()` must therefore be called for
+  // all items here, while we still hold the live list; the resulting
+  // FileSystemEntry objects stay valid across the async walk. This
+  // function is `async` only for its return type — there is no `await`
+  // between entering it and finishing this loop, so the snapshot is
+  // guaranteed to complete before any task boundary. Dropped folders
+  // were being lost when this was deferred past an await.
   const roots: FsEntry[] = [];
   for (let i = 0; i < items.length; i++) {
     const entry = items[i]?.webkitGetAsEntry?.() as FsEntry | null;
@@ -83,12 +94,6 @@ async function walkEntries(
   let depth = 0;
 
   while (level.length > 0) {
-    if (depth > MAX_WALK_DEPTH) {
-      console.warn(
-        `folderWalker: truncating at depth ${MAX_WALK_DEPTH}; ${level.length} entries skipped`,
-      );
-      break;
-    }
     const fileEntries: FileEntry[] = [];
     const dirEntries: DirectoryEntry[] = [];
     for (const entry of level) {
@@ -101,6 +106,16 @@ async function walkEntries(
       }
     }
 
+    // Files at the current level are ALWAYS read — including at the
+    // truncation boundary. This matches the handle walker
+    // (`walkHandleInto`), which reads a directory's own files at its own
+    // depth and only gates *descent* into subdirectories by depth+1.
+    // Reading files first, then gating descent, makes both walkers
+    // truncate at the same effective directory depth for the same
+    // MAX_WALK_DEPTH (a file inside a directory at depth `d` is kept iff
+    // `d <= MAX_WALK_DEPTH`). The previous "break before reading the
+    // whole level" gate dropped files one level shallower than the
+    // handle walker did.
     const fileResults = await Promise.allSettled(fileEntries.map(readFile));
     for (let i = 0; i < fileResults.length; i++) {
       const result = fileResults[i]!;
@@ -113,6 +128,21 @@ async function walkEntries(
           result.reason,
         );
       }
+    }
+
+    // Descent gate: once we're past the depth ceiling, read this level's
+    // files (above) but do not enumerate any deeper directories. Using
+    // the SAME `depth > MAX_WALK_DEPTH` comparison the handle walker uses
+    // — combined with reading files before the gate — makes both walkers
+    // keep a file nested exactly `MAX_WALK_DEPTH` directory-levels below
+    // the root and truncate the level below that.
+    if (depth > MAX_WALK_DEPTH) {
+      if (dirEntries.length > 0) {
+        console.warn(
+          `folderWalker: truncating at depth ${MAX_WALK_DEPTH}; ${dirEntries.length} director${dirEntries.length === 1 ? "y" : "ies"} skipped`,
+        );
+      }
+      break;
     }
 
     const childResults = await Promise.allSettled(

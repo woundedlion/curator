@@ -58,7 +58,12 @@ type SpotifyStore = {
 // Inflight dedup for loadPlaylists. Concurrent calls (e.g. bootstrap +
 // user opens the panel) would each set loadingPlaylists/playlists in an
 // unpredictable order. Share the promise so all callers observe one run.
-let loadPlaylistsInflight: Promise<void> | null = null;
+// Keyed on clientId: a concurrent caller with a DIFFERENT clientId must
+// NOT ride the first call's result — that would surface the wrong
+// account's playlists. Only same-clientId callers dedup.
+let loadPlaylistsInflight:
+  | { clientId: string; promise: Promise<void> }
+  | null = null;
 
 export const useSpotifyStore = create<SpotifyStore>((set) => ({
   user: null,
@@ -102,11 +107,21 @@ export const useSpotifyStore = create<SpotifyStore>((set) => ({
   },
 
   async loadPlaylists(clientId) {
-    if (loadPlaylistsInflight) return loadPlaylistsInflight;
-    loadPlaylistsInflight = doLoadPlaylists(clientId, set).finally(() => {
-      loadPlaylistsInflight = null;
+    // Dedup only when the in-flight run is for the SAME clientId. A call
+    // with a different clientId starts its own run so it can't be handed
+    // the wrong account's playlists.
+    if (loadPlaylistsInflight && loadPlaylistsInflight.clientId === clientId) {
+      return loadPlaylistsInflight.promise;
+    }
+    const promise = doLoadPlaylists(clientId, set).finally(() => {
+      // Only clear the slot if it's still ours — a later different-client
+      // call may have replaced it while we were running.
+      if (loadPlaylistsInflight?.promise === promise) {
+        loadPlaylistsInflight = null;
+      }
     });
-    return loadPlaylistsInflight;
+    loadPlaylistsInflight = { clientId, promise };
+    return promise;
   },
 
   disconnect() {

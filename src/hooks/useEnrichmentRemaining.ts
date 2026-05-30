@@ -1,13 +1,16 @@
 import { usePlaylistStore } from "../store/playlistStore";
-import type { Track } from "../types";
+
+// Derive the selector's parameter from the live store rather than a
+// hand-written structural slice: ReturnType<typeof getState> is the
+// real PlaylistStore shape, so a rename of `playlist.trackIds`,
+// `tracksById`, or any field this selector reads becomes a compile
+// error here instead of silently drifting.
+type PlaylistState = ReturnType<typeof usePlaylistStore.getState>;
 
 // Returns the count of tracks that the MB enrichment runner would treat
 // as eligible — the toolbar surfaces this as "Enriching · N remaining"
 // during cold imports.
-function countRemaining(state: {
-  playlist: { trackIds: string[] };
-  tracksById: Record<string, Track>;
-}): number {
+function countRemaining(state: PlaylistState): number {
   let count = 0;
   for (const id of state.playlist.trackIds) {
     const track = state.tracksById[id];

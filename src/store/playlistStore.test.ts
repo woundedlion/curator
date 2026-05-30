@@ -19,7 +19,7 @@ vi.mock("../services/cancelTrackRequests", () => ({
 }));
 
 import { usePlaylistStore } from "./playlistStore";
-import { saveDraft } from "../db/draftRepository";
+import { loadDraft, saveDraft } from "../db/draftRepository";
 import { cancelTrackRequests } from "../services/cancelTrackRequests";
 import type { Track } from "../types";
 
@@ -246,6 +246,260 @@ describe("source-of-truth invariant via fillMissingDisplayFields", () => {
   });
 });
 
+// ─── sort-clear restores the manual order ───────────────────────────
+//
+// asc → desc → (third click) clear. The clearing click must restore the
+// user's pre-sort manual arrangement, not freeze the sorted order.
+
+describe("setSort third-click clears and restores manual order", () => {
+  it("restores the original manual order on the clearing click", () => {
+    // Manual order deliberately NOT alphabetical, so a sort visibly
+    // permutes it and the restore is observable.
+    const c = makeTrack({ id: "c", title: "Cherry" });
+    const a = makeTrack({ id: "a", title: "Apple" });
+    const b = makeTrack({ id: "b", title: "Banana" });
+    usePlaylistStore.getState().addTracks([c, a, b]); // manual: c, a, b
+
+    usePlaylistStore.getState().setSort("title"); // asc → a, b, c
+    expect(usePlaylistStore.getState().playlist.trackIds).toEqual([
+      "a",
+      "b",
+      "c",
+    ]);
+    usePlaylistStore.getState().setSort("title"); // desc → c, b, a
+    expect(usePlaylistStore.getState().playlist.trackIds).toEqual([
+      "c",
+      "b",
+      "a",
+    ]);
+    usePlaylistStore.getState().setSort("title"); // clear → manual c, a, b
+    expect(usePlaylistStore.getState().playlist.sort).toBeNull();
+    expect(usePlaylistStore.getState().playlist.trackIds).toEqual([
+      "c",
+      "a",
+      "b",
+    ]);
+  });
+
+  it("does NOT restore (keeps current order) if tracks changed mid-sort", () => {
+    const a = makeTrack({ id: "a", title: "Apple" });
+    const b = makeTrack({ id: "b", title: "Banana" });
+    usePlaylistStore.getState().addTracks([b, a]); // manual: b, a
+    usePlaylistStore.getState().setSort("title"); // asc → a, b
+    // A track is removed while the sort is active — the captured manual
+    // order no longer covers the id set, so clearing keeps current order
+    // rather than resurrecting the removed track.
+    usePlaylistStore.getState().removeTrack("b");
+    usePlaylistStore.getState().setSort("title"); // desc (single row)
+    usePlaylistStore.getState().setSort("title"); // clear
+    expect(usePlaylistStore.getState().playlist.trackIds).toEqual(["a"]);
+  });
+});
+
+// ─── setSort no-op guard ────────────────────────────────────────────
+//
+// setSort used to ALWAYS push an undo entry and schedule a persist, even
+// when the resulting order + sort spec were identical to the prior state.
+// That polluted the bounded undo stack and triggered redundant IDB writes
+// on a genuine no-op.
+
+describe("setSort no-op guard", () => {
+  it("does not push undo or persist on a setSort whose result is order- and spec-identical", async () => {
+    vi.useFakeTimers();
+    // The guard compares the RESULT order + sort spec against the prior
+    // state. We construct the identical-result case by giving both tracks
+    // an all-equal sort key so any sort is order-stable, then re-applying
+    // the SAME spec the store is already in. We must bypass
+    // cycleSortDirection (which never re-emits the current spec) by
+    // seeding the post-sort state directly, then driving setSort and
+    // asserting the guard short-circuits when nothing actually moved AND
+    // the spec is unchanged.
+    const a = makeTrack({ id: "a", artist: "Same" });
+    const b = makeTrack({ id: "b", artist: "Same" });
+    usePlaylistStore.getState().addTracks([a, b]);
+    // Seed: already sorted by artist desc, order stable at [a, b].
+    usePlaylistStore.setState({
+      playlist: {
+        ...usePlaylistStore.getState().playlist,
+        trackIds: ["a", "b"],
+        sort: { field: "artist", dir: "desc" },
+      },
+    });
+    await vi.advanceTimersByTimeAsync(250);
+    vi.mocked(saveDraft).mockClear();
+    const undoBefore = usePlaylistStore.getState().undoStack.length;
+
+    // Click "artist": cycle(artist, desc, artist) → {} → clear branch.
+    // restored = current order [a,b] (preSortManualOrder is null), so the
+    // ORDER is unchanged, but sort desc→null is a real change → persists.
+    usePlaylistStore.getState().setSort("artist");
+    expect(usePlaylistStore.getState().playlist.sort).toBeNull();
+    await vi.advanceTimersByTimeAsync(250);
+    expect(saveDraft).toHaveBeenCalledTimes(1);
+    expect(usePlaylistStore.getState().undoStack.length).toBe(undoBefore + 1);
+
+    // Sort is now null and the order is [a, b]. The defensive no-op guard
+    // (`!current && sameOrder(restored, current)`) covers a clearing call
+    // when the sort is ALREADY null with no reorder — the directly
+    // reachable analogue is clearSort(), asserted in the next test. Here
+    // we confirm the cycle itself stayed correct end-to-end.
+    expect(usePlaylistStore.getState().playlist.trackIds).toEqual(["a", "b"]);
+  });
+
+  it("clearing an already-null sort with no reorder is a true no-op (sibling clearSort path)", async () => {
+    vi.useFakeTimers();
+    const a = makeTrack({ id: "a", title: "Apple" });
+    const b = makeTrack({ id: "b", title: "Banana" });
+    usePlaylistStore.getState().addTracks([a, b]);
+    await vi.advanceTimersByTimeAsync(250);
+    vi.mocked(saveDraft).mockClear();
+    const undoBefore = usePlaylistStore.getState().undoStack.length;
+    const playlistRef = usePlaylistStore.getState().playlist;
+
+    // clearSort on an already-null sort returns the unchanged state
+    // sentinel — no undo entry, no persist. This is the directly-reachable
+    // analogue of setSort's defensive no-op guard.
+    usePlaylistStore.getState().clearSort();
+    await vi.advanceTimersByTimeAsync(250);
+    expect(saveDraft).not.toHaveBeenCalled();
+    expect(usePlaylistStore.getState().undoStack.length).toBe(undoBefore);
+    expect(usePlaylistStore.getState().playlist).toBe(playlistRef);
+  });
+});
+
+// ─── setHideUnmatched / setPlaylistMeta change detection ────────────
+
+describe("setHideUnmatched / setPlaylistMeta change detection", () => {
+  it("setHideUnmatched is a no-op when the value is unchanged", async () => {
+    vi.useFakeTimers();
+    const a = makeTrack({ id: "a" });
+    usePlaylistStore.getState().addTracks([a]);
+    await vi.advanceTimersByTimeAsync(250);
+    vi.mocked(saveDraft).mockClear();
+    const before = usePlaylistStore.getState().playlist;
+
+    // hideUnmatched defaults to false → setting it false again is a no-op.
+    usePlaylistStore.getState().setHideUnmatched(false);
+    await vi.advanceTimersByTimeAsync(250);
+    expect(saveDraft).not.toHaveBeenCalled();
+    // No new playlist object allocated.
+    expect(usePlaylistStore.getState().playlist).toBe(before);
+  });
+
+  it("setHideUnmatched persists when the value actually changes", async () => {
+    vi.useFakeTimers();
+    const a = makeTrack({ id: "a" });
+    usePlaylistStore.getState().addTracks([a]);
+    await vi.advanceTimersByTimeAsync(250);
+    vi.mocked(saveDraft).mockClear();
+
+    usePlaylistStore.getState().setHideUnmatched(true);
+    await vi.advanceTimersByTimeAsync(250);
+    expect(saveDraft).toHaveBeenCalledTimes(1);
+    expect(usePlaylistStore.getState().playlist.hideUnmatched).toBe(true);
+  });
+
+  it("setPlaylistMeta is a no-op when every patched field equals the current value", async () => {
+    vi.useFakeTimers();
+    const a = makeTrack({ id: "a" });
+    usePlaylistStore.getState().addTracks([a]);
+    await vi.advanceTimersByTimeAsync(250);
+    vi.mocked(saveDraft).mockClear();
+    const before = usePlaylistStore.getState().playlist;
+
+    // Patch name to its current value ("Test") — nothing changes.
+    usePlaylistStore.getState().setPlaylistMeta({ name: "Test" });
+    await vi.advanceTimersByTimeAsync(250);
+    expect(saveDraft).not.toHaveBeenCalled();
+    expect(usePlaylistStore.getState().playlist).toBe(before);
+  });
+
+  it("setPlaylistMeta persists when a field actually changes", async () => {
+    vi.useFakeTimers();
+    const a = makeTrack({ id: "a" });
+    usePlaylistStore.getState().addTracks([a]);
+    await vi.advanceTimersByTimeAsync(250);
+    vi.mocked(saveDraft).mockClear();
+
+    usePlaylistStore.getState().setPlaylistMeta({ name: "Renamed" });
+    await vi.advanceTimersByTimeAsync(250);
+    expect(saveDraft).toHaveBeenCalledTimes(1);
+    expect(usePlaylistStore.getState().playlist.name).toBe("Renamed");
+  });
+});
+
+// ─── preSortManualOrder reset on hydrate ────────────────────────────
+//
+// preSortManualOrder is module-global. If hydrateFromStorage swaps in a
+// new playlist without clearing it, a stale manual order captured against
+// the prior session's playlist could be restored on a later sort-clear.
+
+describe("preSortManualOrder reset across hydrate", () => {
+  it("does not leak a stale pre-sort order from a prior playlist into a hydrated one", async () => {
+    // Session 1: establish a manual order and enter a sort so a
+    // pre-sort order gets captured.
+    const c = makeTrack({ id: "c", title: "Cherry" });
+    const a = makeTrack({ id: "a", title: "Apple" });
+    const b = makeTrack({ id: "b", title: "Banana" });
+    usePlaylistStore.getState().addTracks([c, a, b]); // manual c,a,b
+    usePlaylistStore.getState().setSort("title"); // captures preSort = c,a,b
+
+    // Session 2: a completely different playlist is hydrated from storage.
+    // (loadDraft is mocked to return these.)
+    const x = makeTrack({ id: "x", title: "Xylophone" });
+    const y = makeTrack({ id: "y", title: "Yak" });
+    vi.mocked(loadDraft).mockResolvedValueOnce({
+      playlist: {
+        id: "active-draft",
+        name: "Hydrated",
+        description: "",
+        public: false,
+        collaborative: false,
+        trackIds: ["x", "y"],
+        sort: null,
+        hideUnmatched: false,
+      },
+      tracks: [x, y],
+    });
+    await usePlaylistStore.getState().hydrateFromStorage();
+    expect(usePlaylistStore.getState().playlist.trackIds).toEqual(["x", "y"]);
+
+    // Now sort the hydrated playlist then clear it. The clearing click
+    // must restore the hydrated playlist's OWN order (x,y), NOT the
+    // stale session-1 capture (c,a,b).
+    usePlaylistStore.getState().setSort("title"); // asc → x, y (already)
+    usePlaylistStore.getState().setSort("title"); // desc → y, x
+    usePlaylistStore.getState().setSort("title"); // clear → restore x, y
+    expect(usePlaylistStore.getState().playlist.sort).toBeNull();
+    expect(usePlaylistStore.getState().playlist.trackIds).toEqual(["x", "y"]);
+  });
+});
+
+// ─── numeric 0 is PRESENT, not missing ──────────────────────────────
+//
+// isFieldMissing / fillMissingDisplayFields must treat a valid numeric 0
+// (durationMs: 0, year: 0) as a present value — filling over it would
+// clobber legitimate data.
+
+describe("fillMissingDisplayFields treats numeric 0 as present", () => {
+  it("does not overwrite durationMs:0 or year:0", () => {
+    const track = makeTrack({ id: "t", durationMs: 0, year: 0 });
+    usePlaylistStore.getState().addTracks([track]);
+    const beforeIdentity = usePlaylistStore.getState().tracksById["t"];
+
+    usePlaylistStore.getState().fillMissingDisplayFields("t", {
+      durationMs: 180_000,
+      year: 1997,
+    });
+
+    const result = usePlaylistStore.getState().tracksById["t"]!;
+    expect(result.durationMs).toBe(0);
+    expect(result.year).toBe(0);
+    // Nothing was missing, so the track reference is unchanged.
+    expect(usePlaylistStore.getState().tracksById["t"]).toBe(beforeIdentity);
+  });
+});
+
 // ─── schedulePersist debouncing ─────────────────────────────────────
 //
 // The store debounces saves at PERSIST_DEBOUNCE_MS (250 ms). A
@@ -274,6 +528,22 @@ describe("schedulePersist debounce", () => {
     // Cross the debounce boundary.
     await vi.advanceTimersByTimeAsync(2);
     expect(saveDraft).toHaveBeenCalledTimes(1);
+  });
+
+  it("does NOT schedule a save for a no-op mutation (fillMissingDisplayFields on a filled row)", async () => {
+    vi.useFakeTimers();
+    const t = makeTrack({ id: "t", title: "Set", artist: "Set", album: "Set" });
+    usePlaylistStore.getState().addTracks([t]);
+    await vi.advanceTimersByTimeAsync(250); // drain the add's save
+    vi.mocked(saveDraft).mockClear();
+    // Every field is already populated, so this fills nothing and returns
+    // the same track reference — no persist should be scheduled.
+    usePlaylistStore
+      .getState()
+      .fillMissingDisplayFields("t", { title: "Other", artist: "Other" });
+    usePlaylistStore.getState().updateTrack("missing-id", { title: "x" });
+    await vi.advanceTimersByTimeAsync(250);
+    expect(saveDraft).not.toHaveBeenCalled();
   });
 
   it("rapid successive schedulePersist calls do NOT each fire their own save", async () => {

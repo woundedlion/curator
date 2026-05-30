@@ -100,15 +100,28 @@ export function DropZone({
       event.preventDefault();
       cancelPendingClear();
       setActive(null);
-      if (!event.dataTransfer) return;
-      const playlistId = getPlaylistIdFromDrag(event.dataTransfer);
+      const dt = event.dataTransfer;
+      if (!dt) return;
+      // Snapshot everything we need from the DataTransfer SYNCHRONOUSLY,
+      // before any await. After the drop handler returns control to the
+      // event loop the DataTransfer is neutered: `dt.items` empties and
+      // its entries' `webkitGetAsEntry()` start returning null. So we
+      // read the playlist id and materialize the dropped file-system
+      // entries up front; the (possibly long) directory walk then runs
+      // off that captured snapshot rather than the live, decaying list.
+      const playlistId = getPlaylistIdFromDrag(dt);
       if (playlistId) {
         onPlaylistDropped(playlistId);
         return;
       }
-      const files = await walkDataTransferItems(event.dataTransfer.items, {
-        recursive,
-      });
+      // walkDataTransferItems materializes its entries from this list in
+      // a SYNCHRONOUS prologue (it calls webkitGetAsEntry() on every item
+      // before its first await). We therefore hand it the live `dt.items`
+      // with NO await in between this read and the call — so the entries
+      // are captured while the DataTransfer is still valid. Do not move
+      // any awaited work above this line, or the list will have emptied
+      // by the time the walker reads it.
+      const files = await walkDataTransferItems(dt.items, { recursive });
       onFilesDropped(files);
     }
     window.addEventListener("dragleave", onLeave);

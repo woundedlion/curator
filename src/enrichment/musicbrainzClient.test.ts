@@ -33,9 +33,11 @@ import {
   buildClientParam,
   buildPermissiveQuery,
   buildUserAgent,
+  cancelMusicbrainzRequestsByTag,
   getMusicbrainzQueue,
   searchRecordings,
 } from "./musicbrainzClient";
+import { RequestCancelledError } from "../util/intervalQueue";
 import { MUSICBRAINZ_RATE_INTERVAL_MS } from "../constants";
 
 const CONTACT = "test@example.com";
@@ -92,6 +94,14 @@ describe("buildPermissiveQuery", () => {
     expect(
       buildPermissiveQuery("recording:Foo AND artist:Bar"),
     ).toBe("Foo Bar");
+  });
+
+  it("REGRESSION: preserves a colon INSIDE a quoted title value", () => {
+    // A blind `\w+:` strip would mistake "Song:" for a Lucene field
+    // prefix and drop the word, collapsing the query to "The Remix X".
+    expect(
+      buildPermissiveQuery('recording:"Song: The Remix" AND artist:"X"'),
+    ).toBe("Song: The Remix X");
   });
 
   it("collapses whitespace", () => {
@@ -363,6 +373,85 @@ describe("searchRecordings (mocked fetch)", () => {
       expect(candidates[0]!.title).toBe("Recovered");
     });
 
+    it("REGRESSION: a 503 with no Retry-After header retries after a short default, not a 60s stall", async () => {
+      // The old code defaulted a missing header to the shared Spotify
+      // 10-minute default, clamped to MB's 60s cap — pinning the single
+      // in-flight slot (and every queued track) for a full minute. A
+      // bare 503 must back off only briefly.
+      let callIndex = 0;
+      const fetchMock = vi.fn(async () => {
+        callIndex++;
+        if (callIndex === 1) return unavailable(null); // no Retry-After
+        return jsonResponse({
+          recordings: [{ id: "rec-1", title: "Recovered" }],
+        });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      const p = searchRecordings('recording:"A" AND artist:"X"', CONTACT);
+      await vi.advanceTimersByTimeAsync(0);
+      // After only 1.1s the retry must already have fired (it would NOT
+      // have under the old 60s clamp).
+      await vi.advanceTimersByTimeAsync(1_100);
+      const candidates = await p;
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(candidates).toHaveLength(1);
+      expect(candidates[0]!.title).toBe("Recovered");
+    });
+
+    it("REGRESSION: a long Retry-After on one lookup does NOT stall a second queued lookup beyond the rate interval", async () => {
+      // The old design slept the Retry-After (up to the 60s cap) INSIDE
+      // the single in-flight queue slot, so one lookup that hit a long
+      // 503 backoff pinned the only slot and blocked every other queued
+      // track for the full duration. The fix releases the slot between
+      // attempts and backs off out-of-slot, so a second queued lookup
+      // drains at the normal rate interval while the first waits for its
+      // retry window.
+      let aCalls = 0;
+      const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input);
+        // Decode the query to tell the two lookups apart.
+        const isA = url.includes("AAAA");
+        if (isA) {
+          aCalls++;
+          // First A attempt: 503 with a long (30s) Retry-After. Second
+          // A attempt (after backoff): success.
+          if (aCalls === 1) return unavailable("30");
+          return jsonResponse({ recordings: [{ id: "rec-a", title: "A" }] });
+        }
+        // Lookup B always succeeds immediately.
+        return jsonResponse({ recordings: [{ id: "rec-b", title: "B" }] });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      const pa = searchRecordings(
+        'recording:"AAAA" AND artist:"X"',
+        CONTACT,
+      );
+      const pb = searchRecordings(
+        'recording:"BBBB" AND artist:"Y"',
+        CONTACT,
+      );
+
+      // A runs first (503), releases the slot, and starts a 30s
+      // out-of-slot backoff. B must NOT wait 30s — only the normal rate
+      // interval behind A's first dispatch.
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(MUSICBRAINZ_RATE_INTERVAL_MS);
+      const bResult = await pb;
+      expect(bResult).toHaveLength(1);
+      expect(bResult[0]!.title).toBe("B");
+
+      // A is still backing off — advance past its 30s window to let the
+      // retry fire and resolve.
+      await vi.advanceTimersByTimeAsync(31_000);
+      const aResult = await pa;
+      expect(aResult).toHaveLength(1);
+      expect(aResult[0]!.title).toBe("A");
+      expect(aCalls).toBe(2);
+    });
+
     it("gives up after MAX_503_RETRIES (=1) — a second 503 surfaces as an error", async () => {
       const fetchMock = vi.fn(async () => unavailable("1"));
       vi.stubGlobal("fetch", fetchMock);
@@ -379,6 +468,33 @@ describe("searchRecordings (mocked fetch)", () => {
       expect(fetchMock).toHaveBeenCalledTimes(2);
     });
   });
+
+    it("REGRESSION: cancelling a tag during the 503 backoff rejects promptly with RequestCancelledError", async () => {
+      // Finding #4: the backoff must surface cancellation immediately,
+      // not only on the next loop iteration. A deletion mid-backoff
+      // calls cancelMusicbrainzRequestsByTag, which aborts the
+      // out-of-slot wait and rejects the lookup with the canonical
+      // RequestCancelledError BEFORE the (long) retry window elapses.
+      const fetchMock = vi.fn(async () => unavailable("30"));
+      vi.stubGlobal("fetch", fetchMock);
+
+      const rej = captureRejection(
+        searchRecordings('recording:"A" AND artist:"X"', CONTACT, {
+          tag: "track-1",
+        }),
+      );
+      // First attempt runs and 503s; the lookup is now in its 30s
+      // out-of-slot backoff.
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+
+      // Cancel mid-backoff. This must reject NOW, well before the 30s
+      // window — no second fetch is ever issued.
+      cancelMusicbrainzRequestsByTag("track-1");
+      const error = await rej;
+      expect(error).toBeInstanceOf(RequestCancelledError);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
 
   describe("error paths", () => {
     it("surfaces non-2xx responses as Errors with the body", async () => {

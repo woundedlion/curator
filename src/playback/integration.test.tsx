@@ -132,6 +132,46 @@ describe("playback integration — store → Player → real HtmlAudioBackend �
     expect(usePlaybackStore.getState().isPlaying).toBe(true);
   });
 
+  it("teardownPlayback() stops audio, detaches listeners, and is symmetric with re-initialize (finding #4)", async () => {
+    const track = makeLocalTrack("a");
+    seedTrack(track);
+    usePlaybackStore.getState().initialize();
+
+    usePlaybackStore.getState().toggle("a");
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    await new Promise((r) => setTimeout(r, 0));
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    expect(usePlaybackStore.getState().isPlaying).toBe(true);
+
+    // Grab the live <audio> element so we can prove its listeners were
+    // detached by teardown. happy-dom's play() spy dispatches a 'play'
+    // event; after teardown that event must NOT re-flip the store.
+    const audioEls = document.querySelectorAll("audio");
+    usePlaybackStore.getState().teardownPlayback();
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+
+    const afterTeardown = usePlaybackStore.getState();
+    expect(afterTeardown.currentTrackId).toBeNull();
+    expect(afterTeardown.isPlaying).toBe(false);
+
+    // A stray DOM event on the old element must not reach the (cleared)
+    // subscriber — the backend's listeners were removed on dispose.
+    for (const el of Array.from(audioEls)) {
+      el.dispatchEvent(new Event("play"));
+    }
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    expect(usePlaybackStore.getState().isPlaying).toBe(false);
+
+    // Symmetric: a fresh initialize() + toggle() works after teardown.
+    usePlaybackStore.getState().initialize();
+    usePlaybackStore.getState().toggle("a");
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    await new Promise((r) => setTimeout(r, 0));
+    for (let i = 0; i < 20; i++) await Promise.resolve();
+    expect(usePlaybackStore.getState().currentTrackId).toBe("a");
+    expect(usePlaybackStore.getState().isPlaying).toBe(true);
+  });
+
   it("stop() clears the current track and isPlaying drops to false", async () => {
     const track = makeLocalTrack("a");
     seedTrack(track);

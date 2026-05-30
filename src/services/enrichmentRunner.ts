@@ -293,6 +293,17 @@ function warnMissingContactEmail(): void {
 // the pacer so a freshly-matched track waits at most ~50 ms before
 // joining the MB queue.
 const STREAMING_POLL_MS = 50;
+// Safety valve. Without a bound, a producer that reports `whileActive()
+// === true` forever while never emitting another eligible track (e.g. a
+// wedged Spotify search task) would make this loop busy-poll the whole
+// playlist at 20 Hz indefinitely. After enough CONSECUTIVE empty polls
+// we (a) escalate the poll interval toward a ceiling so the idle scan
+// cost decays, and (b) give up entirely past a total idle budget so a
+// stuck producer can't spin the loop for the life of the tab. Any
+// eligible track resets both counters, so normal streaming pickup is
+// unaffected — these only bite once the producer goes quiet.
+const STREAMING_POLL_MAX_MS = 1_000;
+const STREAMING_IDLE_GIVE_UP_MS = 60_000;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -340,6 +351,11 @@ export async function enrichAllPending(
   // a track that finished while the loop was elsewhere, and bounds the
   // streaming poll to at most one MB call per track per session.
   const seen = new Set<string>();
+  // Idle accounting for the streaming safety valve. `idleWaitMs` is the
+  // total time spent polling with nothing eligible; `pollMs` escalates
+  // toward the ceiling so a quiet producer doesn't cost a 20 Hz scan.
+  let idleWaitMs = 0;
+  let pollMs = STREAMING_POLL_MS;
 
   while (true) {
     const trackIds = usePlaylistStore
@@ -354,9 +370,27 @@ export async function enrichAllPending(
       // Nothing eligible right now. Exit unless a producer is still
       // running, in which case poll briefly to catch its output.
       if (!options.whileActive || !options.whileActive()) break;
-      await sleep(STREAMING_POLL_MS);
+      // Safety valve: a producer that stays "active" but never emits
+      // another eligible track must not pin us in an unbounded 20 Hz
+      // scan. Bail past the idle budget even if whileActive() is still
+      // true — the worst case is the (rare) genuinely-late track waits
+      // for the next post-ingest pass instead of streaming.
+      if (idleWaitMs >= STREAMING_IDLE_GIVE_UP_MS) {
+        console.warn(
+          "enrichAllPending: streaming producer idle past budget — stopping streaming poll",
+        );
+        break;
+      }
+      await sleep(pollMs);
+      idleWaitMs += pollMs;
+      // Exponential-ish backoff capped at the ceiling.
+      pollMs = Math.min(pollMs * 2, STREAMING_POLL_MAX_MS);
       continue;
     }
+    // Found eligible work — reset the idle accounting so streaming
+    // pickup stays snappy for the next quiet stretch.
+    idleWaitMs = 0;
+    pollMs = STREAMING_POLL_MS;
     for (const trackId of trackIds) {
       seen.add(trackId);
       const outcome = await runOneTrack(trackId);
@@ -456,23 +490,29 @@ export async function reenrichTrack(trackId: string): Promise<EnrichmentResult> 
     warnMissingContactEmail();
     return "failed";
   }
-  await clearTrackEnrichmentCache(trackId);
-  resetTrackEnrichmentToIdle(trackId);
-  // Re-run Spotify search first (skipped for spotify-imports by matchOne
-  // itself, but we also leave their status alone via the reset helper so
-  // the URI from import is preserved). MB enrichment then runs against
-  // whatever identity the Spotify match settles on.
-  resetSpotifyStatusForRefresh(trackId);
-  await rematchOnSpotify(trackId);
-  const outcome = await runOneTrack(trackId, { bypassCache: true });
-  if (outcome.error !== undefined) {
-    pushErrorToast(
-      `MusicBrainz lookup failed: ${describeFirstError(outcome.error)}`,
-    );
-  } else if (outcome.result === "failed") {
-    pushErrorToast("No MusicBrainz match for this track");
-  } else if (outcome.coverArtTransientFailure) {
-    maybeReportCoverArtFailures(1);
-  }
-  return outcome.result;
+  // Bracket with the busy counter like every other enrich entry point
+  // (reenrichAll, the picker's enrichOneTrackMb). Without it the per-row
+  // ↻ runs a multi-second, rate-limited Spotify search + MB lookup with
+  // the global spinner never engaging.
+  return useUiStore.getState().withBusy(async () => {
+    await clearTrackEnrichmentCache(trackId);
+    resetTrackEnrichmentToIdle(trackId);
+    // Re-run Spotify search first (skipped for spotify-imports by matchOne
+    // itself, but we also leave their status alone via the reset helper so
+    // the URI from import is preserved). MB enrichment then runs against
+    // whatever identity the Spotify match settles on.
+    resetSpotifyStatusForRefresh(trackId);
+    await rematchOnSpotify(trackId);
+    const outcome = await runOneTrack(trackId, { bypassCache: true });
+    if (outcome.error !== undefined) {
+      pushErrorToast(
+        `MusicBrainz lookup failed: ${describeFirstError(outcome.error)}`,
+      );
+    } else if (outcome.result === "failed") {
+      pushErrorToast("No MusicBrainz match for this track");
+    } else if (outcome.coverArtTransientFailure) {
+      maybeReportCoverArtFailures(1);
+    }
+    return outcome.result;
+  });
 }

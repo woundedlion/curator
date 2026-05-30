@@ -39,13 +39,15 @@ export function getMbRecordingId(
 export function getMbCandidates(
   enrichment: Enrichment,
 ): readonly MBCandidate[] | undefined {
+  // matched / failed / ambiguous all expose `candidates`; the remaining
+  // arms (idle / searching) don't. One narrowing check covers all three.
   if (
     enrichment.status === "matched" ||
-    enrichment.status === "failed"
+    enrichment.status === "failed" ||
+    enrichment.status === "ambiguous"
   ) {
     return enrichment.candidates;
   }
-  if (enrichment.status === "ambiguous") return enrichment.candidates;
   return undefined;
 }
 
@@ -57,11 +59,4 @@ export function getSpotifyCandidates(
     return match.candidates;
   }
   return undefined;
-}
-
-/** `userOverride` — present on every enrichment arm but optional. */
-export function getEnrichmentUserOverride(
-  enrichment: Enrichment,
-): boolean | undefined {
-  return enrichment.userOverride;
 }

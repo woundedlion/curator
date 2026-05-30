@@ -10,6 +10,14 @@ type Props<S extends string> = {
   labels: Record<S, string>;
   colors: Record<S, string>;
   interactiveStatuses: readonly S[];
+  // The two discriminators the badge renders against, supplied by the
+  // caller and typed as `S` so they're checked against the caller's own
+  // status enum. This replaces the prior `("pending" as S)` /
+  // `("idle" as S)` casts, which defeated type-checking: a caller whose
+  // enum lacked those literals (or renamed them) would have silently
+  // compared against a string that never matched.
+  pendingStatus: S;
+  idleStatus: S;
   onPick?: () => void;
 };
 
@@ -18,16 +26,18 @@ export function StatusBadge<S extends string>({
   labels,
   colors,
   interactiveStatuses,
+  pendingStatus,
+  idleStatus,
   onPick,
 }: Props<S>) {
   const isInteractive =
     interactiveStatuses.includes(status) && Boolean(onPick);
   const className = `inline-flex items-center justify-center text-base ${colors[status]}`;
   const body =
-    status === ("pending" as S) ? (
+    status === pendingStatus ? (
       "…"
     ) : (
-      <CircleGlyphIcon filled={status !== ("idle" as S)} />
+      <CircleGlyphIcon filled={status !== idleStatus} />
     );
   if (isInteractive) {
     return (

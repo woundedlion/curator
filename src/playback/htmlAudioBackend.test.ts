@@ -128,6 +128,59 @@ describe("HtmlAudioBackend — stop()", () => {
   });
 });
 
+describe("HtmlAudioBackend — dispose() teardown (finding #4)", () => {
+  it("removes the DOM listeners so post-dispose events no longer reach the observer", () => {
+    const { backend, audio, events } = makeBackend();
+    // Sanity: a 'play' event reaches the observer before dispose.
+    audio.dispatchEvent(new Event("play"));
+    expect(events).toContainEqual({ kind: "playing" });
+
+    backend.dispose();
+    events.length = 0;
+    // After dispose, the same events must NOT reach the observer — the
+    // listeners were detached, so a recycled <audio> element can't feed
+    // a torn-down backend.
+    audio.dispatchEvent(new Event("play"));
+    audio.dispatchEvent(new Event("pause"));
+    audio.dispatchEvent(new Event("ended"));
+    expect(events).toEqual([]);
+  });
+
+  it("pauses the element and is idempotent", () => {
+    const { backend, audio } = makeBackend();
+    vi.spyOn(audio, "pause");
+    backend.dispose();
+    expect(audio.pause).toHaveBeenCalled();
+    // Second call finds no bindings — must not throw.
+    expect(() => backend.dispose()).not.toThrow();
+  });
+
+  it("surfaces a real (non-aborted) media error via describeMediaError, drops null-error events", () => {
+    // Guards finding #3's rewrite: a null audio.error early-returns; a
+    // non-aborted MediaError surfaces. happy-dom has no global MediaError
+    // constructor, so we stub the `error` property to drive both arms.
+    const { audio, events } = makeBackend();
+
+    // null error → dropped.
+    audio.dispatchEvent(new Event("error"));
+    expect(events.filter((e) => e.kind === "error")).toEqual([]);
+
+    // A real decode error (code 3) → surfaced.
+    Object.defineProperty(audio, "error", {
+      configurable: true,
+      get: () => ({
+        code: 3,
+        MEDIA_ERR_ABORTED: 1,
+        MEDIA_ERR_NETWORK: 2,
+        MEDIA_ERR_DECODE: 3,
+        MEDIA_ERR_SRC_NOT_SUPPORTED: 4,
+      }),
+    });
+    audio.dispatchEvent(new Event("error"));
+    expect(events.some((e) => e.kind === "error")).toBe(true);
+  });
+});
+
 describe("HtmlAudioBackend — load after stop is the critical real-world path", () => {
   it("load → stop → load works without the second load's play promise being aborted", async () => {
     const { backend, audio } = makeBackend();

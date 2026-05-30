@@ -108,6 +108,35 @@ function dirEntry(
   };
 }
 
+function multiBatchDirEntry(
+  fullPath: string,
+  batches: FakeFsEntry[][],
+): FakeDirectoryEntry {
+  // Delivers children across several non-empty readEntries() calls,
+  // then a final empty array — exactly the real entries-reader protocol
+  // (a single readEntries() is NOT guaranteed to return every child;
+  // Chromium caps each call around 100 entries). This exercises
+  // production's `readBatch` recursion, which the single-batch fake
+  // never reaches.
+  return {
+    isFile: false,
+    isDirectory: true,
+    fullPath,
+    createReader() {
+      let i = 0;
+      return {
+        readEntries(success) {
+          if (i >= batches.length) {
+            success([]);
+            return;
+          }
+          success(batches[i++]!);
+        },
+      };
+    },
+  };
+}
+
 function failingDirEntry(fullPath: string): FakeDirectoryEntry {
   return {
     isFile: false,
@@ -378,6 +407,75 @@ describe("walkDataTransferItems", () => {
     );
   });
 
+  it("reassembles children delivered across multiple readEntries batches", async () => {
+    // The real reader hands back children in capped batches and ends
+    // with an empty array. Production's readBatch recursion must
+    // accumulate ALL batches before resolving — a single readEntries
+    // call is not guaranteed to be complete.
+    const tree: FakeFsEntry[] = [
+      multiBatchDirEntry("/big", [
+        [
+          fileEntry("a.mp3", "/big/a.mp3"),
+          fileEntry("b.mp3", "/big/b.mp3"),
+        ],
+        [fileEntry("c.mp3", "/big/c.mp3")],
+        [
+          fileEntry("d.mp3", "/big/d.mp3"),
+          fileEntry(".DS_Store", "/big/.DS_Store"),
+        ],
+      ]),
+    ];
+
+    const files = await walkDataTransferItems(asDataTransferItems(tree), {
+      recursive: true,
+    });
+
+    expect(files.map((f) => f.name).sort()).toEqual([
+      "a.mp3",
+      "b.mp3",
+      "c.mp3",
+      "d.mp3",
+    ]);
+  });
+
+  it("effective depth cap: a file exactly MAX_WALK_DEPTH levels below the root is kept; one deeper is dropped", async () => {
+    // Pins the exact truncation boundary so it stays aligned with the
+    // handle walker (which uses the same `depth > MAX_WALK_DEPTH`
+    // accounting). MAX_WALK_DEPTH is 32. Build a chain of dirs and place
+    // a file inside the dir that is exactly 32 sub-levels below the root
+    // directory — it must survive; a file 33 levels below must not.
+    const MAX = 32;
+
+    // `kept`: file nested exactly MAX dirs below the root dir.
+    const buildChain = (levels: number): FakeFsEntry => {
+      let node: FakeFsEntry = fileEntry("leaf.mp3", "/leaf.mp3");
+      for (let i = levels; i > 0; i--) {
+        node = dirEntry(`/dir-${i}`, [node]);
+      }
+      return node;
+    };
+
+    // Root dir is level 0; a file directly in it is "0 levels below".
+    // A chain of (MAX + 1) directories nests the leaf MAX levels below
+    // the root directory (root=dir-1 ... innermost=dir-(MAX+1), leaf
+    // inside the innermost which sits MAX below the root).
+    const keptTree = buildChain(MAX + 1);
+    const keptFiles = await walkDataTransferItems(
+      asDataTransferItems([keptTree]),
+      { recursive: true },
+    );
+    expect(keptFiles.map((f) => f.name)).toEqual(["leaf.mp3"]);
+
+    // One directory deeper — the leaf is now MAX+1 below the root and is
+    // truncated away.
+    const droppedTree = buildChain(MAX + 2);
+    const droppedFiles = await walkDataTransferItems(
+      asDataTransferItems([droppedTree]),
+      { recursive: true },
+    );
+    expect(droppedFiles).toEqual([]);
+  });
+
   it("an empty DataTransferItemList resolves to an empty array (no warns)", async () => {
     const files = await walkDataTransferItems(asDataTransferItems([]), {
       recursive: true,
@@ -513,6 +611,41 @@ describe("walkDirectoryHandle", () => {
       expect.stringContaining("folderWalker: truncating at depth"),
       expect.any(String),
     );
+  });
+
+  it("effective depth cap: matches the legacy walker's boundary for the same constant", async () => {
+    // The handle walker is given the ROOT directory directly (its files
+    // are at depth 0). A file nested exactly MAX_WALK_DEPTH (32)
+    // sub-levels below the root must be kept; 33 below must be dropped —
+    // the same effective boundary the legacy walkDataTransferItems test
+    // pins, ensuring both stay aligned for one MAX_WALK_DEPTH constant.
+    const MAX = 32;
+
+    const buildHandleChain = (levels: number): FakeDirectoryHandle => {
+      let node: FakeDirectoryHandle = new FakeDirectoryHandle("leaf-dir", [
+        fileChild("leaf.mp3"),
+      ]);
+      for (let i = levels; i > 0; i--) {
+        node = new FakeDirectoryHandle(`dir-${i}`, [node]);
+      }
+      return node;
+    };
+
+    // root (depth 0) → MAX nested dirs → leaf file at depth MAX. Kept.
+    const keptRoot = buildHandleChain(MAX);
+    const kept = await walkDirectoryHandle(
+      keptRoot as unknown as FileSystemDirectoryHandle,
+      { recursive: true },
+    );
+    expect(kept.map((f) => f.name)).toEqual(["leaf.mp3"]);
+
+    // One level deeper → leaf at depth MAX+1. Dropped.
+    const droppedRoot = buildHandleChain(MAX + 1);
+    const dropped = await walkDirectoryHandle(
+      droppedRoot as unknown as FileSystemDirectoryHandle,
+      { recursive: true },
+    );
+    expect(dropped).toEqual([]);
   });
 
   it("an empty directory handle resolves to an empty array (no warns)", async () => {

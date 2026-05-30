@@ -5,8 +5,8 @@ import {
   MUSICBRAINZ_RATE_INTERVAL_MS,
 } from "../constants";
 import type { MBCandidate } from "../types";
-import { parseRetryAfter } from "../spotify/apiClient";
-import { IntervalQueue } from "../util/intervalQueue";
+import { tryParseRetryAfterMs } from "../spotify/apiClient";
+import { IntervalQueue, RequestCancelledError } from "../util/intervalQueue";
 
 // MB serves traffic from a single global cluster; tail latency during
 // peak hours can climb above 10s on routine searches. Bumped to 30s so
@@ -18,15 +18,19 @@ const SERVICE_UNAVAILABLE_STATUS = 503;
 // retry buys us a free pass through a transient blip without retrying so
 // aggressively that we punish a struggling server.
 const MAX_503_RETRIES = 1;
-// `parseRetryAfter` is shared with the Spotify path and clamps to a
-// 12h ceiling appropriate for Spotify's multi-hour sustained-abuse
-// bans. For MB, a misconfigured upstream advertising
-// `Retry-After: 86400` would stall the head of the queue (and every
-// caller behind it) for a day. MB outages are short — the user
-// benefits more from a clear error after a brief pause than a
-// multi-hour hang. Cap locally so any Retry-After larger than this
-// is treated as "give up after one short wait."
+// A misconfigured upstream advertising `Retry-After: 86400` would stall
+// the head of the queue (and every caller behind it) for a day. MB
+// outages are short — the user benefits more from a clear error after a
+// brief pause than a multi-hour hang. Cap locally so any Retry-After
+// larger than this is treated as "give up after one short wait."
 const MB_RETRY_AFTER_CAP_MS = 60_000;
+// When the 503 carries no usable Retry-After (header absent — common —
+// or unparseable), wait a short, MB-appropriate beat rather than
+// inheriting the shared parser's 10-minute Spotify default. The old
+// code defaulted to 10 min → clamped to the 60s cap above, so a bare
+// 503 pinned the single in-flight slot (and every queued track) for a
+// full minute. MB's gate is 1 req/sec, so a 1s pause is plenty.
+const MB_503_DEFAULT_RETRY_MS = 1_000;
 
 type MBRecording = {
   id: string;
@@ -47,6 +51,38 @@ const queue = new IntervalQueue({ intervalMs: MUSICBRAINZ_RATE_INTERVAL_MS });
 
 export function getMusicbrainzQueue(): IntervalQueue {
   return queue;
+}
+
+// Out-of-slot 503 backoffs (see runOneSearch) are NOT in the queue, so
+// `queue.cancelByTag` can't reach them. Track each in-progress backoff's
+// AbortController by tag here so `cancelMusicbrainzRequestsByTag` can
+// abort the wait immediately — otherwise a deleted track's retry would
+// keep ticking for up to the 60s cap before its re-enqueued attempt's
+// guard noticed. A tag can have at most one active backoff (one lookup
+// retries at a time per query), but we store a Set to be safe across the
+// strict→permissive pair sharing a tag.
+const backoffControllersByTag = new Map<string, Set<AbortController>>();
+
+function registerBackoff(tag: string, controller: AbortController): void {
+  let set = backoffControllersByTag.get(tag);
+  if (!set) {
+    set = new Set();
+    backoffControllersByTag.set(tag, set);
+  }
+  set.add(controller);
+}
+
+function unregisterBackoff(tag: string, controller: AbortController): void {
+  const set = backoffControllersByTag.get(tag);
+  if (!set) return;
+  set.delete(controller);
+  if (set.size === 0) backoffControllersByTag.delete(tag);
+}
+
+function abortBackoffsForTag(tag: string): void {
+  const set = backoffControllersByTag.get(tag);
+  if (!set) return;
+  for (const controller of set) controller.abort();
 }
 
 // MB recommends `Application/Version ( Contact )` — the bracketed contact
@@ -146,8 +182,23 @@ function recordingToCandidate(recording: MBRecording): MBCandidate {
   };
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+// Abortable wait used for the 503 backoff that happens OUTSIDE the queue
+// slot (see runOneSearch). Unlike `sleep`, this REJECTS with
+// RequestCancelledError on abort so a deletion mid-backoff surfaces
+// promptly as cancellation rather than silently completing the wait.
+function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.reject(new RequestCancelledError());
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = (): void => {
+      clearTimeout(timer);
+      reject(new RequestCancelledError());
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
 }
 
 async function fetchWithTimeout(
@@ -210,6 +261,70 @@ async function fetchWithTimeout(
   }
 }
 
+// Result of a single in-slot attempt. A 503 we want to retry returns
+// `{ retryAfterMs }` instead of throwing so the BACKOFF can happen
+// outside the queue slot — see runOneSearch.
+type AttemptResult =
+  | { kind: "done"; candidates: MBCandidate[] }
+  | { kind: "retry"; retryAfterMs: number };
+
+async function runOneAttempt(
+  url: string,
+  contactEmail: string,
+  canRetry: boolean,
+  signal: AbortSignal,
+): Promise<AttemptResult> {
+  const response = await fetchWithTimeout(url, contactEmail, signal);
+
+  if (response.status === SERVICE_UNAVAILABLE_STATUS) {
+    // MB asks for a backoff via Retry-After. Honor it once, then
+    // give up so the user sees a clear error rather than the queue
+    // stalling indefinitely on a wedged upstream. Clamp locally —
+    // a misconfigured upstream advertising Retry-After: 86400
+    // would otherwise pin the head of the MB queue (and every
+    // queued track behind it) for a day.
+    if (!canRetry) {
+      throw new Error(`MusicBrainz unavailable (503) — try again later`);
+    }
+    const parsedRetryMs = tryParseRetryAfterMs(
+      response.headers.get("Retry-After"),
+    );
+    const retryAfterMs = Math.min(
+      parsedRetryMs ?? MB_503_DEFAULT_RETRY_MS,
+      MB_RETRY_AFTER_CAP_MS,
+    );
+    return { kind: "retry", retryAfterMs };
+  }
+
+  if (!response.ok) {
+    const body = await response.text().catch(() => "");
+    console.error("MusicBrainz search failed", {
+      url: maskContactInUrl(url),
+      status: response.status,
+      body: body.slice(0, 500),
+    });
+    throw new Error(
+      `MusicBrainz ${response.status} ${response.statusText}: ${body.slice(0, 200)}`,
+    );
+  }
+
+  try {
+    const json = (await response.json()) as MBSearchResponse;
+    const recordings = json.recordings ?? [];
+    return { kind: "done", candidates: recordings.map(recordingToCandidate) };
+  } catch (error) {
+    // MB occasionally serves HTML during maintenance windows; a
+    // SyntaxError from `response.json()` shouldn't kill the row with
+    // an opaque message — surface a clearer transient-error message.
+    throw new Error(
+      `MusicBrainz returned non-JSON response: ${
+        error instanceof Error ? error.message : "unknown"
+      }`,
+      { cause: error },
+    );
+  }
+}
+
 async function runOneSearch(
   query: string,
   contactEmail: string,
@@ -217,65 +332,47 @@ async function runOneSearch(
   tag: string | undefined,
   guard: (() => boolean) | undefined,
 ): Promise<MBCandidate[]> {
-  return queue.enqueue(async (signal) => {
-    const url = buildSearchUrl(query, contactEmail, dismax);
-    let attempts = 0;
-    while (true) {
-      const response = await fetchWithTimeout(url, contactEmail, signal);
-
-      if (response.status === SERVICE_UNAVAILABLE_STATUS) {
-        // MB asks for a backoff via Retry-After. Honor it once, then
-        // give up so the user sees a clear error rather than the queue
-        // stalling indefinitely on a wedged upstream. Clamp locally —
-        // a misconfigured upstream advertising Retry-After: 86400
-        // would otherwise pin the head of the MB queue (and every
-        // queued track behind it) for a day.
-        const rawRetryMs = parseRetryAfter(
-          response.headers.get("Retry-After"),
-        );
-        const retryMs = Math.min(rawRetryMs, MB_RETRY_AFTER_CAP_MS);
-        if (attempts < MAX_503_RETRIES) {
-          attempts++;
-          console.warn(
-            `MusicBrainz 503 — waiting ${Math.round(retryMs / 1000)}s before retry`,
-          );
-          await sleep(retryMs);
-          continue;
-        }
-        throw new Error(
-          `MusicBrainz unavailable (503) — try again later`,
-        );
-      }
-
-      if (!response.ok) {
-        const body = await response.text().catch(() => "");
-        console.error("MusicBrainz search failed", {
-          url: maskContactInUrl(url),
-          status: response.status,
-          body: body.slice(0, 500),
-        });
-        throw new Error(
-          `MusicBrainz ${response.status} ${response.statusText}: ${body.slice(0, 200)}`,
-        );
-      }
-
-      try {
-        const json = (await response.json()) as MBSearchResponse;
-        const recordings = json.recordings ?? [];
-        return recordings.map(recordingToCandidate);
-      } catch (error) {
-        // MB occasionally serves HTML during maintenance windows; a
-        // SyntaxError from `response.json()` shouldn't kill the row with
-        // an opaque message — surface a clearer transient-error message.
-        throw new Error(
-          `MusicBrainz returned non-JSON response: ${
-            error instanceof Error ? error.message : "unknown"
-          }`,
-          { cause: error },
-        );
-      }
+  const url = buildSearchUrl(query, contactEmail, dismax);
+  // 503-retry is driven HERE, across enqueue boundaries — NOT inside a
+  // single slot. The old design slept the Retry-After (up to the 60s
+  // cap) inside the one in-flight queue slot, re-introducing the exact
+  // head-of-line stall the 1-req/sec pacer exists to avoid: a single
+  // lookup that hit a 60s Retry-After pinned the only slot for a full
+  // minute and blocked every other queued track. By releasing the slot
+  // between attempts and doing the backoff out-of-slot, other tracks
+  // keep draining at the normal rate interval while this lookup waits
+  // for its retry window.
+  let attempts = 0;
+  while (true) {
+    const canRetry = attempts < MAX_503_RETRIES;
+    const result = await queue.enqueue<AttemptResult>(
+      (signal) => runOneAttempt(url, contactEmail, canRetry, signal),
+      { tag, guard },
+    );
+    if (result.kind === "done") return result.candidates;
+    // 503 with a retry budget: back off OUTSIDE the slot, then
+    // re-enqueue. The slot is free during the wait so the queue keeps
+    // pacing other tracks.
+    attempts++;
+    console.warn(
+      `MusicBrainz 503 — waiting ${Math.round(result.retryAfterMs / 1000)}s before retry`,
+    );
+    // Cancellation during the out-of-slot wait: a deletion that fires
+    // `cancelMusicbrainzRequestsByTag(tag)` aborts the backoff timer
+    // immediately (via the tag registry), so a cancelled track's retry
+    // does not keep ticking for up to the 60s cap. A flipped guard is
+    // also re-checked here before burning the retry window.
+    if (guard && !guard()) throw new RequestCancelledError();
+    const controller = new AbortController();
+    if (tag !== undefined) registerBackoff(tag, controller);
+    try {
+      // Rejects with RequestCancelledError on abort, so cancellation
+      // surfaces promptly rather than only on the next loop iteration.
+      await abortableDelay(result.retryAfterMs, controller.signal);
+    } finally {
+      if (tag !== undefined) unregisterBackoff(tag, controller);
     }
-  }, { tag, guard });
+  }
 }
 
 // Match Lucene's escape pair (`\"` or `\\`). We must remove these BEFORE
@@ -292,12 +389,24 @@ const LUCENE_FIELD_PREFIX = /\b\w+:/g;
 const LUCENE_AND_OPERATOR = / +AND +/g;
 
 export function buildPermissiveQuery(strictQuery: string): string {
-  // Strip Lucene field prefixes and quotes so MB's dismax parser can
-  // tokenize the remaining words freely. Handles cases like
-  // "Lovesponge" vs "Love Sponge" where strict phrase matching fails
-  // but token-based search would hit.
-  return strictQuery
-    .replace(LUCENE_ESCAPE_PAIR, "")
+  // Lucene → dismax: produce a free-token bag from the strict query so
+  // MB's dismax parser can tokenize loosely (catches "Lovesponge" vs
+  // "Love Sponge"). The strict query is `field:"value" AND field:"value"`,
+  // so the title/artist text lives inside the quoted segments. Pull
+  // those out verbatim rather than regex-stripping field prefixes — a
+  // blind `\w+:` strip also eats a colon INSIDE a value (a title like
+  // `Song: The Remix` would lose "Song", since the strip can't tell a
+  // real field prefix from quoted content).
+  const withoutEscapes = strictQuery.replace(LUCENE_ESCAPE_PAIR, "");
+  const quotedValues = [...withoutEscapes.matchAll(/"([^"]*)"/g)]
+    .map((match) => match[1] ?? "")
+    .filter((value) => value.trim().length > 0);
+  if (quotedValues.length > 0) {
+    return quotedValues.join(" ").replace(/\s+/g, " ").trim();
+  }
+  // Bareword fallback: no quoted clauses (e.g. a hand-built unquoted
+  // query). Strip field prefixes and the clause-joining AND directly.
+  return withoutEscapes
     .replace(LUCENE_FIELD_PREFIX, "")
     .replace(/"/g, "")
     .replace(LUCENE_AND_OPERATOR, " ")
@@ -370,5 +479,8 @@ export async function searchRecordings(
  * is responsible for discarding the result when the track is gone.
  */
 export function cancelMusicbrainzRequestsByTag(tag: string): number {
+  // Abort any out-of-slot 503 backoff for this tag too — those waits
+  // live outside the queue, so cancelByTag alone wouldn't reach them.
+  abortBackoffsForTag(tag);
   return queue.cancelByTag(tag);
 }

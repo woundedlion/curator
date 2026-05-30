@@ -34,6 +34,8 @@ class FakeBackend implements Backend {
   loadGate: Promise<void> = Promise.resolve();
   /** Every call to this backend, in order. */
   calls: Call[] = [];
+  /** Set true by dispose() so teardown tests can assert it ran. */
+  disposed = false;
 
   constructor(kind: "html-audio" | "spotify-sdk") {
     this.kind = kind;
@@ -59,6 +61,10 @@ class FakeBackend implements Backend {
   }
   async seek(positionMs: number): Promise<void> {
     this.calls.push({ kind: "seek", positionMs });
+  }
+  dispose(): void {
+    this.disposed = true;
+    this.observer = null;
   }
 
   /** Test helper: synthesize backend events to drive the player. */
@@ -366,14 +372,18 @@ describe("Player — currentTrackId reflects what can be stopped (I2)", () => {
     expect(player.getSnapshot().currentTrackId).toBe("a");
   });
 
-  it("ended event keeps target installed so the toolbar can offer replay", async () => {
+  it("ended event keeps target installed (toolbar can offer replay) but moves to the 'ended' phase", async () => {
     await player.play(localTrack("a"));
     html.emit({ kind: "playing" });
     html.emit({ kind: "ended" });
     const s = player.getSnapshot();
+    // Target stays so the now-playing bar still shows + offers replay,
+    // but the phase is "ended" (not "paused") so a re-press reloads
+    // from the top instead of resuming a dead playback context.
     expect(s.currentTrackId).toBe("a");
-    expect(s.phase).toBe("paused");
+    expect(s.phase).toBe("ended");
     expect(s.positionMs).toBe(0);
+    expect(s.isPlaying).toBe(false);
   });
 
   it("currentTrackId is null only after stop() drains", async () => {
@@ -390,6 +400,60 @@ describe("Player — currentTrackId reflects what can be stopped (I2)", () => {
     await drain();
     expect(errors).toContain("decode failed");
     expect(player.getSnapshot().currentTrackId).toBeNull();
+  });
+});
+
+// ─── 3b. Replay + seek after end-of-track (findings #1, #2) ──────────
+
+describe("Player — replay and seek after a track ends", () => {
+  it("REGRESSION: re-pressing play after `ended` RELOADS the track (fresh install, not resume)", async () => {
+    // The bug: on `ended` the Player left activeBackend installed and
+    // patched phase:"paused". A subsequent play(sameTrack) then routed
+    // to togglePauseInternal → resume(), which is unreliable for the SDK
+    // (its playback context is gone) and never restarts from the top.
+    // After the fix, `ended` tears down activeBackend and the next play
+    // takes the install() path → a fresh load().
+    await player.play(localTrack("a"));
+    html.emit({ kind: "playing" });
+    html.emit({ kind: "ended" });
+    expect(player.getSnapshot().phase).toBe("ended");
+
+    html.calls.length = 0;
+    await player.play(localTrack("a"));
+    // Must RELOAD, not resume. No resume call; exactly one fresh load.
+    expect(html.calls).not.toContainEqual({ kind: "resume" });
+    expect(html.calls).toContainEqual({
+      kind: "load",
+      source: localTrack("a").source,
+    });
+    html.emit({ kind: "playing" });
+    expect(player.getSnapshot().phase).toBe("playing");
+    expect(player.getSnapshot().currentTrackId).toBe("a");
+  });
+
+  it("REGRESSION: replay after `ended` reloads for the SDK backend too (no resume against a dead context)", async () => {
+    await player.play(sdkTrack("x"));
+    sdk.emit({ kind: "playing" });
+    sdk.emit({ kind: "ended" });
+    expect(player.getSnapshot().phase).toBe("ended");
+
+    sdk.calls.length = 0;
+    await player.play(sdkTrack("x"));
+    expect(sdk.calls).not.toContainEqual({ kind: "resume" });
+    expect(sdk.calls).toContainEqual({
+      kind: "load",
+      source: sdkTrack("x").source,
+    });
+  });
+
+  it("seek after `ended` is a no-op (no seek issued against a finished track)", async () => {
+    await player.play(localTrack("a"));
+    html.emit({ kind: "playing" });
+    html.emit({ kind: "position", positionMs: 1000, durationMs: 200_000 });
+    html.emit({ kind: "ended" });
+    html.calls.length = 0;
+    await player.seek(50_000);
+    expect(html.calls).toEqual([]);
   });
 });
 
@@ -414,6 +478,28 @@ describe("Player — pause/resume on current target", () => {
     expect(html.calls).toEqual([]);
     await player.togglePause("a");
     expect(html.calls).toContainEqual({ kind: "pause" });
+  });
+
+  it("REGRESSION: a same-track play() releases the unused freshly-built source (no object-URL leak)", async () => {
+    // The store rebuilds a target (allocating a new object URL for local
+    // files) on every toggle press. When the id matches the current track
+    // the player toggles instead of installing, so that new source is
+    // thrown away — it MUST be released or a blob URL leaks per press.
+    const revoke = vi.spyOn(URL, "revokeObjectURL");
+    await player.play(localTrack("a"));
+    html.emit({ kind: "playing" });
+    revoke.mockClear();
+
+    await player.play(localTrack("a")); // pause — new source discarded
+    expect(html.calls).toContainEqual({ kind: "pause" });
+    expect(revoke).toHaveBeenCalledWith("blob://a");
+    html.emit({ kind: "paused" });
+
+    revoke.mockClear();
+    await player.play(localTrack("a")); // resume — new source discarded
+    expect(html.calls).toContainEqual({ kind: "resume" });
+    expect(revoke).toHaveBeenCalledWith("blob://a");
+    revoke.mockRestore();
   });
 });
 
@@ -597,5 +683,36 @@ describe("Player — subscriptions", () => {
     unsub();
     await player.stop();
     expect(fn.mock.calls.length).toBe(before);
+  });
+});
+
+// ─── 10. Teardown / dispose (finding #4) ─────────────────────────────
+
+describe("Player — dispose() teardown", () => {
+  it("stops both backends, disposes them, and clears subscribers", async () => {
+    const fn = vi.fn();
+    player.subscribe(fn);
+    await player.play(sdkTrack("x")); // instantiates the SDK backend too
+    sdk.emit({ kind: "playing" });
+
+    await player.dispose();
+
+    // Both backends stopped + disposed.
+    expect(html.calls).toContainEqual({ kind: "stop" });
+    expect(sdk.calls).toContainEqual({ kind: "stop" });
+    expect(html.disposed).toBe(true);
+    expect(sdk.disposed).toBe(true);
+    expect(player.getSnapshot().currentTrackId).toBeNull();
+
+    // Subscribers were cleared — a post-dispose transition must not
+    // notify the stale subscriber.
+    const before = fn.mock.calls.length;
+    await player.stop();
+    expect(fn.mock.calls.length).toBe(before);
+  });
+
+  it("dispose() is safe when nothing has played (SDK backend never built)", async () => {
+    await expect(player.dispose()).resolves.toBeUndefined();
+    expect(html.disposed).toBe(true);
   });
 });

@@ -1,4 +1,5 @@
 import { v4 as uuid } from "uuid";
+import { ARTIST_TITLE_SEPARATOR } from "../constants";
 import type { Track } from "../types";
 import {
   CURATOR_EXPORT_FORMAT,
@@ -6,10 +7,21 @@ import {
   type CuratorExportedTrack,
 } from "./curatorExportFormat";
 
-// Cheap pre-check to avoid running JSON.parse on every plain text drop.
-// The format marker appears in any valid export (in the "format" field).
+// Only scan the leading window of the file for the marker. A genuine
+// export is a JSON object whose `"format"` field sits near the top, so
+// the marker always appears within the first few hundred bytes. A
+// previous `text.includes(...)` scanned the ENTIRE file: a large plain
+// `.txt` whose body happened to contain the literal marker string would
+// pass the pre-check and force a full `JSON.parse` of the whole file
+// (which then fails). Bounding both the substring scan AND requiring a
+// JSON-object shape (trimmed start `{`) keeps the cheap reject cheap.
+const MARKER_SCAN_WINDOW = 1024;
+
 function looksLikeCuratorExport(text: string): boolean {
-  return text.includes(CURATOR_EXPORT_FORMAT);
+  // A curator export is always a JSON object; if it doesn't start with
+  // `{` it can't be one, so we never parse it.
+  if (text.trimStart()[0] !== "{") return false;
+  return text.slice(0, MARKER_SCAN_WINDOW).includes(CURATOR_EXPORT_FORMAT);
 }
 
 function asString(value: unknown): string | undefined {
@@ -20,6 +32,17 @@ function asNumber(value: unknown): number | undefined {
 }
 function asBool(value: unknown): boolean | undefined {
   return typeof value === "boolean" ? value : undefined;
+}
+
+// Reconstruct a faithful source line for a round-tripped row. Exports
+// don't carry the original `rawLine`, so we synthesize the canonical
+// "Artist - Title" form (the same separator the text-list parser uses)
+// when both are present, falling back to whichever single field exists.
+function reconstructRawLine(t: CuratorExportedTrack): string {
+  if (t.artist && t.title) {
+    return `${t.artist}${ARTIST_TITLE_SEPARATOR}${t.title}`;
+  }
+  return t.title ?? t.artist ?? "";
 }
 
 function readTrack(raw: unknown): CuratorExportedTrack | null {
@@ -80,7 +103,7 @@ export function buildTrackFromExport(t: CuratorExportedTrack): Track {
     id: uuid(),
     source: {
       kind: "text",
-      rawLine: t.title ?? t.artist ?? "",
+      rawLine: reconstructRawLine(t),
     },
     title: t.title,
     artist: t.artist,

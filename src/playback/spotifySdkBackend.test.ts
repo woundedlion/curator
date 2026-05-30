@@ -230,6 +230,44 @@ describe("SpotifySdkBackend — stop()", () => {
   });
 });
 
+// ─── 2b. dispose() teardown (finding #4) ─────────────────────────────
+
+describe("SpotifySdkBackend — dispose()", () => {
+  it("detaches the state listener and halts the poller (no SDK disconnect — that's owned by spotifyPlayer.ts)", async () => {
+    vi.useFakeTimers();
+    player.getCurrentState.mockResolvedValue({
+      paused: false,
+      position: 0,
+      duration: 1000,
+    } satisfies SpotifyPlayerSdkState);
+    await backend.load({
+      kind: "spotify-sdk",
+      uri: "spotify:track:abc",
+      label: "Spotify (full track)",
+    });
+    await vi.advanceTimersByTimeAsync(500);
+    const callsBefore = player.getCurrentState.mock.calls.length;
+
+    backend.dispose();
+
+    // Listener detached.
+    expect(player.listenersFor("player_state_changed")).toHaveLength(0);
+    // Poller halted — no further getCurrentState calls.
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(player.getCurrentState.mock.calls.length).toBe(callsBefore);
+    // dispose() does NOT disconnect the SDK player (destroySpotifyPlayer
+    // owns that lifecycle).
+    expect(player.disconnect).not.toHaveBeenCalled();
+  });
+
+  it("is idempotent and safe before any load()", () => {
+    expect(() => {
+      backend.dispose();
+      backend.dispose();
+    }).not.toThrow();
+  });
+});
+
 // ─── 3. Polling cycle ────────────────────────────────────────────────
 
 describe("SpotifySdkBackend — 500ms polling cycle", () => {
@@ -430,6 +468,28 @@ describe("SpotifySdkBackend — applyState translation", () => {
     });
     player.fireStateChanged({ paused: true, position: 0, duration: 30_000 });
     await backend.stop();
+    events.length = 0;
+    await backend.load({
+      kind: "spotify-sdk",
+      uri: "spotify:track:def",
+      label: "Spotify (full track)",
+    });
+    player.fireStateChanged({ paused: true, position: 0, duration: 30_000 });
+    expect(events).toContainEqual({ kind: "paused" });
+  });
+
+  it("REGRESSION: a same-backend load() WITHOUT a stop() also resets the phase dedupe", async () => {
+    // The Player skips stop() on a same-backend SDK→SDK switch, so the
+    // dedupe reset can't live only in stop(). A new track that starts in
+    // the same phase the previous one ended in must still emit its first
+    // phase event — otherwise the UI is stuck showing the old phase.
+    await backend.load({
+      kind: "spotify-sdk",
+      uri: "spotify:track:abc",
+      label: "Spotify (full track)",
+    });
+    player.fireStateChanged({ paused: true, position: 0, duration: 30_000 });
+    // No stop() — directly load the next track (same backend).
     events.length = 0;
     await backend.load({
       kind: "spotify-sdk",

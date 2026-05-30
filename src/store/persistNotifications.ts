@@ -3,8 +3,12 @@ import { useUiStore } from "./uiStore";
 
 // Per-session latches. Persistence toasts can fire on every keystroke
 // once writes are failing — latching once per kind means the user sees
-// the warning but isn't drowned in duplicates. The next reload resets
-// these to false naturally because the module re-loads.
+// the warning but isn't drowned in duplicates. These are module-level
+// state, so they reset to false ONLY on a full document reload (a fresh
+// module evaluation) — NOT on an in-app "soft reset" (clear playlist,
+// disconnect, etc.), which leaves the module instance intact. Once a
+// kind has latched, that toast won't re-show again until the page is
+// actually reloaded.
 let quotaToastShown = false;
 let genericPersistToastShown = false;
 

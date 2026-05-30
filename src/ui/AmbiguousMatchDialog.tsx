@@ -200,9 +200,15 @@ export function AmbiguousMatchDialog({ trackId, onClose }: Props) {
     Boolean(preferFullPlayback && clientId) &&
     (sdkStatus === "ready" || sdkStatus === "off" || sdkStatus === "loading");
 
+  // `shouldApply` lets the caller abandon all post-await side effects
+  // (state writes + toasts) when the search has been superseded — used
+  // by the mount auto-search to bail if the dialog unmounts mid-flight.
+  // It defaults to always-apply for the synchronous Search-button path,
+  // which is only reachable while the dialog is mounted anyway.
   async function runSearchWithFields(
     title: string | undefined,
     artist: string | undefined,
+    shouldApply: () => boolean = () => true,
   ) {
     if (!clientId) {
       pushToast({
@@ -218,17 +224,19 @@ export function AmbiguousMatchDialog({ trackId, onClose }: Props) {
         clientId,
         market,
       );
+      if (!shouldApply()) return;
       setSearchedCandidates(next);
       if (next.length === 0) {
         pushToast({ kind: "info", message: "No Spotify results for that query" });
       }
     } catch (error) {
       console.error("re-search failed", error);
+      if (!shouldApply()) return;
       const detail =
         error instanceof Error ? error.message : "see console for details";
       pushToast({ kind: "error", message: `Search failed: ${detail}` });
     } finally {
-      setSearching(false);
+      if (shouldApply()) setSearching(false);
     }
   }
 
@@ -252,8 +260,17 @@ export function AmbiguousMatchDialog({ trackId, onClose }: Props) {
         : [];
     if (existing.length > 0) return;
     if (!track.title && !track.artist) return;
+    // Cancellation guard: the search is async, so if the user closes the
+    // dialog (this component unmounts) before it resolves, the cleanup
+    // flips `ignore` and `runSearchWithFields` skips every state write
+    // and the "No Spotify results" toast — no setState-on-unmounted and
+    // no toast for a dialog the user already dismissed.
+    let ignore = false;
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    void runSearchWithFields(track.title, track.artist);
+    void runSearchWithFields(track.title, track.artist, () => !ignore);
+    return () => {
+      ignore = true;
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

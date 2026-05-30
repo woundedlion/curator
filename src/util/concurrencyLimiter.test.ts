@@ -81,6 +81,29 @@ describe("ConcurrencyLimiter", () => {
     await expect(limiter.run(async () => "ok")).resolves.toBe("ok");
   });
 
+  it("clamps a non-positive limit to 1 instead of deadlocking", async () => {
+    // A cap of 0 (or negative) would make `active < maxInFlight` never
+    // true, so acquire() would queue forever — a silent deadlock. The
+    // constructor clamps to >=1, degrading to strict serialization.
+    const limiter = new ConcurrencyLimiter(0);
+    let inFlight = 0;
+    let maxInFlight = 0;
+
+    const tasks = Array.from({ length: 5 }, () =>
+      limiter.run(async () => {
+        inFlight++;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await new Promise((r) => setTimeout(r, 1));
+        inFlight--;
+      }),
+    );
+
+    // All tasks must actually complete (proving no deadlock), and never
+    // overlap (proving the clamp serialized at 1).
+    await Promise.all(tasks);
+    expect(maxInFlight).toBe(1);
+  });
+
   it("permits as many concurrent tasks as the limit when called with limit=N", async () => {
     const limiter = new ConcurrencyLimiter(3);
     const gates = [deferred<void>(), deferred<void>(), deferred<void>()];

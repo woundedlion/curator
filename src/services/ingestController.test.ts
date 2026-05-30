@@ -211,6 +211,33 @@ describe("ingestDroppedFiles", () => {
     expect(state.playlist.trackIds).toHaveLength(1);
   });
 
+  it("queues a SINGLE post-ingest sweep for a batch of N curator-export drops", async () => {
+    // Regression: importing N envelopes previously queued N redundant
+    // full match+enrich sweeps (one per envelope). The batch should
+    // queue exactly one sweep after all envelopes are imported.
+    const envelope = (name: string) => ({
+      format: "curator-playlist-v1" as const,
+      name,
+      tracks: [{ title: `Song ${name}`, artist: `Artist ${name}` }],
+    });
+    const files = [
+      makeTextFile("a.curator.txt", JSON.stringify(envelope("A"))),
+      makeTextFile("b.curator.txt", JSON.stringify(envelope("B"))),
+      makeTextFile("c.curator.txt", JSON.stringify(envelope("C"))),
+    ];
+
+    await ingestDroppedFiles(files);
+    // Let the chained background runner promise settle.
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // All three envelopes' tracks landed...
+    expect(usePlaylistStore.getState().playlist.trackIds).toHaveLength(3);
+    // ...but the match+enrich runners ran exactly once for the whole batch.
+    expect(mocks.matchAllOnSpotify).toHaveBeenCalledTimes(1);
+    expect(mocks.enrichAllPending).toHaveBeenCalledTimes(1);
+  });
+
   it("does NOT overwrite playlist meta when the draft already has tracks", async () => {
     // Seed the draft so it's no longer pristine.
     usePlaylistStore.setState((s) => ({

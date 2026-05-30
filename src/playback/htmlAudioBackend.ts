@@ -7,10 +7,23 @@
 import type { Backend, BackendEvent, BackendObserver } from "./player";
 import { getAudioElementUrl, type PlaybackSource } from "./playbackSource";
 
+// MediaError.MEDIA_ERR_ABORTED is spec-fixed at 1. We reference the
+// global constant when it exists (real browsers), but fall back to the
+// literal so non-browser test environments (happy-dom doesn't expose a
+// global `MediaError`) don't throw a ReferenceError reading it. Naming
+// it here keeps the abort check in attachListeners() self-documenting.
+const MEDIA_ERR_ABORTED: number =
+  typeof MediaError !== "undefined" ? MediaError.MEDIA_ERR_ABORTED : 1;
+
 export class HtmlAudioBackend implements Backend {
   readonly kind = "html-audio" as const;
   private audio: HTMLAudioElement;
   private observer: BackendObserver | null = null;
+  // Hold each (event, handler) pair so dispose() can detach exactly the
+  // listeners we added. Anonymous arrow handlers can't be removed, which
+  // would leak this backend (and its closed-over observer) for the life
+  // of the <audio> element across a teardown/re-init cycle.
+  private listenerBindings: Array<[string, EventListener]> = [];
 
   constructor(audio: HTMLAudioElement) {
     this.audio = audio;
@@ -20,6 +33,23 @@ export class HtmlAudioBackend implements Backend {
 
   setObserver(observer: BackendObserver | null): void {
     this.observer = observer;
+  }
+
+  /**
+   * Tear down for app unmount / store teardown. Pauses the element and
+   * removes every DOM listener this backend attached so the <audio>
+   * element can be GC'd (or safely reused by a re-initialized Player)
+   * without leaking the old observer. Idempotent — a second call finds
+   * no bindings to remove. After dispose() the backend must not be
+   * reused; the store builds a fresh one on the next initialize().
+   */
+  dispose(): void {
+    this.audio.pause();
+    for (const [event, handler] of this.listenerBindings) {
+      this.audio.removeEventListener(event, handler);
+    }
+    this.listenerBindings = [];
+    this.observer = null;
   }
 
   async load(source: PlaybackSource): Promise<boolean> {
@@ -88,23 +118,36 @@ export class HtmlAudioBackend implements Backend {
   }
 
   private attachListeners(): void {
-    this.audio.addEventListener("play", () => this.emit({ kind: "playing" }));
-    this.audio.addEventListener("pause", () => this.emit({ kind: "paused" }));
-    this.audio.addEventListener("ended", () => this.emit({ kind: "ended" }));
-    this.audio.addEventListener("timeupdate", () => this.emitPosition());
-    this.audio.addEventListener("loadedmetadata", () => this.emitPosition());
-    this.audio.addEventListener("durationchange", () => this.emitPosition());
-    this.audio.addEventListener("seeked", () => this.emitPosition());
-    this.audio.addEventListener("error", () => {
-      // MEDIA_ERR_ABORTED is the audio element's natural response to
-      // `audio.src = newUrl` aborting the prior load — that's not a
-      // user-facing failure, so silence it. Any other media error is
-      // worth surfacing.
-      if (this.audio.error?.code === this.audio.error?.MEDIA_ERR_ABORTED) {
+    this.on("play", () => this.emit({ kind: "playing" }));
+    this.on("pause", () => this.emit({ kind: "paused" }));
+    this.on("ended", () => this.emit({ kind: "ended" }));
+    this.on("timeupdate", () => this.emitPosition());
+    this.on("loadedmetadata", () => this.emitPosition());
+    this.on("durationchange", () => this.emitPosition());
+    this.on("seeked", () => this.emitPosition());
+    this.on("error", () => {
+      const error = this.audio.error;
+      // Two cases are NOT user-facing failures and must be dropped:
+      //   1. error === null — a synthetic/late "error" event with no
+      //      MediaError attached (e.g. one that fires after stop() when
+      //      audio.error is null). Nothing to surface.
+      //   2. MEDIA_ERR_ABORTED — the element's natural response to
+      //      `audio.src = newUrl` aborting the prior load. Expected.
+      // Anything else is a real media error worth a toast. Comparing
+      // against the MEDIA_ERR_ABORTED *constant* (rather than reading the
+      // code off the possibly-null instance via optional chaining) makes
+      // the intent explicit and refactor-safe.
+      if (!error || error.code === MEDIA_ERR_ABORTED) {
         return;
       }
       this.emit({ kind: "error", message: describeMediaError(this.audio) });
     });
+  }
+
+  /** Register a listener and record the binding so dispose() can detach it. */
+  private on(event: string, handler: EventListener): void {
+    this.audio.addEventListener(event, handler);
+    this.listenerBindings.push([event, handler]);
   }
 
   private emit(event: BackendEvent): void {

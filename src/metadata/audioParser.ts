@@ -12,6 +12,23 @@ function blankToUndefined(value: string | undefined | null): string | undefined 
   return trimmed.length === 0 ? undefined : trimmed;
 }
 
+// Numeric guards mirroring the worker's (audioParser.worker.ts). The
+// worker already sanitizes these before they cross the wire; we repeat
+// the validation here so the two code paths stay consistent and so the
+// Track is protected even if a future caller feeds unsanitized
+// ParsedFields straight into buildTrackFromParsed.
+function sanePosition(value: number | undefined): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
+  if (!Number.isInteger(value) || value <= 0) return undefined;
+  return value;
+}
+
+function saneYear(value: number | undefined): number | undefined {
+  if (typeof value !== "number" || !Number.isInteger(value)) return undefined;
+  if (value < 1860 || value > 2200) return undefined;
+  return value;
+}
+
 function pickArtistFromParsed(fields: ParsedFields): string | undefined {
   return blankToUndefined(fields.artist) ?? blankToUndefined(fields.albumartist);
 }
@@ -58,10 +75,10 @@ function buildTrackFromParsed(
     artist: primaryArtist,
     album: id3Album ?? filenameHint.album,
     albumArtist: id3AlbumArtist,
-    year: parsed.year,
-    trackNo: parsed.trackNo ?? filenameHint.trackNo,
-    trackOf: parsed.trackOf,
-    discNo: parsed.discNo,
+    year: saneYear(parsed.year),
+    trackNo: sanePosition(parsed.trackNo) ?? filenameHint.trackNo,
+    trackOf: sanePosition(parsed.trackOf),
+    discNo: sanePosition(parsed.discNo),
     durationMs: parsed.durationMs,
     localFile: file,
     altQuery,

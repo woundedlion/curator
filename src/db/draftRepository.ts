@@ -130,13 +130,20 @@ export async function loadDraft(
   // current writer pattern (clear+put under one tx) already prevents
   // most interleavings, but this is cheap and forward-compatible.
   const tx = db.transaction([STORE_PLAYLISTS, STORE_TRACKS], "readonly");
-  const playlist =
-    ((await tx.objectStore(STORE_PLAYLISTS).get(playlistId)) as
-      | Playlist
-      | undefined) ?? null;
-  const tracks = (await tx.objectStore(STORE_TRACKS).getAll()) as Track[];
+  // Fire BOTH reads synchronously before awaiting either — awaiting the
+  // `get` first would let the transaction's request queue drain and
+  // auto-commit before we issue the `getAll`, raising
+  // TransactionInactiveError. Mirrors writeDraftOnce's batch-then-await
+  // pattern: collect the request promises, await them together, then
+  // await tx.done.
+  const playlistReq = tx.objectStore(STORE_PLAYLISTS).get(playlistId);
+  const tracksReq = tx.objectStore(STORE_TRACKS).getAll();
+  const [playlistRow, tracks] = await Promise.all([playlistReq, tracksReq]);
+  const playlist = ((playlistRow as Playlist | undefined) ?? null) as
+    | Playlist
+    | null;
   await tx.done;
-  return { playlist, tracks };
+  return { playlist, tracks: tracks as Track[] };
 }
 
 export async function clearDraft(playlistId: string): Promise<void> {

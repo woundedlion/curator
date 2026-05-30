@@ -164,21 +164,37 @@ export class SpotifyNetworkError extends Error {
 
 // --- Retry-After parsing ---------------------------------------------------
 
+// Parse an RFC 9110 §10.2.3 Retry-After (integer delta-seconds OR
+// HTTP-date) into milliseconds, or return null when the header is
+// absent, unparseable, or names a time at/in the past. A past date is
+// reported as "no usable value" rather than "retry now": a clock-skewed
+// past date must not short-circuit a backoff straight back into an
+// active ban. No clamping or defaulting is applied here — callers layer
+// their own default and clamp (Spotify and MusicBrainz differ on both).
+export function tryParseRetryAfterMs(
+  headerValue: string | null,
+  nowMs: number = Date.now(),
+): number | null {
+  if (!headerValue) return null;
+  const trimmed = headerValue.trim();
+  if (/^\d+$/.test(trimmed)) {
+    return Math.max(1, parseInt(trimmed, 10)) * 1000;
+  }
+  const dateMs = Date.parse(trimmed);
+  if (Number.isFinite(dateMs)) {
+    const deltaMs = dateMs - nowMs;
+    return deltaMs > 0 ? deltaMs : null;
+  }
+  return null;
+}
+
 export function parseRetryAfter(
   headerValue: string | null,
   nowMs: number = Date.now(),
 ): number {
-  // RFC 9110 §10.2.3: integer delta-seconds OR HTTP-date.
+  const parsed = tryParseRetryAfterMs(headerValue, nowMs);
+  if (parsed !== null) return clampRetryAfterMs(parsed);
   if (headerValue) {
-    const trimmed = headerValue.trim();
-    if (/^\d+$/.test(trimmed)) {
-      const seconds = parseInt(trimmed, 10);
-      return clampRetryAfterMs(Math.max(1, seconds) * 1000);
-    }
-    const dateMs = Date.parse(trimmed);
-    if (Number.isFinite(dateMs)) {
-      return clampRetryAfterMs(Math.max(1000, dateMs - nowMs));
-    }
     console.warn(
       "Spotify Retry-After header could not be parsed; defaulting to " +
         `${DEFAULT_RETRY_AFTER_SECONDS}s — raw value:`,
@@ -223,7 +239,17 @@ const breaker = new CircuitBreaker({
   maxOpenMs: CIRCUIT_BREAKER_MAX_MS,
 });
 
+// De-dupe state for the rate-limit toast. We track the magnitude of the
+// last window we toasted AND the wall-clock time it expires, deriving the
+// reset LAZILY on the next toast attempt rather than holding a pending
+// setTimeout. The previous approach scheduled a macrotask up to ~12h out
+// to zero `lastReportedRateLimitMs`; a long-lived timer is fragile (it's
+// throttled/killed by background-tab and sleep policies, and leaks if the
+// page is torn down) and entirely avoidable — we only ever read this
+// state from inside pushRateLimitToast, so we can recompute "has the prior
+// window elapsed?" on demand.
 let lastReportedRateLimitMs = 0;
+let lastReportedExpiresAt = 0;
 
 // --- observability ---------------------------------------------------------
 
@@ -252,8 +278,14 @@ export function resetSpotifyCircuit(): void {
 // --- toast ----------------------------------------------------------------
 
 function pushRateLimitToast(retryMs: number): void {
+  // Lazily expire the prior report: if the window we last toasted has
+  // already elapsed, forget it so a fresh (even smaller) penalty toasts
+  // again. This replaces the long-lived reset timer.
+  const now = Date.now();
+  if (now >= lastReportedExpiresAt) lastReportedRateLimitMs = 0;
   if (retryMs <= lastReportedRateLimitMs) return;
   lastReportedRateLimitMs = retryMs;
+  lastReportedExpiresAt = now + retryMs;
   const seconds = Math.ceil(retryMs / 1000);
   const friendly =
     seconds < 60
@@ -267,9 +299,6 @@ function pushRateLimitToast(retryMs: number): void {
       message: `Spotify rate-limited — pausing all requests for ${friendly}. Spotify enforces a per-app quota; consider reducing playlist size or waiting it out.`,
     });
   });
-  setTimeout(() => {
-    if (lastReportedRateLimitMs === retryMs) lastReportedRateLimitMs = 0;
-  }, retryMs + 1000);
 }
 
 // --- request submission ----------------------------------------------------
@@ -387,8 +416,24 @@ async function submitRaw(
   // its own reset) remains correct.
   try {
     return await queue.enqueue(async (signal) => {
-      // Another caller may have tripped the breaker while we were
-      // queued; non-probe callers respect the new window.
+      // Half-open invariant — how "only the probe runs when half-open" is
+      // actually enforced:
+      //   1. Slot selection is SYNCHRONOUS at submit time (tryAcquire,
+      //      above, before enqueue). While the breaker is open every
+      //      non-probe gets "fail-fast" and never enqueues; while
+      //      half-open the FIRST caller gets "probe" and all others get
+      //      "fail-fast" (probeInFlight guards it). So a non-probe task
+      //      sitting in this queue can only have acquired "pass" — i.e.
+      //      the breaker was CLOSED when it was admitted.
+      //   2. This re-check then covers the one remaining race: the
+      //      breaker may have TRIPPED (full-open) while this non-probe
+      //      task waited its turn. remainingMs() > 0 means full-open
+      //      (during half-open openUntil is in the past, so remainingMs()
+      //      is 0 — a half-open non-probe can't exist here per step 1, so
+      //      reading 0 then is not a hole in the invariant).
+      // Net: the timing check is NOT what keeps non-probes out during
+      // half-open — synchronous slot selection is. This guard exists for
+      // the trip-while-queued case.
       if (!isProbe && breaker.remainingMs() > 0) {
         throw new SpotifyRateLimitError(breaker.remainingMs());
       }
@@ -577,6 +622,7 @@ export function __resetSpotifyRateLimitStateForTests(): void {
   queue.reset();
   breaker.reset();
   lastReportedRateLimitMs = 0;
+  lastReportedExpiresAt = 0;
 }
 
 export function __getSpotifyRateLimitStateForTests(): {

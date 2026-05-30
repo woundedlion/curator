@@ -27,23 +27,41 @@ const probeLimiter = new ConcurrencyLimiter(PROBE_CONCURRENCY);
 // that probes a million distinct releases would keep them all live
 // regardless of how many actually persist.
 const MAX_IN_MEMORY_NEGATIVE_CACHE = 10_000;
-let negativeCache: Set<string> | null = null;
+// Initialized to an EMPTY Set up front (not null) so `recordNegative`
+// always has a live in-memory target. Rationale: during the async
+// hydration window a probe can land a fresh 404 and call
+// `recordNegative(mbid)`. If `negativeCache` were null until hydration
+// resolved, that in-session 404 would persist to IDB but be lost from
+// memory the instant hydration overwrote the Set with the IDB snapshot
+// — a track probed during startup could then re-probe the same dead
+// release later in the session. Keeping a live Set + UNIONing the IDB
+// ids on hydration (rather than replacing) makes the in-memory
+// short-circuit authoritative for the whole session.
+const negativeCache: Set<string> = new Set();
+let hydrated = false;
 let hydratePromise: Promise<void> | null = null;
 
 async function ensureHydrated(): Promise<Set<string>> {
-  if (negativeCache !== null) return negativeCache;
+  if (hydrated) return negativeCache;
   if (!hydratePromise) {
     hydratePromise = loadCoverArtNegativeCache()
       .then((mbids) => {
-        negativeCache = new Set(mbids);
+        // UNION, not replace: any 404s recorded in-session during the
+        // hydration window are already in `negativeCache` and must
+        // survive. Adding the loaded ids on top preserves both.
+        for (const mbid of mbids) negativeCache.add(mbid);
+        hydrated = true;
       })
       .catch((error) => {
         console.warn("coverArt: failed to hydrate negative cache", error);
-        negativeCache = new Set();
+        // Degraded mode: keep whatever was recorded in-session and mark
+        // hydrated so we don't re-await a known-failed loader on every
+        // probe (re-probing dead releases is the acceptable fallback).
+        hydrated = true;
       });
   }
   await hydratePromise;
-  return negativeCache!;
+  return negativeCache;
 }
 
 // Microtask-batched persistence buffer. A re-enrich-all burst on a
@@ -68,16 +86,16 @@ function flushNegativePersist(): void {
 }
 
 function recordNegative(mbid: string): void {
-  if (negativeCache !== null) {
-    negativeCache.add(mbid);
-    // FIFO evict: Set iteration order is insertion order, so the first
-    // value seen by the iterator is the oldest. We only evict one per
-    // add because we only added one — the set never overshoots by more
-    // than one entry between record calls.
-    if (negativeCache.size > MAX_IN_MEMORY_NEGATIVE_CACHE) {
-      const oldest = negativeCache.values().next().value;
-      if (oldest !== undefined) negativeCache.delete(oldest);
-    }
+  // `negativeCache` is always a live Set (initialized eagerly), so an
+  // in-session 404 updates memory immediately — even mid-hydration.
+  negativeCache.add(mbid);
+  // FIFO evict: Set iteration order is insertion order, so the first
+  // value seen by the iterator is the oldest. We only evict one per
+  // add because we only added one — the set never overshoots by more
+  // than one entry between record calls.
+  if (negativeCache.size > MAX_IN_MEMORY_NEGATIVE_CACHE) {
+    const oldest = negativeCache.values().next().value;
+    if (oldest !== undefined) negativeCache.delete(oldest);
   }
   pendingNegativePersist.add(mbid);
   if (!persistFlushScheduled) {

@@ -21,10 +21,22 @@ export type EnrichmentOutcome = {
   failureReason?: "no-query" | "no-results";
 };
 
+// Reference fields a candidate was actually scored against. Primary
+// candidates carry the unmodified track fields; alt candidates carry
+// the altQuery fields. classifyOutcome runs the similarity gate against
+// the SAME reference a candidate's score was computed from — otherwise
+// (merged primary+alt) the gate could judge an alt candidate against the
+// primary's title and spuriously reject a legitimate match, or vice
+// versa. We keep this as a side-table keyed by reference identity rather
+// than widening MBCandidate (a persisted/cached type that must not gain
+// a transient field).
+type ScoringReference = { title?: string; artist?: string };
+
 function classifyOutcome(
   scored: MBCandidate[],
-  track: Track,
+  defaultReference: ScoringReference,
   acceptThreshold: number,
+  referenceFor?: (candidate: MBCandidate) => ScoringReference,
 ): EnrichmentOutcome {
   const best = scored[0];
   if (!best) {
@@ -35,9 +47,13 @@ function classifyOutcome(
       failureReason: "no-results",
     };
   }
+  // Gate `best` against the reference it was scored against, not a
+  // single global reference — keeps score and similarity coherent for
+  // the merged primary+alt set.
+  const reference = referenceFor ? referenceFor(best) : defaultReference;
   const scoreOk = best.score >= acceptThreshold;
-  const titleOk = fieldLooksSimilar(track.title, best.title);
-  const artistOk = fieldLooksSimilar(track.artist, best.artist);
+  const titleOk = fieldLooksSimilar(reference.title, best.title);
+  const artistOk = fieldLooksSimilar(reference.artist, best.artist);
   if (scoreOk && titleOk && artistOk) {
     return {
       status: "matched",
@@ -64,12 +80,13 @@ function altQueryDiffers(
   primary: { title?: string; artist?: string },
   alt: { title?: string; artist?: string },
 ): boolean {
-  return (
-    primary.title?.toLowerCase().trim() !==
-      alt.title?.toLowerCase().trim() ||
-    primary.artist?.toLowerCase().trim() !==
-      alt.artist?.toLowerCase().trim()
-  );
+  // Compare the actual Lucene queries the two field tuples produce, not
+  // a weaker ad-hoc lowercase/trim. buildRecordingQuery normalizes
+  // (strips parentheticals, `feat.`, diacritics, &→and), so an alt that
+  // differs from the primary only by, say, a "(Live)" suffix collapses
+  // to the SAME query — issuing it would burn a 1 req/sec MB slot on a
+  // byte-identical request.
+  return buildRecordingQuery(primary) !== buildRecordingQuery(alt);
 }
 
 function mergeCandidatesPreferringPrimary(
@@ -155,6 +172,11 @@ export async function enrichTrack(
     );
   }
   let outcome = classifyOutcome(primaryScored, track, acceptThreshold);
+  // Primary candidates are scored against the unmodified track fields.
+  const primaryReference: ScoringReference = {
+    title: track.title,
+    artist: track.artist,
+  };
 
   const shouldTryAlt =
     outcome.status !== "matched" &&
@@ -190,7 +212,27 @@ export async function enrichTrack(
     const mergedCandidates = mergeCandidatesPreferringPrimary(primaryScored, altScored)
       .slice()
       .sort((a, b) => b.score - a.score);
-    outcome = classifyOutcome(mergedCandidates, altScoringTrack, acceptThreshold);
+    // Apples-to-apples classification: because scores were computed
+    // against DIFFERENT references (primary vs altScoringTrack), the
+    // similarity gate must compare each candidate against the SAME
+    // reference its score came from. mergeCandidatesPreferringPrimary
+    // keeps primary entries when a recordingId appears in both, so a
+    // recordingId present in `primaryScored` is a primary candidate.
+    // Without this, classifyOutcome would gate whatever sorts first
+    // against `altScoringTrack`, which could reject a legitimate primary
+    // match whose title is close to `track` but not to the altQuery.
+    const altReference: ScoringReference = {
+      title: track.altQuery.title ?? track.title,
+      artist: track.altQuery.artist ?? track.artist,
+    };
+    const primaryIds = new Set(primaryScored.map((c) => c.recordingId));
+    outcome = classifyOutcome(
+      mergedCandidates,
+      altReference,
+      acceptThreshold,
+      (candidate) =>
+        primaryIds.has(candidate.recordingId) ? primaryReference : altReference,
+    );
   }
 
   // The cache is keyed on the **primary** (title, artist, album) — so it

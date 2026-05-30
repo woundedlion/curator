@@ -6,7 +6,11 @@ import {
   SPOTIFY_TOKEN_URL,
 } from "../constants";
 import type { SpotifyTokens } from "../types";
-import { SpotifyAuthExpiredError, runWithRateLimitPolicy } from "./apiClient";
+import {
+  SpotifyAuthExpiredError,
+  SpotifyServerError,
+  runWithRateLimitPolicy,
+} from "./apiClient";
 import {
   deriveCodeChallenge,
   generateAuthState,
@@ -29,8 +33,68 @@ type TokenResponse = {
   token_type: string;
 };
 
-function toTokens(response: TokenResponse, fallbackRefresh?: string): SpotifyTokens {
-  const refreshToken = response.refresh_token ?? fallbackRefresh ?? "";
+// Thrown when the INITIAL authorization-code exchange returns a token
+// payload with no refresh_token and no fallback. Previously this case
+// silently persisted refreshToken: "" — the next refresh then POSTed an
+// empty refresh_token, Spotify returned 400 (invalid_grant), and the user
+// was logged out with no explanation. Failing loudly at the exchange
+// boundary lets the bootstrap surface a clear "connect failed, reconnect"
+// toast instead of a delayed silent logout. Typed so callers can
+// discriminate it from a generic exchange failure if needed.
+export class MissingRefreshTokenError extends Error {
+  constructor() {
+    super("Spotify token exchange returned no refresh_token");
+    this.name = "MissingRefreshTokenError";
+  }
+}
+
+// Thrown when the configured redirect URI is not a well-formed absolute
+// http(s) URL. `spotifyRedirectUri` is user-editable free text (see
+// SettingsDialog); validating at the auth boundary — rather than in the
+// store — keeps the single point of truth here and lets the UI surface a
+// clear error instead of bouncing the user to a malformed authorize URL
+// or a token request Spotify rejects opaquely.
+export class InvalidRedirectUriError extends Error {
+  constructor(value: string) {
+    super(`Spotify redirect URI is not a valid http(s) URL: ${value || "(empty)"}`);
+    this.name = "InvalidRedirectUriError";
+  }
+}
+
+// Validate at the point of use (NOT in settingsStore — that's owned
+// elsewhere and stores raw free text). Rejects anything that isn't an
+// absolute http: or https: URL, which is the only shape Spotify's
+// authorize/token endpoints accept. Returns the normalized string.
+function assertValidRedirectUri(redirectUri: string): string {
+  let parsed: URL;
+  try {
+    parsed = new URL(redirectUri);
+  } catch {
+    throw new InvalidRedirectUriError(redirectUri);
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new InvalidRedirectUriError(redirectUri);
+  }
+  return redirectUri;
+}
+
+// `requireRefresh` is set on the INITIAL code exchange (no prior token to
+// fall back to). On the refresh path Spotify legitimately omits
+// refresh_token to signal "reuse the existing one", so we fall back and
+// never throw there.
+function toTokens(
+  response: TokenResponse,
+  fallbackRefresh?: string,
+  requireRefresh = false,
+): SpotifyTokens {
+  const refreshToken = response.refresh_token ?? fallbackRefresh;
+  if (refreshToken === undefined || refreshToken === "") {
+    if (requireRefresh) throw new MissingRefreshTokenError();
+    // Refresh path with no new token and no usable fallback should not
+    // happen (we always pass the existing refreshToken), but guard the
+    // empty-string sentinel from ever being persisted regardless.
+    throw new MissingRefreshTokenError();
+  }
   return {
     accessToken: response.access_token,
     refreshToken,
@@ -70,6 +134,11 @@ export async function beginAuthFlow(
   clientId: string,
   redirectUri: string,
 ): Promise<void> {
+  // Validate the user-editable redirect URI before it flows into the
+  // authorize URL (and later the token request). A malformed value here
+  // produces a confusing dead-end on Spotify's side; throw a typed error
+  // the UI can surface instead.
+  assertValidRedirectUri(redirectUri);
   const verifier = generateCodeVerifier();
   const challenge = await deriveCodeChallenge(verifier);
   const state = generateAuthState();
@@ -119,6 +188,11 @@ async function exchangeAuthorizationCode(
   code: string,
   verifier: string,
 ): Promise<SpotifyTokens> {
+  // Validate again at the token-request boundary — completeAuthFlow can
+  // be reached on the redirect-back path without having gone through this
+  // process's beginAuthFlow (e.g. a stored callback after reload), so the
+  // earlier check isn't guaranteed to have run.
+  assertValidRedirectUri(redirectUri);
   const body = new URLSearchParams({
     grant_type: "authorization_code",
     code,
@@ -129,7 +203,11 @@ async function exchangeAuthorizationCode(
   const response = await postToTokenEndpoint(body);
   if (!response.ok) throw new Error("Spotify token exchange failed");
   const json = (await response.json()) as TokenResponse;
-  return toTokens(json);
+  // requireRefresh: the initial exchange MUST yield a refresh_token. If
+  // Spotify returns none, throw rather than persisting an empty-string
+  // sentinel that would 400 on the next refresh and silently log the user
+  // out.
+  return toTokens(json, undefined, true);
 }
 
 export type CallbackParams = {
@@ -235,7 +313,16 @@ async function refreshAccessToken(
     // tokens on a 502 would log the user out for every flake; let the
     // caller retry instead.
     if (response.status >= 500) {
-      throw new Error(`Spotify token refresh transient failure: ${response.status}`);
+      // Typed (not a bare Error) so callers can discriminate. In
+      // particular the playlist push treats a token-endpoint server
+      // error as fatal — there's no point retrying the same doomed
+      // refresh once per remaining chunk — while keeping chunk-level
+      // 5xx on the /items call itself retryable.
+      throw new SpotifyServerError(
+        "/api/token",
+        response.status,
+        "token refresh transient failure",
+      );
     }
     clearTokens();
     // Refresh failure means the session is irrecoverably gone — surface a
@@ -252,19 +339,32 @@ async function refreshAccessToken(
 // Serializes concurrent refresh attempts. Without this, N near-simultaneous
 // Spotify calls all see the same expiring token and each fire a refresh —
 // Spotify invalidates earlier refresh tokens on use, so racing refreshes
-// log the user out unpredictably.
-let refreshInFlight: Promise<SpotifyTokens> | null = null;
+// log the user out unpredictably. Keyed on clientId so a refresh for one
+// app can never hand back a token minted for a different one (clientId is
+// stable per session in practice, but the bare boolean conflated "one
+// refresh" with "one client").
+let refreshInFlight:
+  | { clientId: string; promise: Promise<SpotifyTokens>; token: object }
+  | null = null;
 
 export async function getValidAccessToken(clientId: string): Promise<string> {
   const tokens = readTokens();
   if (!tokens) throw new SpotifyAuthExpiredError();
   if (isAccessTokenFresh(tokens)) return tokens.accessToken;
-  if (!refreshInFlight) {
-    refreshInFlight = refreshAccessToken(clientId, tokens).finally(() => {
-      refreshInFlight = null;
+  if (!refreshInFlight || refreshInFlight.clientId !== clientId) {
+    // `token` is a unique identity for this in-flight entry. The stored
+    // (and awaited) promise IS the finally-chained one, so a refresh
+    // rejection has exactly one consumer path — the awaiter below — and
+    // never surfaces as an unhandled rejection. The finally clears only
+    // our own entry on settle (matched by token), since a newer clientId
+    // may have already replaced us.
+    const token = {};
+    const promise = refreshAccessToken(clientId, tokens).finally(() => {
+      if (refreshInFlight?.token === token) refreshInFlight = null;
     });
+    refreshInFlight = { clientId, promise, token };
   }
-  const refreshed = await refreshInFlight;
+  const refreshed = await refreshInFlight.promise;
   return refreshed.accessToken;
 }
 

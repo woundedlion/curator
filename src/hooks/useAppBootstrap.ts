@@ -74,6 +74,12 @@ export function useAppBootstrap(): void {
       window.removeEventListener("online", handleOnline);
       unsubscribe();
       shutdownAudioParserPool();
+      // Release playback resources too: dispose the Player (drops the
+      // <audio> element's event listeners and any timers) and tear down
+      // the Spotify Web Playback SDK. Without this, an app unmount (test
+      // teardown, route swap, HMR) leaves the SDK device + audio
+      // listeners dangling. Symmetric to the initialize() call above.
+      usePlaybackStore.getState().teardownPlayback();
     };
   }, []);
 }

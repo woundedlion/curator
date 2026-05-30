@@ -52,11 +52,15 @@ export function SettingsDialog() {
   }
   useEffect(() => {
     if (!open) return;
-    if (spotifyCircuitOpenMs() <= 0) return;
+    // Poll while the dialog is open. We intentionally do NOT bail when the
+    // circuit is currently closed: it can trip WHILE the dialog is open (a
+    // background Spotify call earns a 429), and `open` won't change to
+    // re-run this effect — so the interval has to be what notices. One
+    // tick/sec for an ephemeral dialog is negligible, and setRemainingMs(0)
+    // while already 0 is a no-op (React bails the re-render), so an idle
+    // dialog doesn't churn.
     const id = window.setInterval(() => {
-      const next = spotifyCircuitOpenMs();
-      setRemainingMs(next);
-      if (next <= 0) window.clearInterval(id);
+      setRemainingMs(spotifyCircuitOpenMs());
     }, 1000);
     return () => window.clearInterval(id);
   }, [open]);

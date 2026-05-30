@@ -151,10 +151,18 @@ export function Toolbar({ hiddenCount, onPickFolder }: Props) {
       />
 
       <div className="ml-auto flex items-center gap-3">
+        {/* aria-live="off": the visible text updates live, but we do NOT
+            announce every decrement. During a 500-track import these
+            counters tick down many times a second, and a polite live
+            region would queue a torrent of "N remaining" announcements
+            that drowns out everything else and lags far behind reality.
+            The presence/absence of the region (work started / finished)
+            is the meaningful signal for AT; the running count is a
+            sighted-user affordance. */}
         {isEnriching && (
           <span
             className="text-xs text-neutral-400 tabular-nums"
-            aria-live="polite"
+            aria-live="off"
           >
             Enriching · {enrichmentRemaining} remaining
           </span>
@@ -162,7 +170,7 @@ export function Toolbar({ hiddenCount, onPickFolder }: Props) {
         {spotifyRemaining > 0 && (
           <span
             className="text-xs text-neutral-400 tabular-nums"
-            aria-live="polite"
+            aria-live="off"
             title="Tracks not yet resolved on Spotify"
           >
             Spotify · {spotifyRemaining} remaining

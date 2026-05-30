@@ -252,6 +252,69 @@ describe("loadPlaylists — inflight dedup", () => {
     ]);
   });
 
+  it("a concurrent call with a DIFFERENT clientId does NOT ride the first run", async () => {
+    // The dedup keys on clientId: a second caller asking for a different
+    // account must start its own fetch, otherwise it would silently
+    // receive the first account's playlists. Verify each clientId drives
+    // its own fetchAllPlaylists call.
+    let resolveA: (
+      value: Array<{ id: string; name: string; ownerId: string }>,
+    ) => void = () => undefined;
+    let resolveB: (
+      value: Array<{ id: string; name: string; ownerId: string }>,
+    ) => void = () => undefined;
+    mocks.fetchAllPlaylists.mockImplementation((clientId: string) =>
+      clientId === "cid-A"
+        ? new Promise((resolve) => {
+            resolveA = resolve;
+          })
+        : new Promise((resolve) => {
+            resolveB = resolve;
+          }),
+    );
+
+    const a = useSpotifyStore.getState().loadPlaylists("cid-A");
+    const b = useSpotifyStore.getState().loadPlaylists("cid-B");
+
+    // Both clientIds triggered their own fetch — no silent dedup across
+    // accounts.
+    expect(mocks.fetchAllPlaylists).toHaveBeenCalledTimes(2);
+    expect(mocks.fetchAllPlaylists).toHaveBeenNthCalledWith(1, "cid-A");
+    expect(mocks.fetchAllPlaylists).toHaveBeenNthCalledWith(2, "cid-B");
+
+    // The last write wins (b's clientId), but the key point is B got its
+    // OWN result, not A's.
+    resolveA([{ id: "pA", name: "A", ownerId: "uA" }]);
+    resolveB([{ id: "pB", name: "B", ownerId: "uB" }]);
+    await Promise.all([a, b]);
+    expect(useSpotifyStore.getState().playlists).toEqual([
+      { id: "pB", name: "B", ownerId: "uB" },
+    ]);
+  });
+
+  it("a SECOND call with the SAME clientId still dedups to one fetch", async () => {
+    // Same-client concurrent callers must continue to share one run —
+    // the clientId-keying must not accidentally break the existing dedup.
+    let resolveFetch: (
+      value: Array<{ id: string; name: string; ownerId: string }>,
+    ) => void = () => undefined;
+    mocks.fetchAllPlaylists.mockReturnValue(
+      new Promise((resolve) => {
+        resolveFetch = resolve;
+      }),
+    );
+
+    const a = useSpotifyStore.getState().loadPlaylists("same");
+    const b = useSpotifyStore.getState().loadPlaylists("same");
+    expect(mocks.fetchAllPlaylists).toHaveBeenCalledTimes(1);
+
+    resolveFetch([{ id: "p1", name: "One", ownerId: "u" }]);
+    await Promise.all([a, b]);
+    expect(useSpotifyStore.getState().playlists).toEqual([
+      { id: "p1", name: "One", ownerId: "u" },
+    ]);
+  });
+
   it("after a run finishes, a fresh call kicks off a NEW fetch", async () => {
     // The inflight guard must clear in `.finally()` — otherwise the
     // very first run would permanently lock out all future loads.

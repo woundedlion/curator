@@ -31,7 +31,13 @@ import { releasePlaybackSource, type PlaybackSource } from "./playbackSource";
 
 export type PlaybackDisplay = { title: string; artist: string };
 
-export type PlayerPhase = "idle" | "loading" | "playing" | "paused";
+// "ended" is distinct from "paused": a paused track has a LIVE backend
+// holding a real playback context that resume() can pick up; an ended
+// track's context is gone (the HTMLAudioElement sits at duration, the
+// SDK's Connect playback has completed). Re-pressing play on an ended
+// track must do a fresh install + load, NOT a resume — see the `ended`
+// event handler and `play()`.
+export type PlayerPhase = "idle" | "loading" | "playing" | "paused" | "ended";
 
 // What's being played. `kind: "track"` is a user-facing playlist row;
 // `kind: "candidate"` is a synthetic id the picker dialog uses for
@@ -91,6 +97,14 @@ export interface Backend {
   seek(positionMs: number): Promise<void>;
   /** The player attaches one observer per backend. */
   setObserver(observer: BackendObserver | null): void;
+  /**
+   * Optional teardown: release any DOM listeners / timers the backend
+   * holds so it can be GC'd on app unmount. Called by Player.dispose().
+   * Optional because not every backend owns disposable resources (the
+   * SDK player's WebSocket is torn down separately via
+   * destroySpotifyPlayer()), and test fakes need not implement it.
+   */
+  dispose?(): void;
 }
 
 // ─── Player ───────────────────────────────────────────────────────────
@@ -138,7 +152,23 @@ export class Player {
    */
   play(target: PlayerTarget): Promise<void> {
     return this.enqueue(async () => {
-      if (this.snapshot.currentTrackId === target.id) {
+      // After `ended` we tear down the active backend (see the `ended`
+      // event handler) but keep the target installed for the now-playing
+      // display. A re-press of play on that same track must therefore do
+      // a FRESH install — toggling would hit togglePauseInternal, which
+      // either no-ops (no activeBackend) or, worse for the SDK, resumes a
+      // playback context that no longer exists. Fall through to install()
+      // so the backend reloads from the top.
+      if (
+        this.snapshot.currentTrackId === target.id &&
+        this.snapshot.phase !== "ended"
+      ) {
+        // Same track, still live: we toggle the already-installed target
+        // and never install this one, so its freshly-built source is
+        // thrown away. Release it now or a new object URL leaks on every
+        // pause/resume of a local file (the caller allocates one per
+        // `play` call).
+        releasePlaybackSource(target.source);
         await this.togglePauseInternal();
         return;
       }
@@ -181,6 +211,15 @@ export class Player {
     return this.enqueue(async () => {
       if (!this.activeBackend) return;
       if (this.snapshot.currentTrackId === null) return;
+      // Guard against seeking a track with no live playback context.
+      // After `ended` (and during `idle`) there's no backend to seek and
+      // the playhead is meaningless — re-arming requires a fresh play().
+      // activeBackend is already nulled on `ended`, but assert on phase
+      // too so a future refactor that keeps the backend installed can't
+      // silently re-introduce "seek a finished track."
+      if (this.snapshot.phase === "ended" || this.snapshot.phase === "idle") {
+        return;
+      }
       const clamped =
         this.snapshot.durationMs > 0
           ? Math.max(0, Math.min(positionMs, this.snapshot.durationMs))
@@ -190,6 +229,33 @@ export class Player {
       this.patch({ positionMs: clamped });
       await this.activeBackend.seek(clamped);
     });
+  }
+
+  /**
+   * Tear down the Player for app unmount. Stops every backend (so no
+   * audio keeps playing), disposes each backend that owns disposable
+   * resources (the HTMLAudio backend's DOM listeners), and clears the
+   * subscriber set so a stale React subscriber can't be notified after
+   * unmount. Returns once the stop has drained.
+   *
+   * NOTE: the SDK player's WebSocket/device is owned by the
+   * spotifyPlayer module, not the Player — the store's teardown calls
+   * destroySpotifyPlayer() alongside this. After dispose() this Player
+   * instance must be discarded; the store builds a fresh one on the next
+   * initialize(), keeping initialize()/teardown symmetric.
+   */
+  async dispose(): Promise<void> {
+    // Drain through the queue so an in-flight play/stop lands before we
+    // tear down — otherwise a load() racing with dispose() could re-arm
+    // a backend we just stopped.
+    await this.enqueue(() => this.doStop());
+    this.htmlBackend.dispose?.();
+    this.sdkBackend?.dispose?.();
+    // Drop observers so a backend that fires a late event post-dispose
+    // can't reach into a torn-down Player.
+    this.htmlBackend.setObserver(null);
+    this.sdkBackend?.setObserver(null);
+    this.listeners.clear();
   }
 
   // ─── Subscriptions ──────────────────────────────────────────────────
@@ -364,9 +430,19 @@ export class Player {
         this.patch({ phase: "paused" });
         return;
       case "ended":
-        // Target stays installed so the toolbar remains visible and
-        // the user can re-press play; only the phase + playhead reset.
-        this.patch({ phase: "paused", positionMs: 0 });
+        // Tear down the active backend on end-of-track. The target stays
+        // installed (so the now-playing toolbar remains visible and the
+        // user can re-press play), but clearing activeBackend guarantees
+        // the next play() takes the install() path and reloads from the
+        // top instead of routing to a resume(). This matters most for the
+        // SDK, whose Connect playback context is gone once the track
+        // finishes — a resume() against it is unreliable. It also keeps
+        // `seek` from acting on a finished track (see seek()'s guard).
+        // We do NOT stop the backend here: the HTMLAudioElement has
+        // naturally paused at its end, and the SDK's playback has already
+        // completed; issuing a stop() would only risk a spurious event.
+        this.activeBackend = null;
+        this.patch({ phase: "ended", positionMs: 0 });
         return;
       case "position":
         // Preserve a known duration if the backend reports 0 — some
@@ -414,10 +490,18 @@ export class Player {
   }
 
   private enqueue(fn: () => Promise<void>): Promise<void> {
+    // Run `fn` whether the prior op fulfilled OR rejected: `.then(fn, fn)`
+    // installs `fn` as BOTH the fulfillment and rejection handler. We pass
+    // the same `fn` to both slots on purpose — the queue exists only to
+    // serialize ordering, not to propagate a prior op's failure into the
+    // next one. The prior rejection reason is intentionally discarded
+    // (the rejection handler ignores its argument) so one failed op can't
+    // halt the queue and strand every subsequent op forever.
     const next = this.opQueue.then(fn, fn);
-    // .catch onto resolved so one failure doesn't poison subsequent
-    // operations. Surfaced failures still propagate to the caller via
-    // `next`; we just don't let the chain head reject.
+    // Keep the chain HEAD resolved so a rejection from `fn` itself doesn't
+    // poison the next enqueue. The caller still observes `fn`'s outcome
+    // through the returned `next` promise; only `this.opQueue` (the
+    // internal cursor the next op chains onto) is forced back to resolved.
     this.opQueue = next.catch(() => undefined);
     return next;
   }

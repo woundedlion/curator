@@ -9,9 +9,19 @@ type Pending = {
   id: number;
   resolve: (fields: ParsedFields) => void;
   reject: (error: Error) => void;
+  timer?: ReturnType<typeof setTimeout>;
 };
 
 const DEFAULT_POOL_SIZE = 4;
+
+// Cap a single file's parse. music-metadata can hang (not throw, not
+// crash) on a truncated or pathological container — no message, no error
+// event ever fires, so the worker would sit in `pendingByWorker` forever,
+// permanently removing one slot from the pool and leaving the caller's
+// promise unsettled. The timeout converts that into a normal failure:
+// reject the request, terminate + respawn the wedged worker, drain on.
+// Generous so a genuinely large file on a slow machine still completes.
+const PARSE_TIMEOUT_MS = 30_000;
 
 function decidePoolSize(): number {
   const hw =
@@ -79,6 +89,7 @@ class AudioParserPool {
     // recognize (e.g. a late reply after a timeout/terminate). Without
     // this the worker would be silently stuck off the pool forever.
     this.pendingByWorker.delete(worker);
+    if (pending?.timer) clearTimeout(pending.timer);
     this.availableWorkers.push(worker);
 
     if (!pending) {
@@ -107,8 +118,24 @@ class AudioParserPool {
     const pending = this.pendingByWorker.get(worker);
     if (pending) {
       this.pendingByWorker.delete(worker);
+      if (pending.timer) clearTimeout(pending.timer);
       pending.reject(new Error("Audio parser worker crashed"));
     }
+    this.discardWorker(worker);
+    if (this.started) this.spawnWorker();
+    this.drain();
+  }
+
+  // A worker that neither replies nor crashes within PARSE_TIMEOUT_MS is
+  // treated like a crash: fail the request and replace the worker so its
+  // pool slot isn't lost to a wedged parse.
+  private onWorkerTimeout(worker: Worker, pending: Pending): void {
+    // Guard against a reply that raced in just before the timer fired —
+    // if this pending is no longer the one assigned to the worker, the
+    // response path already handled it.
+    if (this.pendingByWorker.get(worker) !== pending) return;
+    this.pendingByWorker.delete(worker);
+    pending.reject(new Error("Audio parser worker timed out"));
     this.discardWorker(worker);
     if (this.started) this.spawnWorker();
     this.drain();
@@ -131,9 +158,14 @@ class AudioParserPool {
       const next = this.queue.shift()!;
       const worker = this.availableWorkers.shift()!;
       this.pendingByWorker.set(worker, next.pending);
+      next.pending.timer = setTimeout(
+        () => this.onWorkerTimeout(worker, next.pending),
+        PARSE_TIMEOUT_MS,
+      );
       try {
         worker.postMessage(next.request);
       } catch (error) {
+        clearTimeout(next.pending.timer);
         this.pendingByWorker.delete(worker);
         const message =
           error instanceof Error ? error.message : "postMessage failed";
@@ -160,6 +192,7 @@ class AudioParserPool {
       pending.reject(new Error("Audio parser pool was terminated"));
     }
     for (const pending of this.pendingByWorker.values()) {
+      if (pending.timer) clearTimeout(pending.timer);
       pending.reject(new Error("Audio parser pool was terminated"));
     }
     this.workers.length = 0;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseRetryAfter } from "./apiClient";
+import { parseRetryAfter, tryParseRetryAfterMs } from "./apiClient";
 
 describe("parseRetryAfter", () => {
   it("parses integer seconds", () => {
@@ -54,10 +54,13 @@ describe("parseRetryAfter", () => {
     expect(parseRetryAfter("not a number, not a date")).toBe(10 * 60 * 1000);
   });
 
-  it("returns at least the 1-second floor for an HTTP-date in the past", () => {
+  it("treats an HTTP-date in the past as unparseable (pessimistic default, not retry-now)", () => {
+    // A clock-skewed or already-elapsed date must NOT short-circuit the
+    // backoff to a near-zero wait that walks straight back into an
+    // active ban. We fall to the conservative 10-minute default instead.
     const now = 1_700_000_000_000;
     const past = new Date(now - 60_000).toUTCString();
-    expect(parseRetryAfter(past, now)).toBeGreaterThanOrEqual(1_000);
+    expect(parseRetryAfter(past, now)).toBe(10 * 60 * 1000);
   });
 
   it("rejects non-numeric strings even if they start with digits", () => {
@@ -67,5 +70,28 @@ describe("parseRetryAfter", () => {
 
   it("trims surrounding whitespace before parsing", () => {
     expect(parseRetryAfter("  42  ")).toBe(42_000);
+  });
+});
+
+describe("tryParseRetryAfterMs", () => {
+  it("returns null for a missing header (caller layers its own default)", () => {
+    expect(tryParseRetryAfterMs(null)).toBeNull();
+  });
+
+  it("returns null for an unparseable header", () => {
+    expect(tryParseRetryAfterMs("soon")).toBeNull();
+    expect(tryParseRetryAfterMs("5xx")).toBeNull();
+  });
+
+  it("returns null for a past HTTP-date", () => {
+    const now = 1_700_000_000_000;
+    expect(tryParseRetryAfterMs(new Date(now - 1).toUTCString(), now)).toBeNull();
+  });
+
+  it("returns raw (unclamped) ms for a valid value — no 12h ceiling applied", () => {
+    expect(tryParseRetryAfterMs("5")).toBe(5_000);
+    // 24h, well past parseRetryAfter's 12h clamp — proves callers can
+    // apply their own (e.g. MusicBrainz's 60s) cap instead.
+    expect(tryParseRetryAfterMs("86400")).toBe(86_400_000);
   });
 });

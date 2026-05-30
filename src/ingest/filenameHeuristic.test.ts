@@ -83,23 +83,32 @@ describe("deriveHintsFromFileName", () => {
   });
 
   it("does NOT treat 4-digit years as track numbers", () => {
-    // "1999 - Prince - 1999.mp3" used to half-parse as trackNo=199 by
-    // truncation. The 1-2 digit cap rejects 4-digit numbers entirely.
+    // "1999 - Prince - 1999.mp3". The leading "1999" is 4 digits, so the
+    // segment regex (`\d{1,3}`) rejects it before the value check even
+    // runs — no track number is extracted.
     const result = deriveHintsFromFileName("1999 - Prince - 1999.mp3");
     expect(result.trackNo).toBeUndefined();
   });
 
   it("rejects 4-digit numbers (years) as track numbers", () => {
-    // "2017 - Some Title.mp3" — "2017" looks like a track number to a
-    // naive parser but is actually a release year.
+    // "2017 - Some Title.mp3" — "2017" is 4 digits, so it fails the
+    // `\d{1,3}` segment regex and is never considered a track number.
     const result = deriveHintsFromFileName("2017 - Some Title.mp3");
     expect(result.trackNo).toBeUndefined();
   });
 
+  it("accepts a 3-digit number <= 199 as a track number", () => {
+    // The guard is the VALUE (<= 199), not the digit count: "150" is
+    // three digits but a perfectly plausible position on a boxed set, so
+    // it's accepted. This pins the actual behavior the comment describes.
+    const result = deriveHintsFromFileName("150 - Some Title.mp3");
+    expect(result.trackNo).toBe(150);
+  });
+
   it("rejects out-of-range track numbers (200+)", () => {
-    // "456 - Track.mp3" — 3 digits but well above any realistic album
-    // track number. Better to treat as a leading numeric title than to
-    // claim it's track 456.
+    // "456 - Track.mp3" — 3 digits but well above MAX_TRACK_NUMBER (199).
+    // The value guard (not the digit count) rejects it. Better to treat
+    // as a leading numeric title than to claim it's track 456.
     const result = deriveHintsFromFileName("456 - Track.mp3");
     expect(result.trackNo).toBeUndefined();
   });

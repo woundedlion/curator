@@ -7,6 +7,7 @@ import {
   callSpotify,
   SpotifyAuthExpiredError,
   SpotifyRateLimitError,
+  SpotifyServerError,
 } from "./apiClient";
 import type {
   SpotifyPaging,
@@ -64,8 +65,17 @@ async function fetchAllPages<T>(
     items.push(...page.items);
     pageCount++;
     if (page.next) {
+      // Spotify's `next` is an absolute api.spotify.com URL whose path is
+      // always prefixed with the `/v1` API version (callSpotify prepends
+      // SPOTIFY_API_BASE, which already includes `/v1`). Strip the prefix
+      // when present so we don't double it; tolerate its absence (a future
+      // unversioned/relative `next`) by passing the path through unchanged
+      // rather than corrupting it.
       const url = new URL(page.next);
-      path = url.pathname.replace(/^\/v1/, "") + url.search;
+      const pathname = url.pathname.startsWith("/v1/")
+        ? url.pathname.slice("/v1".length)
+        : url.pathname;
+      path = pathname + url.search;
       pageQuery = undefined;
     } else {
       path = null;
@@ -215,7 +225,12 @@ type PushHandlers = {
 function isFatalPushError(error: unknown): boolean {
   return (
     error instanceof SpotifyAuthExpiredError ||
-    error instanceof SpotifyRateLimitError
+    error instanceof SpotifyRateLimitError ||
+    // A failed token refresh (transient 5xx on /api/token) leaves us with
+    // no valid bearer for ANY subsequent chunk — abort rather than retry
+    // the same doomed refresh once per remaining chunk. A chunk-level 5xx
+    // on the /items call itself stays non-fatal and is bucketed for retry.
+    (error instanceof SpotifyServerError && error.path === "/api/token")
   );
 }
 
@@ -246,12 +261,30 @@ export async function pushTracksToPlaylist(
   return progress;
 }
 
+// Thrown by replaceAndPushTracks when called with no URIs. A PUT
+// /items {uris: []} is destructive — it CLEARS the destination playlist.
+// The publisher (playlistPublisher.EmptyReplaceError) already guards its
+// own call site, but this is an exported function: any other/future
+// caller must not be able to silently wipe a playlist by passing an empty
+// list. Defend at the destructive boundary itself rather than trusting
+// every caller.
+export class EmptyReplaceUrisError extends Error {
+  constructor() {
+    super("replaceAndPushTracks called with no URIs (would clear the playlist)");
+    this.name = "EmptyReplaceUrisError";
+  }
+}
+
 export async function replaceAndPushTracks(
   playlistId: string,
   uris: string[],
   clientId: string,
   handlers: PushHandlers = {},
 ): Promise<PlaylistPushProgress> {
+  // Refuse to issue the clearing PUT. With empty uris the first chunk
+  // would be `[]`, and PUT /items {uris: []} wipes the playlist — throw
+  // before any request goes out.
+  if (uris.length === 0) throw new EmptyReplaceUrisError();
   const [firstChunk, ...remainingChunks] = chunk(uris, SPOTIFY_TRACK_ADD_CHUNK);
   const progress: PlaylistPushProgress = {
     added: 0,

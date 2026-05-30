@@ -18,6 +18,16 @@ const YEAR_HALF_CREDIT_YEARS = 3;
 // Each scoring pass works on a fresh candidate list, but the Fuse
 // object itself plus its (frozen) options + key-store can be shared —
 // constructor allocation of the option parser was the only real cost.
+//
+// INVARIANT — `scoreCandidates` MUST stay fully synchronous between
+// `sharedFuse.setCollection(...)` and `sharedFuse.search(...)`. The
+// collection is mutable module-level state on the SHARED instance, so
+// any `await` (or yielding to another scoring call) between those two
+// lines would let a concurrent `scoreCandidates` swap the collection
+// out from under us — `search` would then run against the wrong
+// candidate list and return corrupt `refIndex` → score mappings.
+// scoreCandidates today has no await; keep it that way (or give each
+// call its own Fuse) if this function ever needs to do async work.
 const sharedFuse = new Fuse<Scorable>([], {
   includeScore: true,
   keys: [

@@ -241,6 +241,41 @@ describe("enrichAllPending — streaming mode (whileActive)", () => {
     expect(enrichedIds).toEqual(["a"]); // only a; b never qualified
   });
 
+  it("SAFETY VALVE: a stuck producer (whileActive stays true, no new eligible tracks) does not spin forever", async () => {
+    // Without the bounded idle budget, a producer that reports
+    // whileActive() === true indefinitely while never emitting another
+    // eligible track would pin the loop in a 20 Hz playlist scan for the
+    // life of the tab. The valve must (a) escalate the poll interval and
+    // (b) give up past the idle budget so the loop terminates. Use fake
+    // timers so we can fast-forward past the 60s budget deterministically.
+    vi.useFakeTimers();
+    try {
+      setTracks([track("a", { spotifyStatus: "matched" })]);
+
+      // Producer never finishes — the ONLY thing that should stop the
+      // loop is the safety valve.
+      const run = enrichAllPending(undefined, {
+        whileActive: () => true,
+      });
+
+      // Drive all timers to completion. If the valve is missing this
+      // never settles (infinite poll); vitest's fake clock would run out
+      // of queued timers only because the loop keeps scheduling more.
+      // advanceTimersByTimeAsync past the idle budget lets the valve fire.
+      await vi.advanceTimersByTimeAsync(70_000);
+      await run;
+
+      // `a` was enriched once at entry; after that the loop idled and
+      // then bailed — no busy-spin, no repeat enrichment.
+      const callsForA = mocks.enrichTrack.mock.calls.filter(
+        (c) => c[0].id === "a",
+      );
+      expect(callsForA.length).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("each track is enriched AT MOST ONCE per streaming session", async () => {
     setTracks([track("a", { spotifyStatus: "matched" })]);
 

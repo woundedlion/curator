@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   buildTracksFromExport,
   countResolved,
@@ -52,6 +52,30 @@ describe("tryParseCuratorExport", () => {
     ).toBeNull();
   });
 
+  it("cheaply rejects a large non-JSON .txt that merely mentions the marker", () => {
+    // A plain text list whose body happens to contain the literal marker
+    // string must NOT trigger a full JSON.parse of the whole file. It
+    // doesn't start with `{`, so the pre-check rejects it without parsing.
+    const big =
+      "My favorite tracks (format: curator-playlist-v1 style)\n" +
+      Array.from({ length: 5000 }, (_, i) => `Artist ${i} - Title ${i}`).join(
+        "\n",
+      );
+    const spy = vi.spyOn(JSON, "parse");
+    expect(tryParseCuratorExport(big)).toBeNull();
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
+  });
+
+  it("rejects a JSON object whose marker only appears far past the scan window", () => {
+    // Marker pushed beyond MARKER_SCAN_WINDOW by a giant leading field —
+    // a real export always carries `format` near the top, so this is
+    // treated as a non-export (and never fully parsed for detection).
+    const filler = "x".repeat(2000);
+    const text = `{ "note": "${filler}", "format": "curator-playlist-v1", "tracks": [] }`;
+    expect(tryParseCuratorExport(text)).toBeNull();
+  });
+
   it("skips track entries that aren't plain objects", () => {
     const env = tryParseCuratorExport(
       JSON.stringify({
@@ -81,6 +105,17 @@ describe("buildTracksFromExport", () => {
     const tracks = buildTracksFromExport(env);
     expect(tracks[1]!.spotify.status).toBe("idle");
     expect(tracks[1]!.enrichment.status).toBe("idle");
+  });
+
+  it("reconstructs a faithful 'Artist - Title' rawLine when both are present", () => {
+    const env = tryParseCuratorExport(SAMPLE)!;
+    const tracks = buildTracksFromExport(env);
+    expect(tracks[0]!.source).toEqual({
+      kind: "text",
+      rawLine: "Radiohead - Karma Police",
+    });
+    // Title-only row falls back to the bare title.
+    expect(tracks[1]!.source).toEqual({ kind: "text", rawLine: "Plain Song" });
   });
 });
 

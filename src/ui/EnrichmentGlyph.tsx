@@ -36,6 +36,8 @@ export function EnrichmentGlyph({
       labels={LABELS}
       colors={COLORS}
       interactiveStatuses={INTERACTIVE}
+      pendingStatus="pending"
+      idleStatus="idle"
       onPick={onPick}
     />
   );

@@ -41,8 +41,12 @@ function collectPushableUris(): string[] {
       ? match.status === "matched"
       : match.status === "matched" || match.status === "ambiguous";
     if (!eligible) continue;
-    // match is narrowed to "matched" | "ambiguous"; both arms carry
-    // `uri` (required vs optional respectively).
+    // REQUIRED for the type checker, not redundant: `eligible` is a plain
+    // boolean derived from match.status, so `if (!eligible) continue` does
+    // NOT narrow the `match` union. Without this explicit status check the
+    // `.uri` access below is a type error (idle/pending/failed arms have no
+    // `uri`). Both surviving arms carry `uri` — required on "matched",
+    // optional on "ambiguous" — so the truthiness guard handles the latter.
     if (match.status !== "matched" && match.status !== "ambiguous") continue;
     if (match.uri) uris.push(match.uri);
   }

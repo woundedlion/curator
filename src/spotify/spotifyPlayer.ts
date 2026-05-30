@@ -46,7 +46,27 @@ function loadSdk(): Promise<void> {
   if (sdkLoadPromise) return sdkLoadPromise;
 
   sdkLoadPromise = new Promise<void>((resolve, reject) => {
-    window.onSpotifyWebPlaybackSDKReady = () => resolve();
+    // Bound the wait for `onSpotifyWebPlaybackSDKReady`. The script can
+    // load successfully (no `onerror`) yet never fire the ready callback
+    // — e.g. the CDN serves a build that fails to self-initialize, or a
+    // CSP/extension blocks its internal setup. Without this timer the
+    // promise stays pending forever and, because `sdkLoadPromise` is
+    // cached, EVERY later retry reuses the same dead promise and also
+    // hangs. On timeout we clear the cache (mirroring the onerror path)
+    // so a subsequent call can re-append the script and try again.
+    const timeoutHandle = setTimeout(() => {
+      sdkLoadPromise = null;
+      reject(
+        new Error(
+          `Spotify SDK script loaded but did not initialize within ${SDK_INIT_TIMEOUT_MS / 1000}s`,
+        ),
+      );
+    }, SDK_INIT_TIMEOUT_MS);
+
+    window.onSpotifyWebPlaybackSDKReady = () => {
+      clearTimeout(timeoutHandle);
+      resolve();
+    };
     const script = document.createElement("script");
     script.src = SPOTIFY_PLAYBACK_SDK_URL;
     script.async = true;
@@ -54,6 +74,7 @@ function loadSdk(): Promise<void> {
       // Clear the cached promise so a future call can retry the script
       // load — otherwise every subsequent attempt sees the rejected
       // promise and never tries again.
+      clearTimeout(timeoutHandle);
       sdkLoadPromise = null;
       reject(new Error("Failed to load Spotify SDK"));
     };
@@ -124,7 +145,16 @@ async function doInitializeSpotifyPlayer(
   clientId: string,
   handlers: SpotifyPlayerHandlers,
 ): Promise<PlayerInitResult> {
-  await loadSdk();
+  try {
+    await loadSdk();
+  } catch (error) {
+    // loadSdk rejects on script.onerror OR on the ready-callback timeout
+    // (finding #5). Surface as a normal init failure so the caller's
+    // .then runs and clears activeInitPromise — letting a later retry
+    // re-attempt instead of awaiting a rejected/pending promise forever.
+    const message = error instanceof Error ? error.message : String(error);
+    return { ok: false, reason: "unknown", message };
+  }
   const SpotifyNs = window.Spotify;
   if (!SpotifyNs) {
     return { ok: false, reason: "unknown", message: "Spotify SDK unavailable" };

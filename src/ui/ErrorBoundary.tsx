@@ -1,20 +1,28 @@
-import { Component, type ErrorInfo, type ReactNode } from "react";
+import { Component, Fragment, type ErrorInfo, type ReactNode } from "react";
 
 type Props = { children: ReactNode };
-type State = { error: Error | null };
+type State = { error: Error | null; resetKey: number };
 
 // Top-level boundary. Without it, any render-phase throw in a row,
 // dialog, or sidebar tears the whole app down to a blank page —
 // React's default — and the user loses the in-memory draft +
 // selection state (the IDB-persisted state survives, but only after
 // the user reloads). With it, the user gets an actionable fallback
-// and can either reload or click Continue to remount the tree (the
-// retry path re-renders with a fresh key, which lets a transient
-// render failure resolve without a full reload).
+// and can either reload or click Continue to remount the tree.
+//
+// Continue genuinely REMOUNTS the subtree: it bumps `resetKey`, which
+// is applied as the `key` on the children wrapper below. Clearing
+// `error` alone would re-render the SAME element instances, so a
+// deterministic render throw would immediately re-enter the boundary
+// and loop with no visible progress. Changing the key forces React to
+// unmount the old subtree and build a fresh one — fresh component
+// state, fresh effects — which is what lets a transient render failure
+// (a stale ref read, a race that has since resolved) actually clear
+// without a full page reload.
 export class ErrorBoundary extends Component<Props, State> {
-  state: State = { error: null };
+  state: State = { error: null, resetKey: 0 };
 
-  static getDerivedStateFromError(error: Error): State {
+  static getDerivedStateFromError(error: Error): Partial<State> {
     return { error };
   }
 
@@ -23,7 +31,7 @@ export class ErrorBoundary extends Component<Props, State> {
   }
 
   private readonly retry = (): void => {
-    this.setState({ error: null });
+    this.setState((prev) => ({ error: null, resetKey: prev.resetKey + 1 }));
   };
 
   private readonly reload = (): void => {
@@ -31,8 +39,12 @@ export class ErrorBoundary extends Component<Props, State> {
   };
 
   render(): ReactNode {
-    const { error } = this.state;
-    if (!error) return this.props.children;
+    const { error, resetKey } = this.state;
+    // Wrap children in a keyed Fragment so Continue's resetKey bump
+    // remounts the whole subtree (see class comment). The key is stable
+    // across normal renders, so this adds no remount in the happy path.
+    if (!error)
+      return <Fragment key={resetKey}>{this.props.children}</Fragment>;
     return (
       <div
         role="alert"
