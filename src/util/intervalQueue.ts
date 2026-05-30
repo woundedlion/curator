@@ -62,6 +62,19 @@ export type EnqueueOptions = {
    * and only then discover the entity is gone.
    */
   guard?: () => boolean;
+  /**
+   * Scheduling priority. Higher runs sooner: a newly-enqueued task
+   * jumps ahead of every PENDING task with a lower priority, so a
+   * latency-sensitive caller (e.g. a user-triggered playback command)
+   * doesn't sit behind a deep backlog of background work (e.g. search
+   * enrichment). Defaults to 0. Equal priorities preserve FIFO order.
+   *
+   * Priority only reorders the WAITING queue; it does not shorten the
+   * inter-task spacing, bypass the circuit breaker, or pre-empt the
+   * single task already in flight (at most one lower-priority task
+   * runs ahead — the one already dispatched).
+   */
+  priority?: number;
 };
 
 /**
@@ -84,6 +97,7 @@ type Task<T> = {
   reject: (reason: unknown) => void;
   tag: string | undefined;
   guard: (() => boolean) | undefined;
+  priority: number;
 };
 
 // Track for each in-flight task so `cancelByTag` can abort the
@@ -165,11 +179,29 @@ export class IntervalQueue {
         reject,
         tag: options.tag,
         guard: options.guard,
+        priority: options.priority ?? 0,
       };
-      this.pending.push(task as Task<unknown>);
+      this.insertByPriority(task as Task<unknown>);
       this.notify();
       void this.drain();
     });
+  }
+
+  /**
+   * Insert into the pending FIFO honoring priority: the task lands
+   * before the first waiting task of strictly-lower priority, which
+   * keeps higher priorities ahead while preserving arrival order among
+   * equal priorities (we never cut in front of an equal-priority task).
+   * O(n) scan — n is the queue depth, which stays small under the
+   * 334ms pacer.
+   */
+  private insertByPriority(task: Task<unknown>): void {
+    const idx = this.pending.findIndex((t) => t.priority < task.priority);
+    if (idx === -1) {
+      this.pending.push(task);
+    } else {
+      this.pending.splice(idx, 0, task);
+    }
   }
 
   /**

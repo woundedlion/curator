@@ -41,18 +41,17 @@ describe("parseRetryAfter", () => {
     expect(parseRetryAfter("300")).toBe(300_000);
   });
 
-  it("returns the 5-minute default for a missing header", () => {
+  it("returns the 10-minute default for a missing header", () => {
     // Spotify often hides Retry-After via CORS even when it's present
-    // on the wire (incidents shipped 82,752s = ~23h). The old 30s
-    // default let in-call retries fire into the active ban window.
-    // 5 minutes is short enough not to strand on a benign 429, long
-    // enough to break the retry-into-ban loop on a hidden multi-hour
-    // penalty.
-    expect(parseRetryAfter(null)).toBe(5 * 60 * 1000);
+    // on the wire (incidents shipped 82,752s = ~23h). When no value is
+    // readable we fall back to a 10-minute lockout — long enough to
+    // break the retry-into-ban loop on a hidden multi-hour penalty.
+    // When a real value IS present (the cases above) we honor it.
+    expect(parseRetryAfter(null)).toBe(10 * 60 * 1000);
   });
 
-  it("returns the 5-minute default for an unparseable header", () => {
-    expect(parseRetryAfter("not a number, not a date")).toBe(5 * 60 * 1000);
+  it("returns the 10-minute default for an unparseable header", () => {
+    expect(parseRetryAfter("not a number, not a date")).toBe(10 * 60 * 1000);
   });
 
   it("returns at least the 1-second floor for an HTTP-date in the past", () => {
@@ -63,7 +62,7 @@ describe("parseRetryAfter", () => {
 
   it("rejects non-numeric strings even if they start with digits", () => {
     // "5xx" would parseInt to 5; the strict-digits regex forces fall-through.
-    expect(parseRetryAfter("5xx")).toBe(5 * 60 * 1000);
+    expect(parseRetryAfter("5xx")).toBe(10 * 60 * 1000);
   });
 
   it("trims surrounding whitespace before parsing", () => {

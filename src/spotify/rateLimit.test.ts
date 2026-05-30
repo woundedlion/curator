@@ -11,15 +11,19 @@
 // Scenarios covered:
 //   - fresh load (no persisted state, first request fires immediately)
 //   - fresh load WITH persisted nextAllowedAt / circuitOpenUntil
-//   - "global refresh" pattern: N concurrent callers space at 350ms
+//   - rate cap: at most 180 requests go out per 60s window (334ms gap)
+//   - "global refresh" pattern: N concurrent callers space at 334ms
 //   - "global refresh" pattern: 429 mid-batch opens the circuit and
 //     every subsequent caller fails fast (no compounding)
+//   - 10-minute hard floor: a single 429 locks out ALL outbound
+//     traffic — API, token refresh, and player calls — for at least
+//     10 minutes, and the lockout survives a browser close/reopen,
+//     manual refresh, and hard refresh (persisted to localStorage)
 //   - "manual item refresh" pattern: one call, respects open circuit
 //   - circuit-breaker half-open: exactly one probe is admitted
 //   - probe success closes the circuit
 //   - probe 429 reopens for the new window
-//   - Retry-After missing → 5-minute default (was 30s — caused
-//     immediate retry into multi-hour bans)
+//   - Retry-After missing → 5-minute default, floored up to 10 minutes
 //   - localStorage persistence across module reload
 //   - pendingCount surfaces queued callers for the UI
 
@@ -92,7 +96,15 @@ import {
   SPOTIFY_NEXT_ALLOWED_AT_KEY,
 } from "../constants";
 
-const MIN_SPACING_MS = 350;
+// Mirror of the production constants. The pacer admits at most 180
+// requests per minute, realized as a 334ms gap between sends
+// (ceil(60000/180)). When a 429 carries NO usable Retry-After (the
+// common CORS-hidden case) the breaker falls back to a 10-minute
+// default lockout; when a real Retry-After IS present it is honored
+// instead.
+const MAX_REQUESTS_PER_MINUTE = 180;
+const MIN_SPACING_MS = Math.ceil(60_000 / MAX_REQUESTS_PER_MINUTE); // 334
+const DEFAULT_LOCKOUT_MS = 10 * 60_000;
 
 function ok(): Response {
   return new Response(null, { status: 200 });
@@ -209,6 +221,61 @@ describe("fresh load", () => {
   });
 });
 
+describe("rate cap (180 requests per minute)", () => {
+  it("admits at most 180 sends in any 60-second window", async () => {
+    let sendCount = 0;
+    const send = vi.fn(async () => {
+      sendCount++;
+      return ok();
+    });
+
+    // Queue far more callers than a single minute can admit.
+    const promises = Array.from({ length: 250 }, (_, i) =>
+      settle(submitTokenRequest(send, `/q${i}`)),
+    );
+
+    // Advance to the last millisecond of the first minute. With a 334ms
+    // gap the sends land at 0, 334, … , 59786 (k = 0..179) — exactly
+    // 180. The 181st is paced out to 334×180 = 60120ms, past the minute.
+    await vi.advanceTimersByTimeAsync(60_000 - 1);
+    expect(sendCount).toBe(180);
+
+    // Cross into the next minute — the 181st now fires.
+    await vi.advanceTimersByTimeAsync(200);
+    expect(sendCount).toBe(181);
+
+    await vi.advanceTimersByTimeAsync(250 * MIN_SPACING_MS);
+    await Promise.all(promises);
+  });
+
+  it("spaces consecutive sends by 334ms = ceil(60000/180)", async () => {
+    // The cap is realized as a fixed inter-send gap, not a burst-
+    // allowing token bucket. 334 (ceil, not floor) guarantees the
+    // realized rate never exceeds 180/min.
+    expect(MIN_SPACING_MS).toBe(334);
+
+    const timestamps: number[] = [];
+    const send = vi.fn(async () => {
+      timestamps.push(Date.now());
+      return ok();
+    });
+    const startedAt = Date.now();
+    const promises = [
+      settle(submitTokenRequest(send, "/a")),
+      settle(submitTokenRequest(send, "/b")),
+      settle(submitTokenRequest(send, "/c")),
+    ];
+
+    await vi.advanceTimersByTimeAsync(2 * MIN_SPACING_MS);
+    expect(timestamps).toEqual([
+      startedAt,
+      startedAt + MIN_SPACING_MS,
+      startedAt + 2 * MIN_SPACING_MS,
+    ]);
+    await Promise.all(promises);
+  });
+});
+
 describe("global refresh pattern (concurrent callers)", () => {
   it("spaces 4 concurrent callers at MIN_SPACING_MS each", async () => {
     const sendTimestamps: number[] = [];
@@ -310,31 +377,36 @@ describe("global refresh pattern (concurrent callers)", () => {
     expect(sendLater).not.toHaveBeenCalled();
   });
 
-  it("a 429 with NO Retry-After defaults to 5min (NOT 30s — protects against CORS-hidden multi-hour bans)", async () => {
+  it("a 429 with NO Retry-After (CORS-hidden) locks out for the 10-min default", async () => {
     const send = vi.fn(async () => tooMany(null));
     const rej = captureRejection(submitTokenRequest(send, "/search"));
     await vi.advanceTimersByTimeAsync(0);
     expect(await rej).toBeInstanceOf(SpotifyRateLimitError);
 
-    // The breaker — not the queue spacing — owns the cool-off. Open
-    // for at least ~5 minutes. (Subsequent callers fail fast via the
-    // breaker; the queue's nextRunAt only advances by the normal
-    // 350ms interval, which doesn't matter because no caller will
-    // actually send anything until the breaker closes.)
-    expect(spotifyCircuitOpenMs()).toBeGreaterThanOrEqual(5 * 60_000 - 1000);
+    // No readable Retry-After → fall back to the 10-minute default. The
+    // breaker — not the queue spacing — owns the cool-off. (Subsequent
+    // callers fail fast via the breaker; the queue's nextRunAt only
+    // advances by the normal 334ms interval, which doesn't matter
+    // because no caller sends anything until the breaker closes.)
+    expect(spotifyCircuitOpenMs()).toBeGreaterThanOrEqual(
+      DEFAULT_LOCKOUT_MS - 1000,
+    );
+    expect(spotifyCircuitOpenMs()).toBeLessThan(DEFAULT_LOCKOUT_MS + 60_000);
   });
 });
 
 describe("manual item refresh pattern (single call)", () => {
-  it("a 429 on a single call opens the circuit for at least Retry-After", async () => {
+  it("a 429 with a real Retry-After honors that value (not the 10-min default)", async () => {
     const send = vi.fn(async () => tooMany("45"));
     const startedAt = Date.now();
     const rej = captureRejection(submitTokenRequest(send, "/search"));
     await vi.advanceTimersByTimeAsync(0);
     expect(await rej).toBeInstanceOf(SpotifyRateLimitError);
 
+    // Spotify said 45s — honor it. The 10-min default applies ONLY when
+    // no Retry-After is readable, so a real value must not be inflated.
     expect(spotifyCircuitOpenMs()).toBeGreaterThanOrEqual(45_000 - 1000);
-    // Don't exceed the honored window by much.
+    // Don't exceed the honored window by much (well under 10 min).
     expect(Date.now() + spotifyCircuitOpenMs()).toBeLessThanOrEqual(
       startedAt + 60_000,
     );
@@ -379,7 +451,8 @@ describe("circuit breaker half-open / probe semantics", () => {
       expect(await rej).toBeInstanceOf(SpotifyRateLimitError);
     }
 
-    // Window elapses (must exceed the 5s breaker-min floor too).
+    // Window elapses — the 5s Retry-After is honored, so a hair past it
+    // (and past the breaker's 5s minimum) is enough.
     await vi.advanceTimersByTimeAsync(6_000);
 
     const sendProbe = vi.fn(async () => ok());
@@ -433,8 +506,8 @@ describe("circuit breaker half-open / probe semantics", () => {
       expect(await rej).toBeInstanceOf(SpotifyRateLimitError);
     }
 
-    // Breaker has a 5s minimum open window — advance past that, not
-    // just past the Retry-After value.
+    // The 3s Retry-After is honored but bumped to the breaker's 5s
+    // minimum — advance just past that.
     await vi.advanceTimersByTimeAsync(6_000);
 
     const sendProbe = vi.fn(async () => ok());
@@ -486,48 +559,51 @@ describe("circuit breaker half-open / probe semantics", () => {
   });
 
   it("consecutive probe 429s double the open window each time (CORS-hidden multi-hour ban)", async () => {
-    // First trip: CORS-hidden Retry-After → 5min default.
+    // Trip #1: CORS-hidden Retry-After → 10-min default.
     {
       const send = vi.fn(async () => tooMany(null));
       const rej = captureRejection(submitTokenRequest(send, "/a"));
       await vi.advanceTimersByTimeAsync(0);
       expect(await rej).toBeInstanceOf(SpotifyRateLimitError);
-      expect(spotifyCircuitOpenMs()).toBeGreaterThanOrEqual(5 * 60_000 - 1000);
-      expect(spotifyCircuitOpenMs()).toBeLessThan(6 * 60_000);
+      expect(spotifyCircuitOpenMs()).toBeGreaterThanOrEqual(
+        DEFAULT_LOCKOUT_MS - 1000,
+      );
+      expect(spotifyCircuitOpenMs()).toBeLessThan(DEFAULT_LOCKOUT_MS + 60_000);
     }
 
-    // Wait out the 5-min window, fire a probe — still 429.
-    await vi.advanceTimersByTimeAsync(5 * 60_000 + 1000);
+    // Wait out the 10-min window, fire a probe — still 429.
+    await vi.advanceTimersByTimeAsync(DEFAULT_LOCKOUT_MS + 1000);
     {
       const sendProbe = vi.fn(async () => tooMany(null));
       const rej = captureRejection(submitTokenRequest(sendProbe, "/probe"));
       await vi.advanceTimersByTimeAsync(0);
       expect(await rej).toBeInstanceOf(SpotifyRateLimitError);
-      // Trip #2 escalates to ~10 min (5min default * 2).
-      expect(spotifyCircuitOpenMs()).toBeGreaterThanOrEqual(10 * 60_000 - 1000);
-      expect(spotifyCircuitOpenMs()).toBeLessThan(11 * 60_000);
-    }
-
-    await vi.advanceTimersByTimeAsync(10 * 60_000 + 1000);
-    {
-      const sendProbe = vi.fn(async () => tooMany(null));
-      const rej = captureRejection(submitTokenRequest(sendProbe, "/probe"));
-      await vi.advanceTimersByTimeAsync(0);
-      expect(await rej).toBeInstanceOf(SpotifyRateLimitError);
-      // Trip #3 escalates to ~20 min.
+      // Trip #2 escalates to ~20 min (10-min default × 2).
       expect(spotifyCircuitOpenMs()).toBeGreaterThanOrEqual(20 * 60_000 - 1000);
+      expect(spotifyCircuitOpenMs()).toBeLessThan(21 * 60_000);
+    }
+
+    await vi.advanceTimersByTimeAsync(20 * 60_000 + 1000);
+    {
+      const sendProbe = vi.fn(async () => tooMany(null));
+      const rej = captureRejection(submitTokenRequest(sendProbe, "/probe"));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(await rej).toBeInstanceOf(SpotifyRateLimitError);
+      // Trip #3 escalates to ~40 min (10-min default × 4).
+      expect(spotifyCircuitOpenMs()).toBeGreaterThanOrEqual(40 * 60_000 - 1000);
     }
   });
 
   it("a successful probe resets the escalation counter (next 429 starts fresh)", async () => {
-    // Trip twice to escalate.
+    // Trip #1 (null → 10-min default).
     {
       const send = vi.fn(async () => tooMany(null));
       const rej = captureRejection(submitTokenRequest(send, "/a"));
       await vi.advanceTimersByTimeAsync(0);
       expect(await rej).toBeInstanceOf(SpotifyRateLimitError);
     }
-    await vi.advanceTimersByTimeAsync(5 * 60_000 + 1000);
+    // Wait out the 10-min window, probe — still 429 → trip #2 (~20 min).
+    await vi.advanceTimersByTimeAsync(DEFAULT_LOCKOUT_MS + 1000);
     {
       const sendProbe = vi.fn(async () => tooMany(null));
       const rej = captureRejection(submitTokenRequest(sendProbe, "/probe"));
@@ -535,8 +611,9 @@ describe("circuit breaker half-open / probe semantics", () => {
       expect(await rej).toBeInstanceOf(SpotifyRateLimitError);
     }
 
-    // Successful probe closes the circuit and resets counter.
-    await vi.advanceTimersByTimeAsync(10 * 60_000 + 1000);
+    // Successful probe closes the circuit and resets counter — wait out
+    // the escalated 20-min window first.
+    await vi.advanceTimersByTimeAsync(2 * DEFAULT_LOCKOUT_MS + 1000);
     {
       const sendProbe = vi.fn(async () => ok());
       const p = submitTokenRequest(sendProbe, "/probe");
@@ -545,16 +622,18 @@ describe("circuit breaker half-open / probe semantics", () => {
       expect(spotifyCircuitOpenMs()).toBe(0);
     }
 
-    // A fresh 429 now should be back at the unescalated 5min default,
-    // not the next exponential step.
+    // A fresh 429 now is trip #1 again — back at the unescalated 10-min
+    // default, not the next exponential step.
     await vi.advanceTimersByTimeAsync(MIN_SPACING_MS);
     {
       const send = vi.fn(async () => tooMany(null));
       const rej = captureRejection(submitTokenRequest(send, "/b"));
       await vi.advanceTimersByTimeAsync(0);
       expect(await rej).toBeInstanceOf(SpotifyRateLimitError);
-      expect(spotifyCircuitOpenMs()).toBeGreaterThanOrEqual(5 * 60_000 - 1000);
-      expect(spotifyCircuitOpenMs()).toBeLessThan(6 * 60_000);
+      expect(spotifyCircuitOpenMs()).toBeGreaterThanOrEqual(
+        DEFAULT_LOCKOUT_MS - 1000,
+      );
+      expect(spotifyCircuitOpenMs()).toBeLessThan(DEFAULT_LOCKOUT_MS + 60_000);
     }
   });
 
@@ -566,7 +645,7 @@ describe("circuit breaker half-open / probe semantics", () => {
       await vi.advanceTimersByTimeAsync(0);
       expect(await rej).toBeInstanceOf(SpotifyRateLimitError);
     }
-    await vi.advanceTimersByTimeAsync(5 * 60_000 + 1000);
+    await vi.advanceTimersByTimeAsync(DEFAULT_LOCKOUT_MS + 1000);
     {
       const sendProbe = vi.fn(async () => tooMany(null));
       const rej = captureRejection(submitTokenRequest(sendProbe, "/probe"));
@@ -574,10 +653,10 @@ describe("circuit breaker half-open / probe semantics", () => {
       expect(await rej).toBeInstanceOf(SpotifyRateLimitError);
     }
 
-    // Reload the module. The persisted open window may have elapsed,
-    // but the counter should carry over: the next trip should escalate
-    // as if it were trip #3 (×4), not trip #1 (×1).
-    await vi.advanceTimersByTimeAsync(10 * 60_000 + 1000);
+    // Reload the module after the (escalated, ~20-min) trip #2 window
+    // elapses. The counter (= 2) carries over: the next trip should
+    // escalate as if it were trip #3 (×4), not trip #1 (×1).
+    await vi.advanceTimersByTimeAsync(2 * DEFAULT_LOCKOUT_MS + 1000);
     vi.resetModules();
     const fresh = await import("./apiClient");
 
@@ -587,10 +666,153 @@ describe("circuit breaker half-open / probe semantics", () => {
       .catch((e) => e);
     await vi.advanceTimersByTimeAsync(0);
     await rej;
-    // Trip #3 → 20 min.
+    // Trip #3 → 40 min (10-min default × 4).
     expect(fresh.spotifyCircuitOpenMs()).toBeGreaterThanOrEqual(
-      20 * 60_000 - 1000,
+      40 * 60_000 - 1000,
     );
+  });
+});
+
+// The user requirement: after a single 429, NOTHING may reach Spotify
+// for the full lockout — not even player API calls — and the lockout
+// must survive a browser close/reopen, a manual refresh, and a hard
+// refresh. We model every kind of refresh as a `vi.resetModules()` +
+// re-import: the in-memory breaker state is thrown away and rebuilt
+// solely from localStorage, exactly as a fresh page load would.
+describe("10-minute default lockout survives every kind of refresh", () => {
+  it("a CORS-hidden 429 blocks even player API calls after a reload", async () => {
+    // Take a 429 with no readable Retry-After → 10-min default lockout.
+    {
+      const send = vi.fn(async () => tooMany(null));
+      const rej = captureRejection(
+        submitTokenRequest(send, "/me/player/play"),
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      expect(await rej).toBeInstanceOf(SpotifyRateLimitError);
+    }
+
+    // Simulate a browser close/reopen (or manual / hard refresh): drop
+    // the module and rebuild from localStorage only.
+    vi.resetModules();
+    const fresh = await import("./apiClient");
+
+    // The lockout is restored — still ~10 minutes remaining.
+    expect(fresh.spotifyCircuitOpenMs()).toBeGreaterThanOrEqual(
+      DEFAULT_LOCKOUT_MS - 1000,
+    );
+
+    // A PLAYER API call (the path the user can manually trigger) is
+    // blocked too: it fails fast against the open breaker and never
+    // reaches fetch. Save/restore the real fetch directly rather than
+    // unstubbing globals (which would also wipe the localStorage stub).
+    const realFetch = globalThis.fetch;
+    const fetchSpy = vi.fn(async () => ok());
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+    try {
+      const playRej = captureRejection(
+        fresh.submitSpotifyRequest(
+          { path: "/me/player/play", method: "PUT", body: { uris: ["x"] } },
+          "client-id",
+        ),
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      expect(await playRej).toBeInstanceOf(fresh.SpotifyRateLimitError);
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it("repeated refreshes within the window cannot shorten the lockout", async () => {
+    {
+      const send = vi.fn(async () => tooMany(null));
+      const rej = captureRejection(submitTokenRequest(send, "/a"));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(await rej).toBeInstanceOf(SpotifyRateLimitError);
+    }
+
+    // Nine minutes in — still inside the 10-min window. A refresh here
+    // must not reset the clock or admit a probe early.
+    await vi.advanceTimersByTimeAsync(9 * 60_000);
+    vi.resetModules();
+    const fresh = await import("./apiClient");
+    expect(fresh.spotifyCircuitOpenMs()).toBeGreaterThan(0);
+
+    const send = vi.fn(async () => ok());
+    const rej = captureRejection(fresh.submitTokenRequest(send, "/me"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(await rej).toBeInstanceOf(fresh.SpotifyRateLimitError);
+    expect(send).not.toHaveBeenCalled();
+  });
+});
+
+// Player commands are user-triggered and latency-sensitive — they must
+// cut ahead of the background search/enrichment backlog. They still
+// respect the spacing gap and the circuit breaker; preemption only
+// reorders the WAITING queue.
+describe("player commands preempt search activity", () => {
+  it("a high-priority player call jumps ahead of queued search requests", async () => {
+    const order: string[] = [];
+    const realFetch = globalThis.fetch;
+    const fetchSpy = vi.fn(async (url: string) => {
+      order.push(new URL(url).pathname);
+      return ok();
+    });
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+    try {
+      // Three background search requests enqueue first. The first one
+      // takes the immediate slot and goes in flight; the rest wait.
+      const searches = Array.from({ length: 3 }, (_, i) =>
+        settle(submitSpotifyRequest({ path: `/search?q=${i}` }, "cid")),
+      );
+      // The player command is enqueued LAST but at high priority.
+      const play = settle(
+        submitSpotifyRequest(
+          { path: "/me/player/play", method: "PUT", body: { uris: ["x"] } },
+          "cid",
+          { priority: "high" },
+        ),
+      );
+
+      await vi.advanceTimersByTimeAsync(10 * MIN_SPACING_MS);
+      await Promise.all([...searches, play]);
+
+      // First out is the already-dispatched search; the player command
+      // ran 2nd — ahead of the two searches still queued behind it.
+      expect(order[0]).toContain("/search");
+      expect(order[1]).toContain("/me/player/play");
+      expect(order.slice(2).every((p) => p.includes("/search"))).toBe(true);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it("a player call still fails fast during an open circuit (preemption doesn't bypass the breaker)", async () => {
+    // Trip the breaker.
+    {
+      const send = vi.fn(async () => tooMany(null));
+      const rej = captureRejection(submitTokenRequest(send, "/a"));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(await rej).toBeInstanceOf(SpotifyRateLimitError);
+    }
+
+    const realFetch = globalThis.fetch;
+    const fetchSpy = vi.fn(async () => ok());
+    globalThis.fetch = fetchSpy as unknown as typeof fetch;
+    try {
+      const playRej = captureRejection(
+        submitSpotifyRequest(
+          { path: "/me/player/play", method: "PUT", body: { uris: ["x"] } },
+          "cid",
+          { priority: "high" },
+        ),
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      expect(await playRej).toBeInstanceOf(SpotifyRateLimitError);
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally {
+      globalThis.fetch = realFetch;
+    }
   });
 });
 

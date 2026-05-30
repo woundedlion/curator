@@ -29,9 +29,10 @@
 //   - Retry-After is NOT in Spotify's `Access-Control-Expose-Headers`,
 //     so browser JS reads it as `null` even when the response carried
 //     a header on the wire (incidents observed values up to ~24h
-//     hidden this way). The default fallback is 5 minutes — short
-//     enough not to strand on a benign 429, long enough to break the
-//     retry-into-ban loop on a hidden multi-hour penalty.
+//     hidden this way). When a real Retry-After IS readable we honor
+//     it; the fallback for the blind (CORS-hidden) case is a 10-minute
+//     default — long enough to break the retry-into-ban loop on a
+//     hidden multi-hour penalty.
 //   - Queue and breaker state are both persisted to localStorage; a
 //     page reload after a heavy burst doesn't reset the spacing
 //     Spotify is still counting against the rolling window, and it
@@ -53,11 +54,16 @@ const RATE_LIMIT_STATUS = 429;
 const UNAUTHORIZED_STATUS = 401;
 const FORBIDDEN_STATUS = 403;
 
-// Spotify's per-app per-IP quota varies. 350ms caps sustained rate at
-// ~2.85 req/sec, leaving headroom for SDK / token refresh / sidebar
-// noise that share the quota. Bumping this is the safest knob if you
-// see 429s in steady-state usage.
-const MIN_REQUEST_SPACING_MS = 350;
+// Hard ceiling on outbound request rate. Spotify's per-app per-IP
+// quota varies; 180 req/min is the contract we enforce. The queue is
+// a strict-interval pacer, so the cap is realized as a fixed gap
+// between consecutive sends rather than a burst-allowing token bucket.
+const MAX_REQUESTS_PER_MINUTE = 180;
+// One send every ceil(60000/180) = 334ms. `ceil` (not floor/round) so
+// the realized rate never EXCEEDS 180/min: 334ms admits at most 180
+// sends in any 60s window, 333ms would admit 181. This leaves headroom
+// for SDK / token refresh / sidebar noise that share the quota.
+const MIN_REQUEST_SPACING_MS = Math.ceil(60_000 / MAX_REQUESTS_PER_MINUTE);
 
 // Cap a corrupt/stale persisted spacing timestamp so a bad
 // localStorage value can't deadlock the bucket.
@@ -65,17 +71,26 @@ const NEXT_ALLOWED_AT_CAP_MS = 60_000;
 
 // Circuit-open bounds. Min is so a "1s" Retry-After doesn't leave us
 // essentially open (the half-open probe semantics need real time to
-// drain Spotify's window). Max bounds a hostile response — set to 12h
-// because Spotify HAS been observed issuing ~12h bans (Retry-After
-// 42578s seen on the wire, hidden via CORS) and the breaker's
-// exponential backoff needs ceiling room to reach them.
+// drain Spotify's window). When Spotify supplies a real Retry-After we
+// honor it; only the absence of one falls back to the 10-min default
+// below. Max bounds a hostile response — set to 12h because Spotify
+// HAS been observed issuing ~12h bans (Retry-After 42578s seen on the
+// wire, hidden via CORS) and the breaker's exponential backoff needs
+// ceiling room to reach them.
 const CIRCUIT_BREAKER_MIN_MS = 5_000;
 const CIRCUIT_BREAKER_MAX_MS = 12 * 60 * 60 * 1000;
 
-// Pessimistic Retry-After fallback. See `parseRetryAfter`. Capped at
+// Pessimistic Retry-After fallback — the DEFAULT applied ONLY when no
+// usable Retry-After is available. Spotify hides Retry-After behind
+// CORS (not in Access-Control-Expose-Headers), so browser JS reads it
+// as null even when the wire carried a multi-hour penalty; in that
+// blind case we lock out all outbound traffic for 10 minutes. When a
+// real value IS present we honor it instead (see `parseRetryAfter`).
+// Persisted to localStorage, so the 10-min default lockout survives a
+// browser close/reopen, manual refresh, and hard refresh. Capped at
 // the same max as the breaker so a Spotify-supplied multi-hour value
 // is honored without exceeding the breaker's ceiling.
-const DEFAULT_RETRY_AFTER_SECONDS = 5 * 60;
+const DEFAULT_RETRY_AFTER_SECONDS = 10 * 60;
 const MAX_RETRY_AFTER_MS = 12 * 60 * 60 * 1000;
 
 // Per-call fetch timeout. Bounded so a hung connection can't keep the
@@ -346,7 +361,12 @@ async function fetchWithTimeout(
  */
 async function submitRaw(
   send: (signal: AbortSignal) => Promise<Response>,
-  context: { path: string; tag?: string; guard?: () => boolean },
+  context: {
+    path: string;
+    tag?: string;
+    guard?: () => boolean;
+    priority?: number;
+  },
 ): Promise<Response> {
   // Breaker check is synchronous and happens BEFORE enqueueing — a
   // fail-fast caller shouldn't take a queue slot, and a probe must
@@ -389,7 +409,7 @@ async function submitRaw(
       // the entire ban window before they could even reach the
       // breaker check, masking the fail-fast as a timeout.
       throw new SpotifyRateLimitError(retryMs);
-    }, { tag: context.tag, guard: context.guard });
+    }, { tag: context.tag, guard: context.guard, priority: context.priority });
   } finally {
     if (isProbe) breaker.releaseProbe();
   }
@@ -416,7 +436,23 @@ export type SubmitOptions = {
    * at all.
    */
   guard?: () => boolean;
+  /**
+   * Scheduling priority. "high" lets a latency-sensitive request —
+   * notably a user-triggered playback command — cut ahead of the
+   * pending backlog of "normal" background work (search enrichment,
+   * pagination) so it isn't stuck behind dozens of 334ms-spaced
+   * queued requests. It does NOT bypass the rate limiter or the open
+   * circuit breaker — a high-priority request still waits for the next
+   * spacing slot and still fails fast during a 429 lockout. Defaults
+   * to "normal".
+   */
+  priority?: "high" | "normal";
 };
+
+// Numeric priorities handed to the IntervalQueue. Player/playback
+// commands run ahead of background search & pagination traffic.
+const PRIORITY_HIGH = 1;
+const PRIORITY_NORMAL = 0;
 
 /** Bearer-authenticated request against api.spotify.com. */
 export async function submitSpotifyRequest<T>(
@@ -430,6 +466,7 @@ export async function submitSpotifyRequest<T>(
       path: request.path,
       tag: options.tag,
       guard: options.guard,
+      priority: options.priority === "high" ? PRIORITY_HIGH : PRIORITY_NORMAL,
     },
   );
   return mapStatusToResult<T>(response, request);

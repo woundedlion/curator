@@ -223,6 +223,10 @@ export async function playSpotifyTrackOnDevice(
       body: { uris: [uri] },
     },
     clientId,
+    // Playback is user-triggered and latency-sensitive — let it cut
+    // ahead of any queued background search/enrichment traffic. Still
+    // bound by the rate limiter and the circuit breaker.
+    { priority: "high" },
   );
 }
 

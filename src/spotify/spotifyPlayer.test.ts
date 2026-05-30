@@ -490,6 +490,8 @@ describe("playSpotifyTrackOnDevice", () => {
         body: { uris: ["spotify:track:abc"] },
       },
       "client-id",
+      // Playback preempts background search/enrichment traffic.
+      { priority: "high" },
     );
   });
 });

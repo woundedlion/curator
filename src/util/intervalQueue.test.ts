@@ -275,6 +275,100 @@ describe("IntervalQueue.cancelByTag", () => {
   });
 });
 
+// Priority lets a latency-sensitive caller (a user-triggered playback
+// command) cut ahead of a deep backlog of background work (search
+// enrichment) without bypassing the spacing gap or the single in-flight
+// slot. Higher priority runs sooner; equal priorities stay FIFO.
+describe("IntervalQueue priority", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("a higher-priority task cuts ahead of lower-priority pending tasks", async () => {
+    const queue = new IntervalQueue({ intervalMs: 100 });
+    const order: string[] = [];
+
+    // Hold the first task open so the rest pile up behind it in the
+    // pending FIFO.
+    let releaseFirst: () => void = () => undefined;
+    const firstDone = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const p0 = queue.enqueue(async () => {
+      order.push("first");
+      await firstDone;
+    });
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Two background (normal) tasks, then a high-priority one enqueued
+    // LAST — it must still jump ahead of the two normals.
+    const pA = queue.enqueue(async () => void order.push("a"), {
+      priority: 0,
+    });
+    const pB = queue.enqueue(async () => void order.push("b"), {
+      priority: 0,
+    });
+    const pHigh = queue.enqueue(async () => void order.push("high"), {
+      priority: 1,
+    });
+
+    releaseFirst();
+    await vi.advanceTimersByTimeAsync(300);
+    await Promise.all([p0, pA, pB, pHigh]);
+
+    expect(order).toEqual(["first", "high", "a", "b"]);
+  });
+
+  it("equal-priority tasks preserve FIFO order", async () => {
+    const queue = new IntervalQueue({ intervalMs: 100 });
+    const order: string[] = [];
+
+    let releaseFirst: () => void = () => undefined;
+    const firstDone = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const p0 = queue.enqueue(async () => {
+      await firstDone;
+    });
+    await vi.advanceTimersByTimeAsync(0);
+
+    const ps = ["a", "b", "c"].map((id) =>
+      queue.enqueue(async () => void order.push(id), { priority: 5 }),
+    );
+
+    releaseFirst();
+    await vi.advanceTimersByTimeAsync(300);
+    await Promise.all([p0, ...ps]);
+
+    expect(order).toEqual(["a", "b", "c"]);
+  });
+
+  it("priority does not preempt the in-flight task or skip the spacing gap", async () => {
+    const queue = new IntervalQueue({ intervalMs: 100 });
+    const order: string[] = [];
+
+    // First (normal) task starts immediately and runs to completion,
+    // advancing nextRunAt by 100ms.
+    const p0 = queue.enqueue(async () => void order.push("first"));
+    await vi.advanceTimersByTimeAsync(0);
+
+    // A high-priority task now must still wait out the 100ms gap — it
+    // cannot fire before the spacing window elapses.
+    const pHigh = queue.enqueue(async () => void order.push("high"), {
+      priority: 1,
+    });
+    await vi.advanceTimersByTimeAsync(50);
+    expect(order).toEqual(["first"]);
+
+    await vi.advanceTimersByTimeAsync(60);
+    expect(order).toEqual(["first", "high"]);
+    await Promise.all([p0, pHigh]);
+  });
+});
+
 // The post-wait guard is defense-in-depth against the race where an
 // entity (e.g. a track) is deleted AFTER enqueue but BEFORE the
 // explicit cancelByTag fires. A guard returning false must reject the
