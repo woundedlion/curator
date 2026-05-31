@@ -556,6 +556,64 @@ export async function submitTokenRequest(
 /** Back-compat alias used by authFlow.ts. */
 export const runWithRateLimitPolicy = submitTokenRequest;
 
+/**
+ * Token-REFRESH submission for accounts.spotify.com — shares the circuit
+ * breaker but deliberately BYPASSES the serial IntervalQueue.
+ *
+ * Why bypass the queue: a refresh is triggered from INSIDE an already-
+ * in-flight API task (`sendOnce` → `getValidAccessToken`). The queue
+ * runs one task at a time and awaits it to completion before starting
+ * the next, so enqueueing the token POST here would deadlock — the API
+ * task holds the single in-flight slot and awaits this refresh, and the
+ * refresh task could never start until that API task finished. (Fires
+ * ~hourly, on the first API call after the access token expires.) By not
+ * enqueueing anything, the circular wait cannot form.
+ *
+ * What we still share: the circuit BREAKER — the load-bearing guard
+ * against a 429 storm. Fully open → fail fast (don't hammer the token
+ * endpoint inside a penalty window); a 429 on the refresh trips the
+ * breaker so every subsequent caller (API + token) fails fast too.
+ * Bursts are already impossible: `getValidAccessToken` single-flights
+ * refreshes (authFlow `refreshInFlight`).
+ *
+ * What we deliberately do NOT do:
+ *   - Take a dedicated 334ms spacing slot. The refresh is causally
+ *     nested inside an API call that already paced its slot, and the
+ *     180/min pacer is sized with headroom for exactly this out-of-band
+ *     token traffic (see MIN_REQUEST_SPACING_MS).
+ *   - Acquire a half-open probe. The refresh is subordinate to the API
+ *     request that already passed the breaker, so during half-open it
+ *     must be allowed through — otherwise a probe API call that needs a
+ *     token refresh could never recover the breaker (its refresh would
+ *     fail-fast against the probe-in-flight guard, reopening the circuit
+ *     forever while the token stays expired).
+ */
+export async function submitTokenRefresh(
+  send: () => Promise<Response>,
+  path = "/api/token",
+): Promise<Response> {
+  // Fully-open ban → fail fast. Half-open (remainingMs === 0, openUntil
+  // in the past) falls through so recovery can proceed.
+  const openMs = breaker.remainingMs();
+  if (openMs > 0) {
+    throw new SpotifyRateLimitError(openMs);
+  }
+
+  const response = await send();
+  if (response.status !== RATE_LIMIT_STATUS) {
+    return response;
+  }
+
+  // A token-endpoint 429 counts the same as an API 429: trip the shared
+  // breaker, then surface the typed rate-limit error. Returning the 429
+  // to refreshAccessToken would misclassify it as a fatal 4xx and
+  // wrongly clear the session.
+  const retryMs = readRetryAfterMs(response, path);
+  breaker.trip(retryMs);
+  pushRateLimitToast(breaker.remainingMs());
+  throw new SpotifyRateLimitError(retryMs);
+}
+
 async function mapStatusToResult<T>(
   response: Response,
   request: SpotifyRequest,

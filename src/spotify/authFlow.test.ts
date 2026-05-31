@@ -22,7 +22,10 @@ vi.mock("./apiClient", async () => {
   return {
     ...actual,
     // Pass straight through to the send callback — no queue, no breaker.
+    // Both token lanes are stubbed: the OAuth exchange uses
+    // runWithRateLimitPolicy, the refresh path uses submitTokenRefresh.
     runWithRateLimitPolicy: (send: () => Promise<Response>) => send(),
+    submitTokenRefresh: (send: () => Promise<Response>) => send(),
   };
 });
 

@@ -89,6 +89,7 @@ import {
   SpotifyRateLimitError,
   SpotifyServerError,
   submitSpotifyRequest,
+  submitTokenRefresh,
   submitTokenRequest,
 } from "./apiClient";
 import {
@@ -1061,6 +1062,97 @@ describe("probe-slot release on cancellation", () => {
     // wrapper — the deeper cancelByTag-finds-probe scenario lives
     // outside this test (see comment above).
     expect(cancelSpotifyRequestsByTag("nonexistent")).toBe(0);
+  });
+});
+
+// submitTokenRefresh is the refresh-only lane: it shares the circuit
+// breaker but bypasses the serial queue (a refresh is triggered from
+// inside an in-flight API task, so re-entering the single-slot queue
+// would deadlock — see tokenRefreshDeadlock.test.ts). These tests pin
+// the breaker behavior it MUST keep: fail-fast while fully open, trip on
+// its own 429, and — the subtle one — proceed during half-open WITHOUT
+// stealing the probe slot, so a probe API call that needs a refresh can
+// still recover the breaker.
+describe("submitTokenRefresh — breaker-only lane", () => {
+  it("fails fast (no send) while the breaker is fully open", async () => {
+    // Trip the breaker.
+    {
+      const send = vi.fn(async () => tooMany("60"));
+      const rej = captureRejection(submitTokenRequest(send, "/trip"));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(await rej).toBeInstanceOf(SpotifyRateLimitError);
+    }
+
+    const refreshSend = vi.fn(async () => ok());
+    const rej = captureRejection(submitTokenRefresh(refreshSend));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(await rej).toBeInstanceOf(SpotifyRateLimitError);
+    // A refresh must not hammer the token endpoint inside a penalty
+    // window — the whole point of sharing the breaker.
+    expect(refreshSend).not.toHaveBeenCalled();
+  });
+
+  it("trips the shared breaker and throws SpotifyRateLimitError on a 429", async () => {
+    const refreshSend = vi.fn(async () => tooMany("90"));
+    const rej = captureRejection(submitTokenRefresh(refreshSend));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(await rej).toBeInstanceOf(SpotifyRateLimitError);
+
+    // The breaker is now open for ~90s, and ordinary API/token callers
+    // fail fast against it.
+    expect(spotifyCircuitOpenMs()).toBeGreaterThanOrEqual(90_000 - 1000);
+    const apiSend = vi.fn(async () => ok());
+    const apiRej = captureRejection(submitTokenRequest(apiSend, "/after"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(await apiRej).toBeInstanceOf(SpotifyRateLimitError);
+    expect(apiSend).not.toHaveBeenCalled();
+  });
+
+  it("does NOT return a 429 to the caller (would be misread as a fatal 4xx)", async () => {
+    // refreshAccessToken classifies a returned non-ok response: >=500 is
+    // transient, anything else clears the session. A 429 must therefore
+    // surface as a thrown SpotifyRateLimitError, never a returned 429.
+    const refreshSend = vi.fn(async () => tooMany("30"));
+    let returned: Response | null = null;
+    const rej = captureRejection(
+      submitTokenRefresh(refreshSend).then((r) => {
+        returned = r;
+        return r;
+      }),
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    expect(await rej).toBeInstanceOf(SpotifyRateLimitError);
+    expect(returned).toBeNull();
+  });
+
+  it("proceeds during half-open WITHOUT consuming the probe slot", async () => {
+    // Trip with a short window, then let it elapse into half-open.
+    {
+      const send = vi.fn(async () => tooMany("5"));
+      const rej = captureRejection(submitTokenRequest(send, "/trip"));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(await rej).toBeInstanceOf(SpotifyRateLimitError);
+    }
+    await vi.advanceTimersByTimeAsync(6_000);
+
+    // The refresh runs during half-open (remainingMs === 0) and resolves
+    // — it is NOT blocked like an ordinary non-probe caller would be.
+    const refreshSend = vi.fn(async () => ok());
+    const refreshP = submitTokenRefresh(refreshSend);
+    await vi.advanceTimersByTimeAsync(0);
+    await refreshP;
+    expect(refreshSend).toHaveBeenCalledTimes(1);
+
+    // Crucially it did NOT take the probe: a following API call is still
+    // admitted as the canary and closes the breaker on success. (If the
+    // refresh had grabbed the probe, this call would fail fast and the
+    // breaker could never recover while the token stayed expired.)
+    const probeSend = vi.fn(async () => ok());
+    const probeP = submitTokenRequest(probeSend, "/probe");
+    await vi.advanceTimersByTimeAsync(0);
+    await probeP;
+    expect(probeSend).toHaveBeenCalledTimes(1);
+    expect(spotifyCircuitOpenMs()).toBe(0);
   });
 });
 

@@ -10,6 +10,7 @@ import {
   SpotifyAuthExpiredError,
   SpotifyServerError,
   runWithRateLimitPolicy,
+  submitTokenRefresh,
 } from "./apiClient";
 import {
   deriveCodeChallenge,
@@ -160,11 +161,21 @@ export async function beginAuthFlow(
 // Token endpoints live on accounts.spotify.com, not api.spotify.com, so they
 // can't go through callSpotify (no Bearer, different base). But they DO count
 // against the same per-IP rate budget, and Spotify enforces it with the same
-// 429 + Retry-After contract — so we share the wrapper's wait window and
-// circuit breaker. This stops a 429 storm from triggering an unguarded burst
-// of refresh attempts that would deepen the lockout.
-function postToTokenEndpoint(body: URLSearchParams): Promise<Response> {
-  return runWithRateLimitPolicy(
+// 429 + Retry-After contract — so they share the same circuit breaker. This
+// stops a 429 storm from triggering an unguarded burst of refresh attempts
+// that would deepen the lockout.
+//
+// `submit` selects the rate-limit lane. The default (the FIFO-backed
+// runWithRateLimitPolicy) is used by the one-time OAuth code exchange, which
+// is never re-entrant. The refresh path passes `submitTokenRefresh`, which
+// shares the breaker but skips the serial queue — a refresh is triggered from
+// inside an in-flight API task, and re-entering the single-slot queue would
+// deadlock (see submitTokenRefresh).
+function postToTokenEndpoint(
+  body: URLSearchParams,
+  submit: typeof runWithRateLimitPolicy = runWithRateLimitPolicy,
+): Promise<Response> {
+  return submit(
     () => {
       const controller = new AbortController();
       const timer = setTimeout(
@@ -306,7 +317,9 @@ async function refreshAccessToken(
     refresh_token: tokens.refreshToken,
     client_id: clientId,
   });
-  const response = await postToTokenEndpoint(body);
+  // Refresh lane: shares the breaker but bypasses the serial queue, so a
+  // refresh triggered from inside an in-flight API task can't deadlock.
+  const response = await postToTokenEndpoint(body, submitTokenRefresh);
   if (!response.ok) {
     // Distinguish unrecoverable session loss (400/401 — invalid_grant or
     // unauthorized client) from a transient Spotify outage (5xx). Clearing
