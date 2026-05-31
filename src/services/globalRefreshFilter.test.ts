@@ -277,6 +277,45 @@ describe("matchAllOnSpotify — only processes unresolved tracks", () => {
     );
     expect(calledTrackIds).toEqual(["idle-2"]);
   });
+
+  it("auto-pick OVERWRITES displayed title/artist with the chosen Spotify candidate (DESIGN §4.3)", async () => {
+    // Source-of-truth rule: a Spotify match IS the row's displayed
+    // identity. The ingested track carries an ID3-derived title/artist;
+    // after an auto-match it must show the chosen candidate's strings
+    // (here "X" / "Y"), not the stale ID3 values — otherwise a matched
+    // row could display a different song than the URI that will play.
+    setTracks([track("idle-1")]);
+    expect(usePlaylistStore.getState().tracksById["idle-1"]!.title).toBe(
+      "Title idle-1",
+    );
+
+    await matchAllOnSpotify();
+
+    const updated = usePlaylistStore.getState().tracksById["idle-1"]!;
+    expect(updated.title).toBe("X");
+    expect(updated.artist).toBe("Y");
+    expect(updated.spotify.status).toBe("matched");
+  });
+
+  it("an AMBIGUOUS outcome does NOT overwrite displayed fields (picker still pending)", async () => {
+    searchSpotifyForTrack.mockResolvedValueOnce({
+      status: "ambiguous",
+      candidates: [
+        { id: "c1", uri: "spotify:track:c1", title: "X", artist: "Y", score: 0.6 },
+        { id: "c2", uri: "spotify:track:c2", title: "Z", artist: "W", score: 0.55 },
+      ],
+      score: 0.6,
+    });
+    setTracks([track("idle-1")]);
+
+    await matchAllOnSpotify();
+
+    const updated = usePlaylistStore.getState().tracksById["idle-1"]!;
+    // Identity preserved — a decision is still pending in the picker.
+    expect(updated.title).toBe("Title idle-1");
+    expect(updated.artist).toBe("Artist idle-1");
+    expect(updated.spotify.status).toBe("ambiguous");
+  });
 });
 
 describe("reenrichAll — only queues unresolved tracks (toolbar ↻)", () => {

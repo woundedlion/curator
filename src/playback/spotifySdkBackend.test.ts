@@ -529,6 +529,78 @@ describe("SpotifySdkBackend — applyState translation", () => {
   });
 });
 
+// ─── 4b. End-of-track detection (emits `ended`, not `paused`) ────────
+
+describe("SpotifySdkBackend — end-of-track detection", () => {
+  it("after playing, a {paused:true, position:0} state emits {kind:'ended'} (not paused)", async () => {
+    // The Web Playback SDK has no dedicated ended event — a finished
+    // track surfaces as paused:true at position 0. Once we've seen
+    // playback, that combination means the track completed and must
+    // emit `ended` so the Player tears the backend down (a re-press
+    // reloads from the top instead of resuming a dead Connect context).
+    await backend.load({
+      kind: "spotify-sdk",
+      uri: "spotify:track:abc",
+      label: "Spotify (full track)",
+    });
+    player.fireStateChanged({ paused: false, position: 1_000, duration: 30_000 });
+    events.length = 0;
+    player.fireStateChanged({ paused: true, position: 0, duration: 30_000 });
+    expect(events).toContainEqual({ kind: "ended" });
+    expect(events).not.toContainEqual({ kind: "paused" });
+  });
+
+  it("the initial {paused:true, position:0} BEFORE any playback is a normal paused (not ended)", async () => {
+    // Right after load() the device can report paused-at-0 before
+    // playback actually starts. Without the hasPlayed guard this would
+    // be misread as an instant end-of-track. It must emit `paused`.
+    await backend.load({
+      kind: "spotify-sdk",
+      uri: "spotify:track:abc",
+      label: "Spotify (full track)",
+    });
+    events.length = 0;
+    player.fireStateChanged({ paused: true, position: 0, duration: 30_000 });
+    expect(events).toContainEqual({ kind: "paused" });
+    expect(events).not.toContainEqual({ kind: "ended" });
+  });
+
+  it("on `ended`, the poller and state listener are torn down (no further work after completion)", async () => {
+    vi.useFakeTimers();
+    player.getCurrentState.mockResolvedValue({
+      paused: false,
+      position: 1_000,
+      duration: 30_000,
+    } satisfies SpotifyPlayerSdkState);
+    await backend.load({
+      kind: "spotify-sdk",
+      uri: "spotify:track:abc",
+      label: "Spotify (full track)",
+    });
+    // One poll to mark hasPlayed via a playing state.
+    await vi.advanceTimersByTimeAsync(500);
+    // Track completes.
+    player.fireStateChanged({ paused: true, position: 0, duration: 30_000 });
+    expect(player.listenersFor("player_state_changed")).toHaveLength(0);
+    const callsAtEnd = player.getCurrentState.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(player.getCurrentState.mock.calls.length).toBe(callsAtEnd);
+  });
+
+  it("a user pause mid-track (position != 0) is NOT treated as ended", async () => {
+    await backend.load({
+      kind: "spotify-sdk",
+      uri: "spotify:track:abc",
+      label: "Spotify (full track)",
+    });
+    player.fireStateChanged({ paused: false, position: 5_000, duration: 30_000 });
+    events.length = 0;
+    player.fireStateChanged({ paused: true, position: 5_200, duration: 30_000 });
+    expect(events).toContainEqual({ kind: "paused" });
+    expect(events).not.toContainEqual({ kind: "ended" });
+  });
+});
+
 // ─── 5. pause / resume / seek pass-through + error swallowing ───────
 
 describe("SpotifySdkBackend — pause / resume / seek", () => {

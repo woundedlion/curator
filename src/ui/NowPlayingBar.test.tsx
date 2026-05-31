@@ -12,7 +12,7 @@
 // without standing up a real Player + backends.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { NowPlayingBar } from "./NowPlayingBar";
 import { usePlaybackStore } from "../playback/playbackStore";
 
@@ -173,5 +173,76 @@ describe("NowPlayingBar — toggle button gating", () => {
     render(<NowPlayingBar />);
     screen.getByRole("button", { name: "Stop" }).click();
     expect(stop).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("NowPlayingBar — seek slider", () => {
+  function setSeekable(seek: ReturnType<typeof vi.fn>) {
+    setStore({
+      currentTrackId: "track-a",
+      currentDisplay: { title: "A", artist: "X" },
+      currentSource: { kind: "local", objectUrl: "blob://a", label: "Local file" },
+      isPlaying: true,
+      positionMs: 10_000,
+      durationMs: 100_000,
+      seek,
+    });
+  }
+
+  it("dragging the thumb does NOT commit until release (no premature seek)", () => {
+    const seek = vi.fn();
+    setSeekable(seek);
+    render(<NowPlayingBar />);
+    const slider = screen.getByRole("slider", { name: "Seek" });
+    fireEvent.change(slider, { target: { value: "42000" } });
+    // The thumb reflects the drag value, but the seek is deferred.
+    expect((slider as HTMLInputElement).value).toBe("42000");
+    expect(seek).not.toHaveBeenCalled();
+  });
+
+  it("commits the dragged value to seek() on pointer release", () => {
+    const seek = vi.fn();
+    setSeekable(seek);
+    render(<NowPlayingBar />);
+    const slider = screen.getByRole("slider", { name: "Seek" });
+    fireEvent.change(slider, { target: { value: "42000" } });
+    fireEvent.pointerUp(slider);
+    expect(seek).toHaveBeenCalledWith(42_000);
+  });
+
+  it("commits on keyboard scrub (ArrowRight keyup)", () => {
+    const seek = vi.fn();
+    setSeekable(seek);
+    render(<NowPlayingBar />);
+    const slider = screen.getByRole("slider", { name: "Seek" });
+    fireEvent.change(slider, { target: { value: "20000" } });
+    fireEvent.keyUp(slider, { key: "ArrowRight" });
+    expect(seek).toHaveBeenCalledWith(20_000);
+  });
+
+  it("a cancelled pointer gesture drops the pending drag (thumb returns to live position)", () => {
+    const seek = vi.fn();
+    setSeekable(seek);
+    render(<NowPlayingBar />);
+    const slider = screen.getByRole("slider", { name: "Seek" });
+    fireEvent.change(slider, { target: { value: "42000" } });
+    fireEvent.pointerCancel(slider);
+    // dragValue cleared → slider falls back to the live positionMs (10000).
+    expect((slider as HTMLInputElement).value).toBe("10000");
+    expect(seek).not.toHaveBeenCalled();
+  });
+
+  it("is disabled until duration is known", () => {
+    setStore({
+      currentTrackId: "track-a",
+      currentDisplay: { title: "A", artist: "X" },
+      currentSource: { kind: "local", objectUrl: "blob://a", label: "Local file" },
+      isPlaying: true,
+      positionMs: 0,
+      durationMs: 0,
+    });
+    render(<NowPlayingBar />);
+    const slider = screen.getByRole("slider", { name: "Seek" });
+    expect((slider as HTMLInputElement).disabled).toBe(true);
   });
 });

@@ -623,11 +623,14 @@ async function mapStatusToResult<T>(
   }
   if (response.status === FORBIDDEN_STATUS) {
     const body = await response.text().catch(() => "");
+    // Log the path/method and Spotify's (truncated) error body — enough to
+    // diagnose the common User-Management 403 — but NOT the request body.
+    // Dumping the raw outbound payload to the console is an unnecessary
+    // data-exposure surface for a log line that's useful without it.
     console.error("Spotify 403 details", {
       path: request.path,
       method: request.method ?? "GET",
-      requestBody: request.body,
-      responseBody: body,
+      responseBody: body.slice(0, 200),
     });
     throw new SpotifyForbiddenError(request.path, body.slice(0, 200));
   }

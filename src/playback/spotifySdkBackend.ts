@@ -40,6 +40,11 @@ export class SpotifySdkBackend implements Backend {
   // useless reconciliation across the entire virtualized table.
   // null = no phase emitted yet (initial state); reset on stop().
   private lastEmittedPaused: boolean | null = null;
+  // Whether playback has actually started since the last load(). Needed
+  // to detect end-of-track: the SDK reports a finished track as
+  // {paused:true, position:0}, which is indistinguishable from the
+  // initial paused-at-load state without knowing we've played since.
+  private hasPlayed = false;
 
   constructor(opts: {
     player: SpotifyPlayerInstance;
@@ -67,6 +72,7 @@ export class SpotifySdkBackend implements Backend {
     // suppressed — leaving the UI showing the prior track's phase until
     // the next real transition.
     this.lastEmittedPaused = null;
+    this.hasPlayed = false;
     try {
       await playSpotifyTrackOnDevice(source.uri, this.deviceId, this.clientId);
       this.attachSdkListener();
@@ -111,6 +117,7 @@ export class SpotifySdkBackend implements Backend {
     // must emit its first phase event unconditionally, even if it
     // happens to match the last phase from the prior playback.
     this.lastEmittedPaused = null;
+    this.hasPlayed = false;
     try {
       await pauseSpotifyPlayback(this.player);
     } catch (error) {
@@ -129,6 +136,7 @@ export class SpotifySdkBackend implements Backend {
     this.detachSdkListener();
     this.stopPoller();
     this.lastEmittedPaused = null;
+    this.hasPlayed = false;
     this.observer = null;
   }
 
@@ -200,6 +208,29 @@ export class SpotifySdkBackend implements Backend {
   private applyState(state: SpotifyPlayerSdkState | null): void {
     if (!state) return;
     if (!this.observer) return;
+
+    // End-of-track detection. The Web Playback SDK has no dedicated
+    // "ended" event — a finished track surfaces as {paused:true,
+    // position:0}. Distinguish that from a user pause (which leaves
+    // position at the live playhead) and from the initial paused-at-load
+    // state by requiring that playback has actually started since load()
+    // (`hasPlayed`). Emitting `ended` rather than `paused` lets the
+    // Player tear down the backend so a re-press reloads from the top
+    // instead of issuing resume() against a completed Connect context
+    // (DESIGN §4.4 — this distinction matters most for the SDK).
+    if (this.hasPlayed && state.paused && state.position === 0) {
+      this.hasPlayed = false;
+      // Playback is done: stop our own poller/listener so we don't keep
+      // burning a getCurrentState() RPC every 500ms after the track
+      // ended. The Player deliberately does NOT call stop() on an ended
+      // backend, so the backend is responsible for its own quiescence.
+      this.detachSdkListener();
+      this.stopPoller();
+      this.lastEmittedPaused = null;
+      this.observer({ kind: "ended" });
+      return;
+    }
+
     // Translate state into the BackendEvent stream. Position is always
     // useful; the playing/paused event ONLY fires on a real transition
     // to avoid 2 Hz of useless reconciliation across every
@@ -211,6 +242,7 @@ export class SpotifySdkBackend implements Backend {
       positionMs: state.position,
       durationMs: state.duration,
     });
+    if (!state.paused) this.hasPlayed = true;
     if (this.lastEmittedPaused !== state.paused) {
       this.lastEmittedPaused = state.paused;
       this.observer(state.paused ? { kind: "paused" } : { kind: "playing" });

@@ -22,9 +22,14 @@ export function Sidebar() {
     [playlists],
   );
 
-  async function refresh() {
+  function refresh() {
     if (!clientId) return;
-    await loadPlaylists(clientId);
+    // Wired straight to a button onClick — swallow the rejection here so a
+    // failed load surfaces in the console instead of becoming an unhandled
+    // promise rejection (the appendPlaylist path already does this).
+    loadPlaylists(clientId).catch((error) => {
+      console.error("loadPlaylists (refresh) crashed", error);
+    });
   }
 
   function buildDragHandler(playlistId: string) {

@@ -131,7 +131,40 @@ async function applyCoverArtIfAvailable(
   return false;
 }
 
+// In-flight MB enrichment runs, keyed by trackId. The post-ingest
+// streaming sweep (enrichAllPending) and the picker's explicit
+// enrichOneTrackMb can both target a row that just became eligible —
+// without coalescing they double-fetch MusicBrainz (wasting a 1-req/sec
+// slot) and race on the write-back. A non-bypass caller for an
+// already-running id awaits the in-flight run instead of starting its
+// own; a bypassCache caller (explicit user re-run that must NOT reuse a
+// stale result) waits for the in-flight run to settle, then runs fresh.
+const inFlightRuns = new Map<string, Promise<RunOutcome>>();
+
 async function runOneTrack(
+  trackId: string,
+  options: { bypassCache?: boolean } = {},
+): Promise<RunOutcome> {
+  const existing = inFlightRuns.get(trackId);
+  if (existing) {
+    if (!options.bypassCache) return existing;
+    // Explicit refresh: let the in-flight run finish (so it can't clobber
+    // our write), then proceed with a fresh, cache-bypassing lookup.
+    try {
+      await existing;
+    } catch {
+      // The inner run never rejects (it catches internally), but stay
+      // defensive so a future change can't strand this path.
+    }
+  }
+  const run = runOneTrackInner(trackId, options).finally(() => {
+    if (inFlightRuns.get(trackId) === run) inFlightRuns.delete(trackId);
+  });
+  inFlightRuns.set(trackId, run);
+  return run;
+}
+
+async function runOneTrackInner(
   trackId: string,
   options: { bypassCache?: boolean } = {},
 ): Promise<RunOutcome> {

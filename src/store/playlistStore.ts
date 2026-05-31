@@ -425,9 +425,23 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => {
 
   reorderTracks(orderedIds) {
     const changed = mutate((state) => {
-      const noChange =
-        orderedIds.length === state.playlist.trackIds.length &&
-        orderedIds.every((id, index) => id === state.playlist.trackIds[index]);
+      // Integrity guard: orderedIds must be a permutation of the current
+      // trackIds. A caller passing a wrong, missing, or extra id would
+      // otherwise write trackIds out of sync with tracksById — orphaning
+      // rows (filtered only lazily at persist time) and silently dropping
+      // tracks. Reject a non-permutation as a no-op rather than corrupt
+      // the store. (This is the only mutating action that takes a caller-
+      // supplied id list verbatim; every other path derives ids from the
+      // tracks themselves.)
+      if (!sameIdSet(orderedIds, state.playlist.trackIds)) {
+        console.warn(
+          "reorderTracks: ignoring orderedIds that is not a permutation of current trackIds",
+        );
+        return state;
+      }
+      const noChange = orderedIds.every(
+        (id, index) => id === state.playlist.trackIds[index],
+      );
       if (noChange) return state;
       return {
         playlist: { ...state.playlist, trackIds: orderedIds, sort: null },

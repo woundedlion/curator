@@ -100,7 +100,7 @@ Each top-level folder under [src/](src/) owns a coherent layer:
 | [src/spotify/](src/spotify/) | PKCE auth, token storage, the **unified API wrapper** (`apiClient.ts` — shared `nextAllowedAt`, no-retry policy (single-shot per submission + circuit breaker)), per-track search, playlist read/create/replace via `/v1/playlists/{id}/items`, and the Web Playback SDK wrapper. |
 | [src/services/](src/services/) | Orchestrators that compose the layers above into user-visible actions: [ingestController](src/services/ingestController.ts), [enrichmentRunner](src/services/enrichmentRunner.ts), [spotifyMatchRunner](src/services/spotifyMatchRunner.ts), [spotifyPicker](src/services/spotifyPicker.ts), [playlistPublisher](src/services/playlistPublisher.ts), [playlistExporter](src/services/playlistExporter.ts), [spotifyBootstrap](src/services/spotifyBootstrap.ts). These are the only callers that hold cross-layer policy. |
 | [src/store/](src/store/) | Zustand stores: [playlistStore](src/store/playlistStore.ts) (draft state + undo), [settingsStore](src/store/settingsStore.ts) (localStorage-backed), [spotifyStore](src/store/spotifyStore.ts) (connection + playlists), [uiStore](src/store/uiStore.ts) (toasts, busy counter, modals). Pure helpers ([sortComparator](src/store/sortComparator.ts), [undoStack](src/store/undoStack.ts), [selectionHelpers](src/store/selectionHelpers.ts)) live alongside and are independently unit-tested. |
-| [src/db/](src/db/) | IndexedDB layer (`idb`). [database.ts](src/db/database.ts) owns schema/version, [draftRepository.ts](src/db/draftRepository.ts) persists the active draft with debounced writes + `pagehide`/`visibilitychange` flush, [musicbrainzCache.ts](src/db/musicbrainzCache.ts) stores MB candidate lists with a `version` field for cache invalidation. |
+| [src/db/](src/db/) | IndexedDB layer (`idb`). [database.ts](src/db/database.ts) owns schema/version, [draftRepository.ts](src/db/draftRepository.ts) performs the active-draft IDB write (single-flight save chain + structured-clone-failure fallback) — the 250 ms write debounce lives in [playlistStore](src/store/playlistStore.ts) (`schedulePersist`) and the `pagehide`/`visibilitychange→hidden` flush in [useAppBootstrap](src/hooks/useAppBootstrap.ts), [musicbrainzCache.ts](src/db/musicbrainzCache.ts) stores MB candidate lists with a `version` field for cache invalidation. |
 | [src/playback/](src/playback/) | In-app playback store. Picks the right backend per click (local `<audio>`, Spotify Web Playback SDK, Spotify 30-s preview, or disabled) and serializes playback so only one track plays at a time. |
 | [src/ui/](src/ui/) | React components. The table is [PlaylistTable](src/ui/PlaylistTable.tsx) + [SortableTrackRow](src/ui/SortableTrackRow.tsx) (virtualized, dnd-kit-sortable). The drop overlay, dialogs (ambiguous picker, name-collision, settings), toolbar, sidebar, and now-playing bar are all peers. |
 | [src/hooks/](src/hooks/) | Small custom hooks ([useAppBootstrap](src/hooks/useAppBootstrap.ts) wires up draft restore + Spotify bootstrap on first paint, [useVisibleTrackIds](src/hooks/useVisibleTrackIds.ts) applies the hide-unmatched filter, [useEnrichmentRemaining](src/hooks/useEnrichmentRemaining.ts) exposes queue depth to the toolbar, [useDialogFocus](src/hooks/useDialogFocus.ts) is the shared focus trap used by every modal). |
@@ -198,12 +198,14 @@ digging into raw `Response` objects.
 - **MB enrichment**: serialized through the 1 req/sec queue. The toolbar
   surfaces live queue depth (`Enriching · N remaining`) so users know how long
   a cold import will take.
-- **Spotify search**: gated by [concurrencyLimiter.ts](src/util/concurrencyLimiter.ts)
-  at 4 outstanding awaiters, which mainly bounds producer backpressure —
-  the `apiClient` pacer still serializes the actual HTTP at 334 ms
-  between starts. Parallelism is deliberately not enabled at the wire:
-  Spotify's rolling 30-s counter doesn't reward concurrency, and burst
-  patterns are the most reliable way to earn a multi-hour ban.
+- **Spotify search**: `matchAllOnSpotify` fans out over the eligible
+  tracks with no producer-side limiter, because the `apiClient` pacer
+  serializes the actual HTTP at 334 ms between starts regardless — capping
+  producer parallelism wouldn't change throughput. Parallelism is
+  deliberately not enabled at the wire: Spotify's rolling 30-s counter
+  doesn't reward concurrency, and burst patterns are the most reliable way
+  to earn a multi-hour ban. (`concurrencyLimiter.ts` exists for the ingest
+  file-parsing fan-out, not for Spotify search.)
 - **Persistence writes**: debounced and coalesced (a burst of 100 enrichment
   completions becomes one IDB transaction).
 - **UI busy state**: a ref-counted `busyCount` in `uiStore` — each orchestrator

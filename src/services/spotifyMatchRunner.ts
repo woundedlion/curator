@@ -101,10 +101,10 @@ async function matchOne(
       guard: stillAlive,
     });
 
-    // Re-read inside the store before writing back. When the user edits
-    // a track's title/artist while the Spotify search is in flight, the
-    // captured `track` snapshot is stale; the store-level fill action
-    // refuses to clobber user-set fields.
+    // Re-read inside the store before writing back. The captured `track`
+    // snapshot is stale relative to anything that interleaved during the
+    // (multi-second) search; the pending-status guard below is what makes
+    // the write safe, not the snapshot.
     const store = usePlaylistStore.getState();
     const liveTrack = store.tracksById[trackId];
     if (!liveTrack) return;
@@ -119,11 +119,17 @@ async function matchOne(
     // nuked row back to matched/ambiguous/missing.
     if (liveTrack.spotify.status !== "pending") return;
 
-    const fillIns = displayFieldsFromMatch(match);
-    if (Object.keys(fillIns).length > 0) {
-      store.fillMissingDisplayFields(trackId, fillIns);
-    }
-    store.updateTrack(trackId, { spotify: match });
+    // A Spotify match IS the row's displayed identity (DESIGN §4.3 / the
+    // source-of-truth rule): for a `matched` outcome, OVERWRITE the
+    // displayed fields with the chosen candidate's, exactly as the manual
+    // picker does (spotifyPicker.applyCandidateToTrack). Filling-missing
+    // here instead would let a stale ID3 title outlive the match —
+    // displaying a different song than the URI that will actually play.
+    // For `ambiguous`/`missing`, displayFieldsFromMatch returns {} so only
+    // the spotify state changes: those statuses must NOT overwrite the
+    // displayed fields (a decision is still pending in the picker).
+    const displayFields = displayFieldsFromMatch(match);
+    store.updateTrack(trackId, { ...displayFields, spotify: match });
   } catch (error) {
     // Track was deleted (or the playlist was cleared) while the
     // search was queued. The row no longer exists, so there's
@@ -176,8 +182,9 @@ export async function matchAllOnSpotify(
     ? allTrackIds.filter((id) => scope.has(id))
     : allTrackIds;
   // No producer-side limiter: the apiClient's IntervalQueue paces every
-  // request at 350ms, so concurrent matchOne calls all serialize at the
-  // pacer anyway. Capping producer parallelism doesn't change throughput.
+  // request at MIN_REQUEST_SPACING_MS (334 ms), so concurrent matchOne
+  // calls all serialize at the pacer anyway. Capping producer parallelism
+  // doesn't change throughput.
   await Promise.all(
     trackIds.map((id) => matchOne(id, reportFirstError)),
   );

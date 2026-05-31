@@ -524,7 +524,7 @@ describe("defence-in-depth guard at task-run boundary", () => {
       };
     });
 
-    // Primer completes at ~100ms, drain waits the 350ms spacing
+    // Primer completes at ~100ms, drain waits the 334ms spacing
     // then pops a, guard fires, rejects.
     await vi.advanceTimersByTimeAsync(1000);
     expect(await rej).toBeInstanceOf(RequestCancelledError);
@@ -618,7 +618,7 @@ describe("playlist mutations between deletions don't lose track of cancellations
 
     usePlaylistStore.getState().reorderTracks(["c", "b", "a"]);
 
-    // Three tasks at 350ms each — enough buffer.
+    // Three tasks at 334ms each — enough buffer.
     await vi.advanceTimersByTimeAsync(2000);
     await Promise.all(ps);
     // All three sent (reorder doesn't cancel anything).

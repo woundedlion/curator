@@ -130,7 +130,10 @@ export function CreatePlaylistPanel() {
       } else {
         pushToast({
           kind: "success",
-          message: "Playlist created on Spotify",
+          message:
+            mode === "create"
+              ? "Playlist created on Spotify"
+              : "Playlist updated on Spotify",
           href: result.playlistUrl,
         });
       }

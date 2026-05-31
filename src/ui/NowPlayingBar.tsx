@@ -137,11 +137,15 @@ export function NowPlayingBar() {
           disabled={!seekable}
           onChange={(e) => setDragValue(Number(e.target.value))}
           onPointerUp={commitSeek}
+          // A cancelled pointer gesture (interrupted by a scroll/gesture
+          // takeover) must not freeze the thumb at a dragged-but-uncommitted
+          // value — drop the pending drag so the live playhead resumes.
+          onPointerCancel={() => setDragValue(null)}
           onKeyUp={handleKeyUp}
           aria-label="Seek"
-          aria-valuemin={0}
-          aria-valuemax={seekable ? durationMs : 0}
-          aria-valuenow={seekable ? sliderValue : 0}
+          // Native <input type="range"> derives valuemin/max/now from
+          // min/max/value, so only aria-valuetext is worth setting — it
+          // overrides the spoken value with the mm:ss form.
           aria-valuetext={`${formatDuration(sliderValue)} of ${formatDuration(durationMs)}`}
           className="h-1 min-w-0 flex-1 cursor-pointer appearance-none rounded bg-neutral-700 accent-matched disabled:cursor-not-allowed disabled:opacity-50"
         />

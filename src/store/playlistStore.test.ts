@@ -743,6 +743,37 @@ describe("removeTracks cancellation ordering", () => {
   });
 });
 
+describe("reorderTracks permutation guard", () => {
+  it("applies a valid permutation of the current trackIds", () => {
+    usePlaylistStore
+      .getState()
+      .addTracks([makeTrack({ id: "a" }), makeTrack({ id: "b" }), makeTrack({ id: "c" })]);
+    usePlaylistStore.getState().reorderTracks(["c", "a", "b"]);
+    expect(usePlaylistStore.getState().playlist.trackIds).toEqual(["c", "a", "b"]);
+  });
+
+  it("ignores a non-permutation (missing id) rather than orphaning rows", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    usePlaylistStore
+      .getState()
+      .addTracks([makeTrack({ id: "a" }), makeTrack({ id: "b" }), makeTrack({ id: "c" })]);
+    // "b" dropped — would otherwise desync trackIds from tracksById.
+    usePlaylistStore.getState().reorderTracks(["c", "a"]);
+    expect(usePlaylistStore.getState().playlist.trackIds).toEqual(["a", "b", "c"]);
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it("ignores a non-permutation (unknown id) rather than introducing a phantom row", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    usePlaylistStore.getState().addTracks([makeTrack({ id: "a" }), makeTrack({ id: "b" })]);
+    usePlaylistStore.getState().reorderTracks(["a", "b", "ghost"]);
+    expect(usePlaylistStore.getState().playlist.trackIds).toEqual(["a", "b"]);
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+});
+
 describe("toggleSelection anchor semantics", () => {
   it("moves anchor to the clicked id when the toggle ADDS to selection", () => {
     const a = makeTrack({ id: "a" });

@@ -113,6 +113,11 @@ function buildSearchUrl(
     query,
     fmt: "json",
     limit: String(MB_SEARCH_LIMIT),
+    // Explicitly request the sub-documents we derive fields from (DESIGN
+    // §4.3). The /recording search endpoint embeds artist-credit and
+    // releases inline by default today, but pinning `inc` keeps album /
+    // artist / year derivation working if MB ever changes those defaults.
+    inc: "releases+artist-credits",
     client: buildClientParam(contactEmail),
   });
   if (dismax) params.set("dismax", "true");

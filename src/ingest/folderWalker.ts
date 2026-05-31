@@ -175,7 +175,7 @@ export async function walkDirectoryHandle(
   options: { recursive: boolean },
 ): Promise<File[]> {
   const files: File[] = [];
-  await walkHandleInto(directory, options, files, 0, new Set());
+  await walkHandleInto(directory, options, files, 0, new Set(), []);
   return files;
 }
 
@@ -183,12 +183,45 @@ type EntriesCapable = {
   entries(): AsyncIterable<[string, FileSystemHandle]>;
 };
 
+type SameEntryCapable = {
+  isSameEntry(other: FileSystemHandle): Promise<boolean>;
+};
+
+// True if `directory` is the same on-disk entry as any of its ancestors —
+// i.e. a symlink cycle (a/b/a). Object-identity dedup (`seenDirs`) can't
+// catch this: the File System Access API hands back a FRESH
+// FileSystemDirectoryHandle on each traversal, so the second visit to `a`
+// is a different object than the first. `isSameEntry()` is the spec's
+// sanctioned identity comparison. Bounded by the ancestor chain length
+// (≤ MAX_WALK_DEPTH), so it stays O(depth) per node, not O(n). If the
+// handle doesn't implement isSameEntry (older engines, test fakes), we
+// fall back to the depth cap as the structural backstop.
+async function isAncestorCycle(
+  directory: FileSystemDirectoryHandle,
+  ancestors: FileSystemDirectoryHandle[],
+): Promise<boolean> {
+  const probe = directory as unknown as Partial<SameEntryCapable>;
+  if (typeof probe.isSameEntry !== "function") return false;
+  for (const ancestor of ancestors) {
+    try {
+      if (await probe.isSameEntry(ancestor as unknown as FileSystemHandle)) {
+        return true;
+      }
+    } catch {
+      // Treat a throwing isSameEntry as "not the same"; the depth cap
+      // remains the backstop against an undetected cycle.
+    }
+  }
+  return false;
+}
+
 async function walkHandleInto(
   directory: FileSystemDirectoryHandle,
   options: { recursive: boolean },
   files: File[],
   depth: number,
   seenDirs: Set<FileSystemDirectoryHandle>,
+  ancestors: FileSystemDirectoryHandle[],
 ): Promise<void> {
   // The entries() iterator itself is necessarily serial (the
   // underlying spec doesn't expose a batched read), but every per-entry
@@ -202,8 +235,23 @@ async function walkHandleInto(
     );
     return;
   }
+  // Object-identity dedup: the same handle object referenced from two
+  // parents (a DAG node) is enumerated once. Add synchronously right
+  // after the check — concurrent sibling descents of the SAME instance
+  // (via the Promise.allSettled fan-out below) would otherwise both pass
+  // the check before either marks it. The cycle check must come AFTER
+  // this add, since it awaits.
   if (seenDirs.has(directory)) return;
   seenDirs.add(directory);
+  // Structural cycle dedup for real symlink loops, where each traversal
+  // yields a fresh handle object that identity dedup can't catch.
+  if (await isAncestorCycle(directory, ancestors)) {
+    console.warn(
+      "folderWalker: breaking directory cycle (isSameEntry)",
+      directory.name,
+    );
+    return;
+  }
 
   const fileHandles: FileSystemFileHandle[] = [];
   const dirHandles: FileSystemDirectoryHandle[] = [];
@@ -241,7 +289,10 @@ async function walkHandleInto(
     }
   }
 
+  const childAncestors = [...ancestors, directory];
   await Promise.allSettled(
-    dirHandles.map((h) => walkHandleInto(h, options, files, depth + 1, seenDirs)),
+    dirHandles.map((h) =>
+      walkHandleInto(h, options, files, depth + 1, seenDirs, childAncestors),
+    ),
   );
 }

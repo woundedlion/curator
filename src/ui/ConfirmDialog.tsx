@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useId, useRef } from "react";
 import { useDialogFocus } from "../hooks/useDialogFocus";
 
 type ConfirmKind = "info" | "danger";
@@ -29,6 +29,11 @@ export function ConfirmDialog({
 }: Props) {
   const dialogRef = useDialogFocus<HTMLDivElement>(open, onCancel);
   const confirmRef = useRef<HTMLButtonElement>(null);
+  // Unique per instance so two ConfirmDialogs mounted in the same tree
+  // (e.g. Toolbar mounts Clear + Nuke confirms) can't collide on a
+  // hardcoded DOM id and produce ambiguous aria-labelledby references.
+  const titleId = useId();
+  const messageId = useId();
 
   // When the dialog opens, push focus to the confirm button so Enter
   // confirms without an extra Tab. useDialogFocus already pulls focus
@@ -57,21 +62,21 @@ export function ConfirmDialog({
         ref={dialogRef}
         role="alertdialog"
         aria-modal="true"
-        aria-labelledby="confirm-dialog-title"
-        aria-describedby="confirm-dialog-message"
+        aria-labelledby={titleId}
+        aria-describedby={messageId}
         tabIndex={-1}
         // Stop the click from bubbling to the backdrop's onClose handler.
         onClick={(event) => event.stopPropagation()}
         className="mx-4 w-full max-w-md rounded-lg border border-neutral-700 bg-neutral-900 p-5 shadow-2xl"
       >
         <h2
-          id="confirm-dialog-title"
+          id={titleId}
           className="text-base font-semibold text-neutral-100"
         >
           {title}
         </h2>
         <p
-          id="confirm-dialog-message"
+          id={messageId}
           className="mt-2 text-sm text-neutral-300"
         >
           {message}

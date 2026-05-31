@@ -360,8 +360,25 @@ export class Player {
    */
   private async stopAll(): Promise<void> {
     this.activeBackend = null;
-    const sdkStop = this.sdkBackend?.stop() ?? Promise.resolve();
-    await Promise.all([this.htmlBackend.stop(), sdkStop]);
+    await Promise.all([
+      this.safeStop(this.htmlBackend),
+      this.sdkBackend ? this.safeStop(this.sdkBackend) : Promise.resolve(),
+    ]);
+  }
+
+  /**
+   * Stop one backend without letting its rejection propagate. A backend
+   * stop() that throws must NOT abort the caller (install / doStop)
+   * before it reaches `releasePlaybackSource(priorSource)` — that would
+   * leak the prior local file's object URL on every failed transition.
+   * The stop failure is logged; the transition continues.
+   */
+  private async safeStop(backend: Backend): Promise<void> {
+    try {
+      await backend.stop();
+    } catch (error) {
+      console.warn("Player: backend stop() failed during transition", error);
+    }
   }
 
   /**
@@ -377,7 +394,9 @@ export class Player {
     if (this.sdkBackend && this.sdkBackend !== keep) {
       others.push(this.sdkBackend);
     }
-    await Promise.all(others.map((b) => b.stop()));
+    // safeStop so a rejecting stop() can't abort install() before it
+    // releases the prior source's object URL (see safeStop / stopAll).
+    await Promise.all(others.map((b) => this.safeStop(b)));
   }
 
   private async resolveBackend(source: PlaybackSource): Promise<Backend | null> {

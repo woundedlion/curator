@@ -193,6 +193,11 @@ describe("searchRecordings (mocked fetch)", () => {
       expect(url).toContain("query=");
       expect(url).toContain("fmt=json");
       expect(url).toContain("client=");
+      // Sub-documents we derive fields from are requested explicitly
+      // (DESIGN §4.3) so album/artist/year derivation can't silently break
+      // if MB changes its search-endpoint defaults. URLSearchParams encodes
+      // the "+" in the value as "%2B".
+      expect(url).toContain("inc=releases%2Bartist-credits");
       // Strict pass — dismax NOT set.
       expect(url).not.toContain("dismax=true");
 

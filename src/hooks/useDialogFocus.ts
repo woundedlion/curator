@@ -13,6 +13,47 @@ function getFocusable(container: HTMLElement): HTMLElement[] {
   ).filter((el) => el.getAttribute("aria-hidden") !== "true");
 }
 
+// Make everything OUTSIDE the dialog's DOM path non-interactive and
+// invisible to assistive tech while the dialog is open. `aria-modal` alone
+// is not reliably honored — many screen readers' virtual-cursor/browse
+// modes still read the background behind it. We walk from the dialog
+// container up to <body> and, at each level, set `inert` (blocks focus +
+// pointer) and `aria-hidden="true"` on every sibling branch that does not
+// contain the dialog. Prior attribute values are remembered and restored
+// on close, so nested dialogs compose: an inner dialog re-inerting the
+// outer one leaves it inert when the inner closes (the outer's own
+// isolation still holds). Returns the restore function.
+function isolateBackground(container: HTMLElement): () => void {
+  const modified: {
+    el: Element;
+    hadInert: boolean;
+    prevAriaHidden: string | null;
+  }[] = [];
+  let node: HTMLElement | null = container;
+  while (node && node !== document.body) {
+    const parent: HTMLElement | null = node.parentElement;
+    if (!parent) break;
+    for (const sibling of Array.from(parent.children) as Element[]) {
+      if (sibling === node || sibling.contains(container)) continue;
+      modified.push({
+        el: sibling,
+        hadInert: sibling.hasAttribute("inert"),
+        prevAriaHidden: sibling.getAttribute("aria-hidden"),
+      });
+      sibling.setAttribute("inert", "");
+      sibling.setAttribute("aria-hidden", "true");
+    }
+    node = parent;
+  }
+  return () => {
+    for (const m of modified) {
+      if (!m.hadInert) m.el.removeAttribute("inert");
+      if (m.prevAriaHidden === null) m.el.removeAttribute("aria-hidden");
+      else m.el.setAttribute("aria-hidden", m.prevAriaHidden);
+    }
+  };
+}
+
 // Topmost-dialog wins. Without this, two open dialogs both attach window
 // `keydown` listeners — Escape with a nested confirm dismisses both at
 // once (inner closes via its handler, outer closes via its handler on
@@ -47,6 +88,7 @@ export function useDialogFocus<T extends HTMLElement>(
 
     const stackEntry = { container };
     dialogStack.push(stackEntry);
+    const restoreBackground = isolateBackground(container);
 
     function onKeyDown(event: KeyboardEvent) {
       // Only the topmost dialog should respond. Multiple dialogs open
@@ -86,6 +128,7 @@ export function useDialogFocus<T extends HTMLElement>(
     window.addEventListener("keydown", onKeyDown);
     return () => {
       window.removeEventListener("keydown", onKeyDown);
+      restoreBackground();
       const idx = dialogStack.indexOf(stackEntry);
       if (idx !== -1) dialogStack.splice(idx, 1);
       if (previouslyFocused && document.contains(previouslyFocused)) {
