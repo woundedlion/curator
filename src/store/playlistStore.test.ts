@@ -18,7 +18,7 @@ vi.mock("../services/cancelTrackRequests", () => ({
   cancelTrackRequests: vi.fn(),
 }));
 
-import { usePlaylistStore } from "./playlistStore";
+import { flushPendingPersist, usePlaylistStore } from "./playlistStore";
 import { loadDraft, saveDraft } from "../db/draftRepository";
 import { cancelTrackRequests } from "../services/cancelTrackRequests";
 import type { Track } from "../types";
@@ -567,6 +567,47 @@ describe("schedulePersist debounce", () => {
     expect(savedTracks).toHaveLength(1);
     expect(savedTracks[0]!.title).toBe("v9");
   });
+
+  it("never runs two saveDraft transactions concurrently when a flush races an in-flight save", async () => {
+    // Regression: persistImmediately read getState() then awaited saveDraft
+    // with no in-flight guard, so a pagehide/visibilitychange flush firing
+    // while a debounced save was mid-await started a SECOND concurrent
+    // saveDraft against the same draft id. The single-flight guard must
+    // keep at most one save in flight and coalesce the racing request into
+    // exactly one trailing re-run.
+    let concurrent = 0;
+    let maxConcurrent = 0;
+    const release: Array<() => void> = [];
+    vi.mocked(saveDraft).mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          concurrent++;
+          maxConcurrent = Math.max(maxConcurrent, concurrent);
+          release.push(() => {
+            concurrent--;
+            resolve();
+          });
+        }),
+    );
+    try {
+      usePlaylistStore.getState().addTracks([makeTrack({ id: "a" })]);
+
+      const p1 = flushPendingPersist(); // starts saveDraft #1 (now in flight)
+      const p2 = flushPendingPersist(); // races; must NOT start a 2nd concurrent save
+      expect(saveDraft).toHaveBeenCalledTimes(1);
+
+      release[0]!(); // resolve #1 → coalesced re-run starts exactly one more
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(saveDraft).toHaveBeenCalledTimes(2);
+
+      release[1]!(); // resolve the re-run
+      await Promise.all([p1, p2]);
+      expect(maxConcurrent).toBe(1);
+    } finally {
+      vi.mocked(saveDraft).mockImplementation(async () => undefined);
+    }
+  });
 });
 
 // ─── nukeEnrichmentState ────────────────────────────────────────────
@@ -623,8 +664,13 @@ describe("nukeEnrichmentState", () => {
     // proceed" and fire an HTTP call that lands into the reset state.
     // We assert ordering by observing the store state from inside the
     // cancel mock.
-    const a = makeTrack({ id: "a" });
-    const b = makeTrack({ id: "b" });
+    // Non-idle rows so the nuke actually does work (an all-idle playlist
+    // is a deliberate no-op — see the dedicated test below).
+    const a = makeTrack({
+      id: "a",
+      spotify: { status: "matched", uri: "spotify:track:a", candidates: [], score: 1 },
+    });
+    const b = makeTrack({ id: "b", spotify: { status: "pending" } });
     usePlaylistStore.getState().addTracks([a, b]);
 
     let cancelObservedTracksById: Record<string, Track> | undefined;
@@ -642,6 +688,23 @@ describe("nukeEnrichmentState", () => {
     // committed.
     expect(cancelObservedTracksById).toBeDefined();
     expect(Object.keys(cancelObservedTracksById!).sort()).toEqual(["a", "b"]);
+  });
+
+  it("is a no-op when every row is already idle (no cancel, no undo entry)", () => {
+    // Nuking an all-idle playlist (e.g. right after a fresh import) changes
+    // nothing; it must not push the heaviest-possible undo entry (a full
+    // tracksById clone) or cancel/persist for zero effect.
+    usePlaylistStore
+      .getState()
+      .addTracks([makeTrack({ id: "a" }), makeTrack({ id: "b" })]);
+    vi.mocked(cancelTrackRequests).mockClear();
+    const undoLenBefore = usePlaylistStore.getState().undoStack.length;
+
+    usePlaylistStore.getState().nukeEnrichmentState();
+
+    expect(cancelTrackRequests).not.toHaveBeenCalled();
+    // No new undo entry was pushed by the no-op nuke.
+    expect(usePlaylistStore.getState().undoStack).toHaveLength(undoLenBefore);
   });
 
   it("snapshots the full prior tracksById onto the undo stack", () => {

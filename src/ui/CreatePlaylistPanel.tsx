@@ -110,11 +110,12 @@ export function CreatePlaylistPanel() {
 
   async function publish(mode: "create" | { update: string }) {
     if (!clientId) return;
+    const isCreate = typeof mode === "string";
     setPublishing(true);
     try {
       const result = await publishPlaylist(
         clientId,
-        typeof mode === "string"
+        isCreate
           ? { kind: "create" }
           : { kind: "update", playlistId: mode.update },
         (progress) =>
@@ -130,10 +131,9 @@ export function CreatePlaylistPanel() {
       } else {
         pushToast({
           kind: "success",
-          message:
-            mode === "create"
-              ? "Playlist created on Spotify"
-              : "Playlist updated on Spotify",
+          message: isCreate
+            ? "Playlist created on Spotify"
+            : "Playlist updated on Spotify",
           href: result.playlistUrl,
         });
       }

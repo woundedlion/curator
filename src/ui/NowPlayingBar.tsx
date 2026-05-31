@@ -12,6 +12,11 @@ function sourceLabel(source: PlaybackSource): string {
   return source.kind === "none" ? "—" : source.label;
 }
 
+// One-second seek granularity. Keyboard Arrow keys move the thumb by this
+// step; the rendered value is quantized to the same grid so the first
+// keypress doesn't jump to the nearest grid line.
+const SEEK_STEP_MS = 1000;
+
 export function NowPlayingBar() {
   const currentTrackId = usePlaybackStore((state) => state.currentTrackId);
   const currentSource = usePlaybackStore((state) => state.currentSource);
@@ -83,6 +88,14 @@ export function NowPlayingBar() {
   // The slider is operable any time we know the duration. Without a duration
   // (SDK starting up, or HTMLAudio before `loadedmetadata`) it stays inert.
   const seekable = durationMs > 0;
+  // Snap the rendered thumb to the step grid. `positionMs` from `timeupdate`
+  // is rarely a whole second, so passing it raw with step=1000 made the
+  // first ArrowLeft/Right jump to the nearest grid line (up to ~1s, possibly
+  // the "wrong" way) before moving. Quantizing the value keeps keyboard
+  // scrubbing to clean one-second increments. (Pointer drags already snap.)
+  const sliderThumb = seekable
+    ? Math.min(durationMs, Math.round(sliderValue / SEEK_STEP_MS) * SEEK_STEP_MS)
+    : 0;
 
   return (
     <footer
@@ -132,8 +145,8 @@ export function NowPlayingBar() {
           type="range"
           min={0}
           max={seekable ? durationMs : 0}
-          step={1000}
-          value={seekable ? sliderValue : 0}
+          step={SEEK_STEP_MS}
+          value={sliderThumb}
           disabled={!seekable}
           onChange={(e) => setDragValue(Number(e.target.value))}
           onPointerUp={commitSeek}

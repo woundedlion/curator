@@ -210,7 +210,7 @@ export function SettingsDialog() {
                 type="button"
                 onClick={connect}
                 disabled={!settings.spotifyClientId}
-                className="rounded bg-matched px-3 py-1 text-xs font-semibold text-black hover:opacity-90 disabled:opacity-40"
+                className="rounded bg-matched px-3 py-1 text-xs font-semibold text-neutral-900 hover:opacity-90 disabled:opacity-40"
               >
                 Connect to Spotify
               </button>

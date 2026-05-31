@@ -33,6 +33,23 @@ export function nearestUnselectedFallback(
   return null;
 }
 
+// Shallow positional equality for id arrays. `moveSelectionMaintainingShape`
+// returns a FRESH array on every call, so a reference check against the
+// previous preview is always true — onDragOver fires very frequently and
+// would re-render the SortableContext + virtualizer on every event even
+// when the computed landing order is identical. Comparing by value collapses
+// those redundant writes to one per genuine layout change.
+function sameOrder(
+  a: ReadonlyArray<string>,
+  b: ReadonlyArray<string> | null,
+): boolean {
+  if (b === null || a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
 export type DragAndDropHandlers = {
   onDragStart: (event: DragStartEvent) => void;
   onDragOver: (event: DragOverEvent) => void;
@@ -148,7 +165,7 @@ export function usePlaylistDragAndDrop(
       );
       if (next === visibleTrackIds) {
         if (dragPreviewIdsRef.current !== null) setDragPreviewBoth(null);
-      } else if (next !== dragPreviewIdsRef.current) {
+      } else if (!sameOrder(next, dragPreviewIdsRef.current)) {
         setDragPreviewBoth(next);
       }
     },

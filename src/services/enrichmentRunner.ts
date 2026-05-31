@@ -22,7 +22,14 @@ import {
   resetSpotifyStatusForRefresh,
 } from "./spotifyMatchRunner";
 
-type EnrichmentResult = "matched" | "ambiguous" | "failed";
+// `cancelled` is a sentinel for a run whose result must be discarded
+// silently — the track was deleted (queued or in-flight), or the row
+// was reset (nuked) while the request was in flight. Per DESIGN §11.27
+// these produce no toast and no status pollution, so the batch loop
+// excludes them from the summary entirely (no `attempted++`). Conflating
+// them with `failed` previously let a delete-during-sweep fire a
+// misleading "No MusicBrainz matches for any track" error toast.
+type EnrichmentResult = "matched" | "ambiguous" | "failed" | "cancelled";
 
 type RunOutcome = {
   result: EnrichmentResult;
@@ -202,7 +209,9 @@ async function runOneTrackInner(
     const store = usePlaylistStore.getState();
     const liveTrack = store.tracksById[trackId];
     if (!liveTrack) {
-      return { result: outcome.status, failureReason: outcome.failureReason };
+      // Track was deleted between the fetch resolving and the writeback.
+      // The result is discarded — don't let it pollute the batch summary.
+      return { result: "cancelled" };
     }
 
     // Drop late results that arrive after a reset. The runner sets
@@ -214,7 +223,9 @@ async function runOneTrackInner(
     // was reset to idle). Without this guard, the late response would
     // silently rewrite a nuked row back to matched/ambiguous/failed.
     if (liveTrack.enrichment.status !== "pending") {
-      return { result: outcome.status, failureReason: outcome.failureReason };
+      // Late result against a row that was reset (nuked) while in flight.
+      // Discard it silently — a subsequent resume will re-enrich the row.
+      return { result: "cancelled" };
     }
 
     if (outcome.status === "matched" && best) {
@@ -251,7 +262,7 @@ async function runOneTrackInner(
     // longer exists; updateTrack would be a no-op anyway, but the
     // early return keeps the error reporting path silent.
     if (error instanceof RequestCancelledError) {
-      return { result: "failed" };
+      return { result: "cancelled" };
     }
     console.error("MusicBrainz enrichment failed", { trackId, error });
     usePlaylistStore.getState().updateTrack(trackId, {
@@ -440,6 +451,11 @@ export async function enrichAllPending(
     for (const trackId of trackIds) {
       seen.add(trackId);
       const outcome = await runOneTrack(trackId);
+      // A cancelled run (track deleted, or row reset while in flight) is
+      // discarded silently — it must not count toward `attempted` or any
+      // failure tally, else deleting the last eligible track mid-sweep
+      // would fire a misleading "no matches" toast (DESIGN §11.27).
+      if (outcome.result === "cancelled") continue;
       summary.attempted++;
       if (outcome.error !== undefined) {
         summary.errorCount++;

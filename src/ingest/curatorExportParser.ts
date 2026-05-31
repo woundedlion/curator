@@ -19,9 +19,14 @@ const MARKER_SCAN_WINDOW = 1024;
 
 function looksLikeCuratorExport(text: string): boolean {
   // A curator export is always a JSON object; if it doesn't start with
-  // `{` it can't be one, so we never parse it.
-  if (text.trimStart()[0] !== "{") return false;
-  return text.slice(0, MARKER_SCAN_WINDOW).includes(CURATOR_EXPORT_FORMAT);
+  // `{` it can't be one, so we never parse it. Scan only the leading
+  // window — `text.trimStart()` would allocate a full trimmed copy of a
+  // (possibly multi-MB) plain `.txt` just to read its first char, defeating
+  // the cheap-reject this guard exists to provide.
+  const head = text.slice(0, MARKER_SCAN_WINDOW);
+  const firstNonWs = head.search(/\S/);
+  if (firstNonWs === -1 || head[firstNonWs] !== "{") return false;
+  return head.includes(CURATOR_EXPORT_FORMAT);
 }
 
 function asString(value: unknown): string | undefined {

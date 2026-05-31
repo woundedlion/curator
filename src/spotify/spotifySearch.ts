@@ -6,6 +6,10 @@ import {
 } from "../constants";
 import type { SpotifyCandidate, SpotifyMatch, Track } from "../types";
 import { normalizeForMatching } from "../metadata/normalizers";
+import {
+  MIN_AUTO_MATCH_TITLE_SIMILARITY,
+  titleSimilarity,
+} from "../enrichment/titleSimilarity";
 import { callSpotify } from "./apiClient";
 import type { SpotifySearchResponse } from "./dtos";
 import { toSpotifyCandidate } from "./spotifyMappers";
@@ -128,7 +132,7 @@ function scoreSpotifyCandidates(
     .sort((a, b) => b.score - a.score);
 }
 
-function classifyMatch(scored: SpotifyCandidate[]): SpotifyMatch {
+function classifyMatch(track: Track, scored: SpotifyCandidate[]): SpotifyMatch {
   // `missing` means Spotify returned zero candidates — the user has
   // nothing to pick from. When Spotify returned candidates but none
   // cleared the auto-pick threshold, the row is `ambiguous`: the user
@@ -141,9 +145,39 @@ function classifyMatch(scored: SpotifyCandidate[]): SpotifyMatch {
   const runnerUp = scored[1];
   const onlyCandidate = scored.length === 1;
   const gap = runnerUp ? best.score - runnerUp.score : 1;
+
+  // Title/artist sanity guards (DESIGN §4.5 "Auto-pick is conservative",
+  // §11.11). A high combined score can be driven largely by year/duration
+  // credit, so without this floor a wrong song with the right runtime —
+  // or a single, totally unrelated lone candidate — could auto-`match`
+  // and be silently published. This is the same guard the MusicBrainz
+  // matcher applies (enrichmentService). It gates EVERY auto-pick path,
+  // including the lone-candidate short-circuit; failing it downgrades to
+  // `ambiguous` so the user makes the call. (The lone-candidate path
+  // intentionally keeps its leniency on the combined-score threshold —
+  // text-only tracks cap at 0.8 with no year/duration credit — but it is
+  // no longer exempt from the similarity floor.)
+  //
+  // The candidate pool can contain alt-query (filename-derived) hits
+  // merged in when the primary query came up short, and a match can come
+  // in via the altQuery alone (primary title/artist empty). So the floor
+  // passes if the best candidate resembles EITHER the primary identity OR
+  // the altQuery identity — gating only against the primary would reject
+  // a legitimate filename-recovered match.
+  const references: IdentifyingFields[] = [primaryFieldsFromTrack(track)];
+  if (track.altQuery) references.push(track.altQuery);
+  const similarityOk = references.some(
+    (ref) =>
+      titleSimilarity(ref.title, best.title) >=
+        MIN_AUTO_MATCH_TITLE_SIMILARITY &&
+      titleSimilarity(ref.artist, best.artist) >=
+        MIN_AUTO_MATCH_TITLE_SIMILARITY,
+  );
+
   if (
-    onlyCandidate ||
-    (best.score >= DEFAULT_ACCEPT_SPOTIFY_HIGH && gap >= SPOTIFY_AUTOPICK_GAP)
+    similarityOk &&
+    (onlyCandidate ||
+      (best.score >= DEFAULT_ACCEPT_SPOTIFY_HIGH && gap >= SPOTIFY_AUTOPICK_GAP))
   ) {
     return {
       status: "matched",
@@ -250,7 +284,7 @@ export async function searchSpotifyForTrack(
   }
 
   const scored = scoreSpotifyCandidates(track, candidates);
-  return classifyMatch(scored);
+  return classifyMatch(track, scored);
 }
 
 export async function searchSpotifyCandidatesByFields(

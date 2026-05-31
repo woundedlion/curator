@@ -32,19 +32,20 @@ class MemoryStorage implements Storage {
 }
 vi.stubGlobal("localStorage", new MemoryStorage());
 
-vi.mock("../store/uiStore", () => ({
-  useUiStore: {
-    getState: () => ({
-      pushToast: () => undefined,
-      withBusy: async (fn: () => Promise<void>) => fn(),
-    }),
-  },
-}));
-
 const mocks = vi.hoisted(() => ({
   enrichTrack: vi.fn(),
   deleteCachedCandidates: vi.fn(async () => undefined),
   probeCoverArtUrl: vi.fn(async () => ({ kind: "missing" as const })),
+  pushToast: vi.fn(),
+}));
+
+vi.mock("../store/uiStore", () => ({
+  useUiStore: {
+    getState: () => ({
+      pushToast: mocks.pushToast,
+      withBusy: async (fn: () => Promise<void>) => fn(),
+    }),
+  },
 }));
 
 vi.mock("../enrichment/enrichmentService", () => ({
@@ -63,6 +64,7 @@ vi.mock("../enrichment/coverArt", () => ({
 }));
 
 import { enrichAllPending } from "./enrichmentRunner";
+import { RequestCancelledError } from "../util/intervalQueue";
 import { usePlaylistStore } from "../store/playlistStore";
 import { useSettingsStore } from "../store/settingsStore";
 import type { Track } from "../types";
@@ -134,6 +136,7 @@ beforeEach(() => {
   mocks.deleteCachedCandidates.mockReset();
   mocks.probeCoverArtUrl.mockReset();
   mocks.probeCoverArtUrl.mockResolvedValue({ kind: "missing" });
+  mocks.pushToast.mockReset();
   // Settings: client id present (so Spotify is "configured"), MB email
   // present (so enrichment isn't blocked).
   useSettingsStore.setState((s) => ({
@@ -292,5 +295,42 @@ describe("enrichAllPending — streaming mode (whileActive)", () => {
       (c) => c[0].id === "a",
     );
     expect(callsForA.length).toBe(1);
+  });
+});
+
+describe("enrichAllPending — cancellation does not pollute the batch summary (DESIGN §11.27)", () => {
+  it("does NOT fire a 'no matches' toast when the only eligible track's lookup is cancelled (deleted mid-sweep)", async () => {
+    // Regression: a RequestCancelledError (track deleted while its MB
+    // lookup was queued/in-flight) used to be counted as a no-result
+    // failure, so deleting the last eligible track during a sweep fired
+    // the misleading "No MusicBrainz matches for any track" error toast.
+    // A cancelled run must be excluded from the summary entirely.
+    setTracks([track("a", { spotifyStatus: "matched" })]);
+    mocks.enrichTrack.mockRejectedValueOnce(new RequestCancelledError());
+
+    await enrichAllPending();
+
+    const errorToasts = mocks.pushToast.mock.calls.filter(
+      (c) => (c[0] as { kind?: string }).kind === "error",
+    );
+    expect(errorToasts).toHaveLength(0);
+  });
+
+  it("still fires the 'no matches' toast for a genuine no-result failure", async () => {
+    // Counterpart: a real failed lookup (not cancellation) must still
+    // surface the error toast — proving the fix is specific to cancellation.
+    setTracks([track("a", { spotifyStatus: "matched" })]);
+    mocks.enrichTrack.mockResolvedValueOnce({
+      status: "failed",
+      candidates: [],
+      topScore: 0,
+    });
+
+    await enrichAllPending();
+
+    const errorToasts = mocks.pushToast.mock.calls.filter(
+      (c) => (c[0] as { kind?: string }).kind === "error",
+    );
+    expect(errorToasts.length).toBeGreaterThan(0);
   });
 });

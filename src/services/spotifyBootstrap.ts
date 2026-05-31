@@ -109,7 +109,17 @@ async function doBootstrap(): Promise<void> {
   await useSpotifyStore.getState().refreshConnection(clientId);
   const { connected, status } = useSpotifyStore.getState();
   if (connected) {
-    await useSpotifyStore.getState().loadPlaylists(clientId);
+    // The session is established — that's the bootstrap's job. Loading the
+    // sidebar playlists is a best-effort follow-on; a slow or failing
+    // paginated fetch here must NOT reject the bootstrap promise (which
+    // would surface as an unhandled rejection for fire-and-forget callers
+    // and mask a perfectly good connection). loadPlaylists records its own
+    // failure state; we just keep it from escaping.
+    try {
+      await useSpotifyStore.getState().loadPlaylists(clientId);
+    } catch (error) {
+      console.warn("Spotify bootstrap: loadPlaylists failed", error);
+    }
     return;
   }
 

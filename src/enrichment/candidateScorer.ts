@@ -6,13 +6,29 @@ type Scorable = {
   title: string;
   artist: string;
   album: string;
-  year?: number;
 };
 
+// Documented field split (DESIGN §4.3): title 0.50 · artist 0.30 ·
+// album 0.15 · year 0.05.
+//
+// IMPORTANT — load-bearing invariant: Fuse.js internally normalizes the
+// `keys[].weight` array to sum to 1, so the raw 0.50/0.30/0.15 below are
+// rescaled to 0.526/0.316/0.158 inside Fuse. We then multiply the whole
+// Fuse component by (1 - YEAR_WEIGHT) and add the year credit. The realized
+// aggregate split equals the documented 0.50/0.30/0.15/0.05 EXACTLY — but
+// only because `title + artist + album === 1 - YEAR_WEIGHT` (0.95). If you
+// retune a field weight, preserve that identity or the documented contract
+// silently drifts. `FIELD_WEIGHT_SUM_INVARIANT` (asserted in the tests)
+// guards against an accidental break.
 const FIELD_WEIGHTS = { title: 0.5, artist: 0.3, album: 0.15 } as const;
 const YEAR_WEIGHT = 0.05;
 const YEAR_FULL_CREDIT_YEARS = 1;
 const YEAR_HALF_CREDIT_YEARS = 3;
+
+// Exported for the invariant test: the field weights must sum to
+// (1 - YEAR_WEIGHT) for the realized aggregate split to match DESIGN §4.3.
+export const SCORER_FIELD_WEIGHTS = FIELD_WEIGHTS;
+export const SCORER_YEAR_WEIGHT = YEAR_WEIGHT;
 
 // Fuse options are a frozen constant; the instance itself is built
 // per-call (below) over that call's candidate list. MB returns a small
@@ -41,11 +57,13 @@ function yearCredit(candidateYear?: number, trackYear?: number): number {
 }
 
 function buildFuseTarget(candidate: MBCandidate): Scorable {
+  // `year` is intentionally NOT a Fuse field — Fuse never reads it (it's
+  // not in `keys`); year is scored separately via `yearCredit`. Putting it
+  // on the target object was dead data.
   return {
     title: normalizeForMatching(candidate.title),
     artist: normalizeForMatching(candidate.artist),
     album: normalizeForMatching(candidate.album),
-    year: candidate.year,
   };
 }
 

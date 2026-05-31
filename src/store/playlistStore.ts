@@ -151,7 +151,7 @@ function sameOrder(a: string[], b: string[]): boolean {
   return a.every((id, index) => id === b[index]);
 }
 
-async function persistImmediately(): Promise<void> {
+async function writeCurrentDraft(): Promise<void> {
   const state = usePlaylistStore.getState();
   const tracks: Track[] = [];
   const liveTrackIds: string[] = [];
@@ -166,6 +166,36 @@ async function persistImmediately(): Promise<void> {
       ? state.playlist
       : { ...state.playlist, trackIds: liveTrackIds };
   await saveDraft(playlistToSave, tracks);
+}
+
+// Single-flight guard around the actual draft write. The debounce timer's
+// trailing-edge persist and a pagehide/visibilitychange flush can both
+// call persistImmediately while a save is already mid-`await`. Without
+// this, two saveDraft calls run concurrently against the same draft id;
+// the repository serializes the writes internally, but relying on that
+// for correctness is fragile and the concurrent path double-writes. We
+// keep at most one save in flight and, if any caller asks again while it
+// runs, re-run once afterward against a fresh snapshot — so the final
+// write reflects the latest state exactly once.
+let activePersist: Promise<void> | null = null;
+let persistRequestedDuringFlight = false;
+
+async function persistImmediately(): Promise<void> {
+  if (activePersist) {
+    persistRequestedDuringFlight = true;
+    return activePersist;
+  }
+  activePersist = (async () => {
+    try {
+      do {
+        persistRequestedDuringFlight = false;
+        await writeCurrentDraft();
+      } while (persistRequestedDuringFlight);
+    } finally {
+      activePersist = null;
+    }
+  })();
+  return activePersist;
 }
 
 function schedulePersist(): void {
@@ -589,6 +619,11 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => {
   },
 
   replaceAll(tracks) {
+    // Replacing an empty list with an empty list is a no-op — don't push
+    // a useless `replace` undo entry or schedule a redundant persist.
+    // (A non-empty → empty replace IS meaningful: it's the destructive
+    // Spotify "replace import" path and must remain undoable.)
+    if (tracks.length === 0 && get().playlist.trackIds.length === 0) return;
     // Capture the ids being displaced so we can cancel their queued
     // requests after the swap. The keep-set is anything also present
     // in the incoming tracks — those tracks survive the swap (their
@@ -635,6 +670,18 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => {
   nukeEnrichmentState() {
     const state = get();
     if (state.playlist.trackIds.length === 0) return;
+    // No-op when every row is already idle: nuking changes nothing, but
+    // the unconditional path would push the heaviest possible undo entry
+    // (a full tracksById clone) and schedule a persist for zero effect —
+    // common right after a fresh all-idle import.
+    const allIdle = state.playlist.trackIds.every((id) => {
+      const t = state.tracksById[id];
+      return (
+        t === undefined ||
+        (t.spotify.status === "idle" && t.enrichment.status === "idle")
+      );
+    });
+    if (allIdle) return;
     const allIds = [...state.playlist.trackIds];
 
     // Cancel every queued request first. The store update below

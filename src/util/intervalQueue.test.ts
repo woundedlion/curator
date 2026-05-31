@@ -431,6 +431,30 @@ describe("IntervalQueue post-wait guard", () => {
     expect(await p).toBe(42);
   });
 
+  it("a throwing guard rejects only its own task and the queue keeps draining", async () => {
+    // A guard is contracted to be a pure predicate, but a buggy one that
+    // throws must not escape the drain loop and strand every other queued
+    // task's awaiter forever. The throwing task rejects with its error;
+    // subsequent tasks still run.
+    const queue = new IntervalQueue({ intervalMs: 10 });
+    const boom = new Error("guard blew up");
+    const thrower = vi.fn(async () => "thrower");
+    const pThrow = queue.enqueue(thrower, {
+      guard: () => {
+        throw boom;
+      },
+    });
+    const throwExpectation = expect(pThrow).rejects.toBe(boom);
+    const pNext = queue.enqueue(async () => "next");
+
+    await vi.advanceTimersByTimeAsync(10);
+    await throwExpectation;
+    // The throwing guard's task never ran its work...
+    expect(thrower).not.toHaveBeenCalled();
+    // ...and the queue did NOT wedge — the following task drains normally.
+    expect(await pNext).toBe("next");
+  });
+
   it("guard is re-evaluated post-wait, not at enqueue time", async () => {
     const queue = new IntervalQueue({ intervalMs: 100 });
 

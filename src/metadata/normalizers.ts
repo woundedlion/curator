@@ -62,7 +62,10 @@ function stripInvisibles(value: string): string {
 function normalizeUnicode(value: string): string {
   // NFKD decomposes diacritics into combining marks, which we then strip.
   // Result is the closest ASCII-ish skeleton: "café" → "cafe", etc.
-  // (Note: NFKD does NOT expand "ß" → "ss"; it stays "ß" → lowercased "ß".)
+  // Caveats — NFKD does not fully ASCII-fold a few cases: "ß" stays "ß"
+  // (no → "ss"), and "½" decomposes to "1⁄2" leaving the U+2044 fraction
+  // slash rather than a plain "/". These are rare in track metadata and
+  // fold identically on both sides of a match, so they don't break scoring.
   return value
     .normalize("NFKD")
     .replace(COMBINING_DIACRITICS, "")

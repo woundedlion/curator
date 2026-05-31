@@ -268,10 +268,40 @@ describe("classifyMatch (via searchSpotifyForTrack)", () => {
     expect(outcome.status).toBe("missing");
   });
 
-  it("promotes a single candidate to 'matched' via the onlyCandidate short-circuit (regardless of score)", async () => {
-    // Even a poor-scoring sole hit is auto-picked — the rationale is
-    // there's no ambiguity to resolve in the dialog when there's only
-    // one option. The matched arm requires uri + candidates + score.
+  it("promotes a single RELEVANT candidate to 'matched' via the onlyCandidate short-circuit (regardless of combined score)", async () => {
+    // A sole hit that actually resembles the track is auto-picked even at a
+    // modest combined score (text-only tracks cap at 0.8 with no
+    // year/duration credit) — there's no ambiguity to resolve when there's
+    // only one plausible option. The matched arm requires uri + candidates
+    // + score. The title/artist similarity floor (≥0.4) still applies.
+    callSpotifyMock.mockResolvedValueOnce(
+      searchResponseOf([
+        dtoOf({
+          id: "lonely",
+          uri: "spotify:track:lonely",
+          name: "Karma Police",
+          artists: [{ id: "x", name: "Radiohead" }],
+        }),
+      ]),
+    );
+    const track = trackOf({ title: "Karma Police", artist: "Radiohead" });
+
+    const outcome = await searchSpotifyForTrack(track, "client-id");
+
+    expect(outcome.status).toBe("matched");
+    if (outcome.status === "matched") {
+      expect(outcome.uri).toBe("spotify:track:lonely");
+      expect(outcome.candidates).toHaveLength(1);
+      expect(typeof outcome.score).toBe("number");
+    }
+  });
+
+  it("does NOT auto-match a single UNRELATED candidate — the similarity floor downgrades it to 'ambiguous' (DESIGN §4.5)", async () => {
+    // Regression guard for the auto-pick similarity floor. A lone candidate
+    // whose title/artist don't resemble the track must NOT be silently
+    // promoted to `matched` (and silently published). It surfaces in the
+    // picker as `ambiguous` so the user decides. Before the fix, the
+    // onlyCandidate short-circuit auto-matched this regardless of similarity.
     callSpotifyMock.mockResolvedValueOnce(
       searchResponseOf([
         dtoOf({
@@ -286,12 +316,46 @@ describe("classifyMatch (via searchSpotifyForTrack)", () => {
 
     const outcome = await searchSpotifyForTrack(track, "client-id");
 
-    expect(outcome.status).toBe("matched");
-    if (outcome.status === "matched") {
-      expect(outcome.uri).toBe("spotify:track:lonely");
+    expect(outcome.status).toBe("ambiguous");
+    if (outcome.status === "ambiguous") {
       expect(outcome.candidates).toHaveLength(1);
-      expect(typeof outcome.score).toBe("number");
     }
+  });
+
+  it("does NOT auto-match a high-scoring candidate whose title/artist are unrelated (year+duration-driven score)", async () => {
+    // A wrong song with the exact right runtime and release year can reach a
+    // high combined score purely on year+duration credit. The title/artist
+    // similarity floor must still block the auto-pick. Two candidates so the
+    // gap path (not onlyCandidate) is exercised.
+    callSpotifyMock.mockResolvedValueOnce(
+      searchResponseOf([
+        dtoOf({
+          id: "wrong",
+          uri: "spotify:track:wrong",
+          name: "Totally Unrelated Song",
+          artists: [{ id: "ar", name: "Some Other Band" }],
+          album: { id: "al", name: "Other", release_date: "1997-05-21" },
+          duration_ms: 261_000,
+        }),
+        dtoOf({
+          id: "distractor",
+          name: "Another Unrelated",
+          artists: [{ id: "ar2", name: "Nobody" }],
+          album: { id: "al2", name: "Nope", release_date: "2010-01-01" },
+          duration_ms: 100_000,
+        }),
+      ]),
+    );
+    const track = trackOf({
+      title: "Karma Police",
+      artist: "Radiohead",
+      year: 1997,
+      durationMs: 261_000,
+    });
+
+    const outcome = await searchSpotifyForTrack(track, "client-id");
+
+    expect(outcome.status).toBe("ambiguous");
   });
 
   it("returns 'ambiguous' when there are multiple candidates and the best doesn't clear DEFAULT_ACCEPT_SPOTIFY_HIGH", async () => {

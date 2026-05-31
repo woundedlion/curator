@@ -56,10 +56,16 @@ export function sortTrackIds(
 ): string[] {
   const indexed = trackIds.map((id, index) => ({ id, index }));
   indexed.sort((a, b) => {
-    const trackA = tracksById.get(a.id)!;
-    const trackB = tracksById.get(b.id)!;
-    const valueA = getFieldValue(trackA, field);
-    const valueB = getFieldValue(trackB, field);
+    // Tolerate orphan trackIds (ids in `trackIds` with no payload in
+    // `tracksById`). The store treats orphans as a transient state that
+    // hydration repairs, but a sort can run before that repair. A missing
+    // track is treated as a row with all-missing fields, so it sorts to
+    // the bottom stably — never throws (a `!` here aborted the entire
+    // Array.sort and froze the table on a single stray id).
+    const trackA = tracksById.get(a.id);
+    const trackB = tracksById.get(b.id);
+    const valueA = trackA ? getFieldValue(trackA, field) : undefined;
+    const valueB = trackB ? getFieldValue(trackB, field) : undefined;
     const missingA = isMissing(valueA);
     const missingB = isMissing(valueB);
     if (missingA && missingB) return a.index - b.index;

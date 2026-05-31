@@ -28,7 +28,7 @@ export function EmptyState({ onPickFolder }: Props) {
         <button
           type="button"
           onClick={onPickFolder}
-          className="mt-4 rounded bg-matched px-4 py-2 text-sm font-semibold text-black hover:opacity-90"
+          className="mt-4 rounded bg-matched px-4 py-2 text-sm font-semibold text-neutral-900 hover:opacity-90"
         >
           Pick folder
         </button>

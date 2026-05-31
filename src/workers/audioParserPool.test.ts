@@ -134,6 +134,30 @@ describe("AudioParserPool", () => {
     await expect(p2).resolves.toEqual({ title: "Recovered" });
   });
 
+  it("REGRESSION: recovers instead of hanging when every worker dies and respawn is blocked", async () => {
+    // If a discarded worker's respawn fails AND no live workers remain,
+    // the pool used to keep `started = true` with zero workers — future
+    // parse() calls then queued forever (ensureStarted short-circuits, no
+    // worker ever drains them). The fix resets `started` and fails queued
+    // work so the next parse() retries the spawn.
+    const p1 = parseAudioInPool(fakeFile());
+    const captured = captureRejection(p1);
+    // Block respawns, then crash every live worker so the pool drains to
+    // zero with no replacement possible.
+    FakeWorker.throwOnConstruct = true;
+    for (const w of [...FakeWorker.instances]) w.fireError();
+    await captured; // p1 rejected ("crashed"), pool did not hang
+
+    // Unblock spawning: a fresh parse must spawn new workers and complete,
+    // proving the pool reset rather than wedging at zero workers.
+    FakeWorker.throwOnConstruct = false;
+    const p2 = parseAudioInPool(fakeFile());
+    const worker = workerWithLatestPost();
+    const id = worker.posted[worker.posted.length - 1]!.id;
+    worker.fireMessage({ id, ok: true, fields: { title: "Recovered" } });
+    await expect(p2).resolves.toEqual({ title: "Recovered" });
+  });
+
   it("a throwing postMessage rejects the request, replaces the worker, and recovers", async () => {
     // First parse forces the lazy pool to spawn and completes normally
     // so we have a known set of live workers.

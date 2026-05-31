@@ -49,6 +49,7 @@ describe("parseM3uContent", () => {
     expect(tracks[0]!.artist).toBeUndefined();
   });
 
+
   it("treats EXTINF without a comma at all as no hint", () => {
     const m3u = ["#EXTINF:120", "song.mp3"].join("\n");
     const tracks = parseM3uContent(m3u);

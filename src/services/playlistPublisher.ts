@@ -30,8 +30,12 @@ export class EmptyReplaceError extends Error {
   }
 }
 
-function collectPushableUris(): string[] {
-  const state = usePlaylistStore.getState();
+type DraftSnapshot = Pick<
+  ReturnType<typeof usePlaylistStore.getState>,
+  "playlist" | "tracksById"
+>;
+
+function collectPushableUris(state: DraftSnapshot): string[] {
   const hideUnmatched = state.playlist.hideUnmatched;
   const uris: string[] = [];
   for (const id of state.playlist.trackIds) {
@@ -72,8 +76,13 @@ export async function publishPlaylist(
   // EmptyReplaceError thrown inside still propagates out (withBusy
   // decrements in a finally regardless of throw).
   return useUiStore.getState().withBusy(async () => {
-    const uris = collectPushableUris();
-    const draft = usePlaylistStore.getState().playlist;
+    // Read the draft once so the pushable URIs and the playlist metadata
+    // come from the same snapshot — a store mutation between two getState()
+    // reads (e.g. the user edits the name as publish kicks off) could
+    // otherwise publish URIs from snapshot A with metadata from snapshot B.
+    const state = usePlaylistStore.getState();
+    const uris = collectPushableUris(state);
+    const draft = state.playlist;
 
     // Refuse both create and update when there's nothing to push. The
     // alternative for create is a Spotify playlist that exists but has no

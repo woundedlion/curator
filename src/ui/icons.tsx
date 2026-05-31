@@ -18,6 +18,22 @@ export function TrashIcon({ className }: IconProps) {
   );
 }
 
+export function FolderAddIcon({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" className={svgClass(className)} aria-hidden>
+      <path d="M10 4l2 2h8a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h6zm2 6h-2v3H9v2h1v3h2v-3h1v-2h-1v-3z" />
+    </svg>
+  );
+}
+
+export function UndoIcon({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" className={svgClass(className)} aria-hidden>
+      <path d="M7 7V3L1 9l6 6v-4h6a4 4 0 0 1 0 8H8v2h5a6 6 0 0 0 0-12H7z" />
+    </svg>
+  );
+}
+
 export function FilterIcon({ className }: IconProps) {
   return (
     <svg viewBox="0 0 24 24" className={svgClass(className)} aria-hidden>

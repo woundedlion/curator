@@ -295,12 +295,16 @@ export function AmbiguousMatchDialog({ trackId, onClose }: Props) {
         // element that actually carries the dialog semantics.
         role="dialog"
         aria-modal="true"
-        aria-label="Pick a Spotify match"
+        // Name the dialog from its visible heading (aria-labelledby) rather
+        // than a separate aria-label that can drift from the <h2> text.
+        aria-labelledby="ambiguous-match-dialog-title"
         tabIndex={-1}
         className="flex max-h-[85vh] w-full max-w-2xl flex-col rounded-lg bg-neutral-900 p-4 shadow-xl"
       >
         <div className="mb-3">
-          <h2 className="text-base font-semibold">Pick a Spotify version</h2>
+          <h2 id="ambiguous-match-dialog-title" className="text-base font-semibold">
+            Pick a Spotify version
+          </h2>
           <p className="text-xs text-neutral-400">
             {track.artist ?? "Unknown artist"} — {track.title ?? "Unknown title"}
           </p>
@@ -331,7 +335,7 @@ export function AmbiguousMatchDialog({ trackId, onClose }: Props) {
             type="button"
             onClick={runSearchAgain}
             disabled={searching}
-            className="rounded bg-matched px-3 py-1 text-sm font-semibold text-black hover:opacity-90 disabled:opacity-40"
+            className="rounded bg-matched px-3 py-1 text-sm font-semibold text-neutral-900 hover:opacity-90 disabled:opacity-40"
           >
             {searching ? "…" : "Search"}
           </button>

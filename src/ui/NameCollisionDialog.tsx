@@ -34,7 +34,7 @@ function SingleMatchActions({
         <button
           type="button"
           onClick={() => onReplace(match.id)}
-          className="rounded bg-matched px-3 py-1 text-sm font-semibold text-black hover:opacity-90"
+          className="rounded bg-matched px-3 py-1 text-sm font-semibold text-neutral-900 hover:opacity-90"
         >
           Replace existing
         </button>

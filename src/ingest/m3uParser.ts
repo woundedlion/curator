@@ -30,9 +30,15 @@ function parseExtInfLine(line: string): ExtInfHint {
     .split(ARTIST_TITLE_SEPARATOR)
     .map((segment) => segment.trim());
   if (segments.length >= 2) {
+    // Defense-in-depth: coerce empty segments to undefined rather than
+    // letting `""` through as a real blank field (a blank title/artist
+    // would suppress the downstream blank-fallthrough and feed an empty
+    // string to the matchers). The leading `.trim()` on `after` makes an
+    // empty segment unreachable today, but this keeps the contract intact
+    // if the separator handling ever changes.
     return {
-      artist: segments[0],
-      title: segments.slice(1).join(ARTIST_TITLE_SEPARATOR),
+      artist: segments[0] || undefined,
+      title: segments.slice(1).join(ARTIST_TITLE_SEPARATOR) || undefined,
       durationMs,
     };
   }

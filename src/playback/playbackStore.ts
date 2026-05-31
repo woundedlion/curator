@@ -182,6 +182,15 @@ export const usePlaybackStore = create<PlaybackState>((set, get) => {
     return null;
   }
 
+  // Seed the slider range from the Track/candidate before the first live
+  // metadata event. Clamp non-finite values (a malformed metadata parse
+  // could carry Infinity/NaN) to 0 so the slider stays disabled rather
+  // than rendering `max={Infinity}` — the same clamp the live HTMLAudio
+  // position pump applies. The real source overwrites this once known.
+  function seedDuration(value: number | undefined): number {
+    return typeof value === "number" && Number.isFinite(value) ? value : 0;
+  }
+
   function buildTrackTarget(trackId: string): PlayerTarget | null {
     const track = usePlaylistStore.getState().tracksById[trackId];
     if (!track) return null;
@@ -192,7 +201,7 @@ export const usePlaybackStore = create<PlaybackState>((set, get) => {
       kind: "track",
       id: trackId,
       display: trackDisplay(track),
-      durationMs: track.durationMs ?? 0,
+      durationMs: seedDuration(track.durationMs),
       source,
     };
   }
@@ -231,7 +240,7 @@ export const usePlaybackStore = create<PlaybackState>((set, get) => {
       kind: "candidate",
       id: candidatePlaybackId(candidate.uri),
       display: { title: candidate.title, artist: candidate.artist },
-      durationMs: candidate.durationMs ?? 0,
+      durationMs: seedDuration(candidate.durationMs),
       source,
     };
   }

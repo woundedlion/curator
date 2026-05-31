@@ -36,6 +36,11 @@ class AudioParserPool {
   private readonly workers: Worker[] = [];
   private readonly availableWorkers: Worker[] = [];
   private readonly pendingByWorker = new Map<Worker, Pending>();
+  // One AbortController per live worker, used to remove that worker's
+  // message/error listeners when it's discarded or the pool is torn down
+  // (passing `signal` to addEventListener is the leak-free way to detach
+  // both handlers at once without holding their function references).
+  private readonly listenerControllers = new Map<Worker, AbortController>();
   private readonly queue: { request: ParseRequest; pending: Pending }[] = [];
   private nextId = 1;
   private started = false;
@@ -79,13 +84,34 @@ class AudioParserPool {
       console.error("AudioParserPool: failed to spawn worker", error);
       return null;
     }
-    worker.addEventListener("message", (event) =>
-      this.onMessage(worker, event as MessageEvent<ParseResponse>),
+    const listeners = new AbortController();
+    worker.addEventListener(
+      "message",
+      (event) => this.onMessage(worker, event as MessageEvent<ParseResponse>),
+      { signal: listeners.signal },
     );
-    worker.addEventListener("error", () => this.onWorkerError(worker));
+    worker.addEventListener("error", () => this.onWorkerError(worker), {
+      signal: listeners.signal,
+    });
+    this.listenerControllers.set(worker, listeners);
     this.workers.push(worker);
     this.availableWorkers.push(worker);
     return worker;
+  }
+
+  // Respawn a worker that was just discarded (crash / timeout / failed
+  // postMessage). If the spawn fails AND no live workers remain, the pool
+  // can never drain — so fail queued requests and reset `started` to false
+  // so a future parse() retries the spawn instead of queueing forever.
+  private replaceDiscardedWorker(): void {
+    if (!this.started) return;
+    if (this.spawnWorker() !== null) return;
+    if (this.workers.length === 0) {
+      this.started = false;
+      this.failQueuedRequests(
+        "Audio parser workers are unavailable in this browser",
+      );
+    }
   }
 
   private onMessage(worker: Worker, event: MessageEvent<ParseResponse>): void {
@@ -128,7 +154,7 @@ class AudioParserPool {
       pending.reject(new Error("Audio parser worker crashed"));
     }
     this.discardWorker(worker);
-    if (this.started) this.spawnWorker();
+    this.replaceDiscardedWorker();
     this.drain();
   }
 
@@ -143,11 +169,13 @@ class AudioParserPool {
     this.pendingByWorker.delete(worker);
     pending.reject(new Error("Audio parser worker timed out"));
     this.discardWorker(worker);
-    if (this.started) this.spawnWorker();
+    this.replaceDiscardedWorker();
     this.drain();
   }
 
   private discardWorker(worker: Worker): void {
+    this.listenerControllers.get(worker)?.abort();
+    this.listenerControllers.delete(worker);
     try {
       worker.terminate();
     } catch {
@@ -177,7 +205,7 @@ class AudioParserPool {
           error instanceof Error ? error.message : "postMessage failed";
         next.pending.reject(new Error(`Audio parser worker: ${message}`));
         this.discardWorker(worker);
-        if (this.started) this.spawnWorker();
+        this.replaceDiscardedWorker();
       }
     }
   }
@@ -201,7 +229,10 @@ class AudioParserPool {
   }
 
   terminate(): void {
-    for (const worker of this.workers) worker.terminate();
+    for (const worker of this.workers) {
+      this.listenerControllers.get(worker)?.abort();
+      worker.terminate();
+    }
     for (const { pending } of this.queue) {
       pending.reject(new Error("Audio parser pool was terminated"));
     }
@@ -211,6 +242,7 @@ class AudioParserPool {
     }
     this.workers.length = 0;
     this.availableWorkers.length = 0;
+    this.listenerControllers.clear();
     this.pendingByWorker.clear();
     this.queue.length = 0;
     this.started = false;

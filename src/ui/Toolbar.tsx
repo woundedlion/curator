@@ -10,11 +10,13 @@ import { ConfirmDialog } from "./ConfirmDialog";
 import { ConnectionBadge } from "./ConnectionBadge";
 import {
   FilterIcon,
+  FolderAddIcon,
   GearIcon,
   PlayIcon,
   RefreshIcon,
   TrashIcon,
   TreeIcon,
+  UndoIcon,
 } from "./icons";
 import { IconButton } from "./IconButton";
 import { ToggleIconButton } from "./ToggleIconButton";
@@ -116,10 +118,14 @@ export function Toolbar({ hiddenCount, onPickFolder }: Props) {
         onClick={() => setHideUnmatched(!hideUnmatched)}
       />
 
-      <IconButton label="Add files or folder" icon="+" onClick={onPickFolder} />
+      <IconButton
+        label="Add files or folder"
+        icon={<FolderAddIcon />}
+        onClick={onPickFolder}
+      />
       <IconButton
         label={canUndo ? "Undo last addition" : "Nothing to undo"}
-        icon="↶"
+        icon={<UndoIcon />}
         onClick={undo}
         disabled={!canUndo}
       />

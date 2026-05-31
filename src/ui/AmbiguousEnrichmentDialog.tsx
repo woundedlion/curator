@@ -46,17 +46,24 @@ export function AmbiguousEnrichmentDialog({ trackId, onClose }: Props) {
         // actually carries the dialog semantics.
         role="dialog"
         aria-modal="true"
-        aria-label="Pick a MusicBrainz match"
+        // Name the dialog from its visible heading (aria-labelledby) rather
+        // than a separate aria-label that can drift from the <h2> text.
+        aria-labelledby="ambiguous-enrichment-dialog-title"
         tabIndex={-1}
         className="w-full max-w-xl rounded-lg bg-neutral-900 p-4 shadow-xl"
       >
-        <h2 className="mb-3 text-base font-semibold">
-          Pick a MusicBrainz match
+        <div className="mb-3">
+          <h2
+            id="ambiguous-enrichment-dialog-title"
+            className="text-base font-semibold"
+          >
+            Pick a MusicBrainz match
+          </h2>
           <span className="block text-xs font-normal text-neutral-400">
             {track.artist ?? "Unknown artist"} —{" "}
             {track.title ?? "Unknown title"}
           </span>
-        </h2>
+        </div>
 
         {candidates.length === 0 ? (
           <p className="text-sm text-neutral-400">No candidates available.</p>

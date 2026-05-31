@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { scoreCandidates } from "./candidateScorer";
+import {
+  SCORER_FIELD_WEIGHTS,
+  SCORER_YEAR_WEIGHT,
+  scoreCandidates,
+} from "./candidateScorer";
 import type { MBCandidate, Track } from "../types";
 
 function buildCandidate(overrides: Partial<MBCandidate>): MBCandidate {
@@ -26,6 +30,19 @@ function buildTrack(overrides: Partial<Track>): Track {
 describe("scoreCandidates", () => {
   it("returns empty for empty input", () => {
     expect(scoreCandidates(buildTrack({}), [])).toEqual([]);
+  });
+
+  it("INVARIANT: field weights sum to (1 - YEAR_WEIGHT) so the realized split matches DESIGN §4.3", () => {
+    // Fuse normalizes the key weights to sum to 1, and the scorer rescales
+    // the Fuse component by (1 - YEAR_WEIGHT). The documented aggregate
+    // split (title 0.50 / artist 0.30 / album 0.15 / year 0.05) only holds
+    // when the field weights sum to exactly (1 - YEAR_WEIGHT). Guard it so a
+    // future weight retune can't silently drift the contract.
+    const fieldSum =
+      SCORER_FIELD_WEIGHTS.title +
+      SCORER_FIELD_WEIGHTS.artist +
+      SCORER_FIELD_WEIGHTS.album;
+    expect(fieldSum).toBeCloseTo(1 - SCORER_YEAR_WEIGHT, 10);
   });
 
   it("ranks the best title/artist match first", () => {

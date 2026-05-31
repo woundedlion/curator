@@ -44,6 +44,20 @@ describe("sortTrackIds", () => {
     expect(sortTrackIds(ids, tracksById, "artist", "desc").at(-1)).toBe("c");
   });
 
+  it("tolerates orphan trackIds (no payload in the map) by sorting them to the bottom, never throwing", () => {
+    // A trackId present in the order array but absent from tracksById is a
+    // transient state hydration repairs; a sort that races it must not
+    // throw (a `!` non-null assertion used to abort the whole Array.sort).
+    const result = sortTrackIds(
+      ["a", "ghost", "b"],
+      tracksById,
+      "artist",
+      "asc",
+    );
+    // Present rows sort normally; the orphan trails at the bottom.
+    expect(result).toEqual(["b", "a", "ghost"]);
+  });
+
   it("is stable for tied values", () => {
     const tied = [
       buildTrack("x", { artist: "Same", year: 2000 }),

@@ -698,7 +698,7 @@ Filled vs hollow is the key visual distinction: a filled circle means Spotify ha
 
 ## 9. Testing Strategy
 
-**Implemented (Vitest)** — `npm test` runs the suite in ~2s (419 tests across 36 files). Covers:
+**Implemented (Vitest)** — `npm test` runs the suite in a few seconds (~900 tests across 70+ files; run `npm test` for the current count). Covers:
 - `metadata/normalizers` — parenthetical/featuring stripping, casefold, ampersand expansion, Lucene escaping.
 - `ingest/filenameHeuristic` — 1/2/3/4+ segment parsing, leading track numbers, pure-digit segment as track number.
 - `ingest/textParser` — single-line, `Artist - Title`, `Artist - Album - Title`, comments / blanks.

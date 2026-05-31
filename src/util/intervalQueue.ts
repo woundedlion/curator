@@ -328,10 +328,25 @@ export class IntervalQueue {
         // This catches the race window between enqueue and the
         // explicit cancelByTag side effect — and a missing cancel
         // entirely would still be caught here.
-        if (task.guard && !task.guard()) {
-          task.reject(new RequestCancelledError());
-          this.notify();
-          continue;
+        if (task.guard) {
+          let guardPassed: boolean;
+          try {
+            guardPassed = task.guard();
+          } catch (error) {
+            // A guard is contracted to be a pure predicate, but defend
+            // against a throwing one: reject just this task and keep
+            // draining. Letting the exception escape the loop would
+            // strand every other queued task's awaiter forever and halt
+            // the queue (the awaiting promise never settles).
+            task.reject(error);
+            this.notify();
+            continue;
+          }
+          if (!guardPassed) {
+            task.reject(new RequestCancelledError());
+            this.notify();
+            continue;
+          }
         }
         this.inFlight++;
         this.setNextRunAt(Date.now() + this.intervalMs);
@@ -356,7 +371,11 @@ export class IntervalQueue {
           );
         } finally {
           this.inFlightSlots.delete(slot);
-          this.inFlight--;
+          // Clamp at 0: reset() can zero `inFlight` and abort this slot
+          // while its `task.run` is still suspended here; when that
+          // stranded run finally settles, this decrement would otherwise
+          // drive the counter (and `depth`) negative.
+          this.inFlight = Math.max(0, this.inFlight - 1);
           this.notify();
         }
       }
@@ -375,8 +394,11 @@ function readPersistedFutureTimestamp(key: string, capMs: number): number {
     const raw = localStorage.getItem(key);
     if (!raw) return 0;
     const parsed = Number.parseInt(raw, 10);
-    if (!Number.isFinite(parsed) || parsed <= Date.now()) return 0;
-    return Math.min(parsed, Date.now() + capMs);
+    // One clock read so the guard and the cap window are computed against
+    // the same `now` (mirrors circuitBreaker's read-once discipline).
+    const now = Date.now();
+    if (!Number.isFinite(parsed) || parsed <= now) return 0;
+    return Math.min(parsed, now + capMs);
   } catch {
     return 0;
   }

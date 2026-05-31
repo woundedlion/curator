@@ -64,9 +64,9 @@ import {
 } from "../constants";
 
 // Cap the exponent so a hostile or buggy counter can't overflow the
-// duration computation. 2^6 = 64× the fallback (~5h from 5-min default),
-// which combined with the maxOpenMs cap is plenty to ride out any
-// realistic ban.
+// duration computation. 2^6 = 64× the fallback (~10.6h from the 10-min
+// DEFAULT_RETRY_AFTER_SECONDS default), which combined with the maxOpenMs
+// cap (12h) is plenty to ride out any realistic ban.
 const MAX_BACKOFF_EXPONENT = 6;
 
 // Cap a corrupt/stale persisted counter. If localStorage carries a
