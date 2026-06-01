@@ -335,3 +335,81 @@ describe("AmbiguousMatchDialog", () => {
     );
   });
 });
+
+describe("AmbiguousMatchDialog — disambiguation workflow navigation", () => {
+  function workflow(over: Partial<Parameters<typeof AmbiguousMatchDialog>[0]["workflow"] & object> = {}) {
+    return {
+      position: 2,
+      total: 5,
+      onSkip: vi.fn(),
+      onBack: vi.fn(),
+      onResolved: vi.fn(),
+      ...over,
+    };
+  }
+
+  it("Right arrow skips (advances) and Left arrow goes back", () => {
+    seedTrack(ambiguousTrack([candidate()]));
+    const wf = workflow();
+    render(
+      <AmbiguousMatchDialog trackId="t1" onClose={() => {}} workflow={wf} />,
+    );
+    const dialog = screen.getByRole("dialog");
+    fireEvent.keyDown(dialog, { key: "ArrowRight" });
+    expect(wf.onSkip).toHaveBeenCalledTimes(1);
+    fireEvent.keyDown(dialog, { key: "ArrowLeft" });
+    expect(wf.onBack).toHaveBeenCalledTimes(1);
+  });
+
+  it("Left arrow is a no-op at the first work item", () => {
+    seedTrack(ambiguousTrack([candidate()]));
+    const wf = workflow({ position: 1 });
+    render(
+      <AmbiguousMatchDialog trackId="t1" onClose={() => {}} workflow={wf} />,
+    );
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "ArrowLeft" });
+    expect(wf.onBack).not.toHaveBeenCalled();
+  });
+
+  it("arrow keys are ignored while the caret is in a search input", () => {
+    seedTrack(ambiguousTrack([candidate()]));
+    const wf = workflow();
+    render(
+      <AmbiguousMatchDialog trackId="t1" onClose={() => {}} workflow={wf} />,
+    );
+    fireEvent.keyDown(screen.getByPlaceholderText("Title"), {
+      key: "ArrowRight",
+    });
+    fireEvent.keyDown(screen.getByPlaceholderText("Artist"), {
+      key: "ArrowLeft",
+    });
+    expect(wf.onSkip).not.toHaveBeenCalled();
+    expect(wf.onBack).not.toHaveBeenCalled();
+  });
+
+  it("the Back button is disabled at the first item and enabled later", () => {
+    seedTrack(ambiguousTrack([candidate()]));
+    const { rerender } = render(
+      <AmbiguousMatchDialog
+        trackId="t1"
+        onClose={() => {}}
+        workflow={workflow({ position: 1 })}
+      />,
+    );
+    expect(
+      (screen.getByRole("button", { name: "Back" }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true);
+    rerender(
+      <AmbiguousMatchDialog
+        trackId="t1"
+        onClose={() => {}}
+        workflow={workflow({ position: 3 })}
+      />,
+    );
+    expect(
+      (screen.getByRole("button", { name: "Back" }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(false);
+  });
+});

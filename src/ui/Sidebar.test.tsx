@@ -77,7 +77,11 @@ describe("Sidebar", () => {
       playlists: [playlist("pl-7", "Roadtrip", 3)],
     });
     render(<Sidebar />);
-    const item = screen.getByText("Roadtrip").closest("li")!;
+    // The drag source is the row div (the <li> now wraps the row + its
+    // expandable track list), marked with aria-roledescription.
+    const item = screen
+      .getByText("Roadtrip")
+      .closest('[aria-roledescription="draggable playlist"]')!;
 
     const setData = vi.fn();
     fireEvent.dragStart(item, {
@@ -93,14 +97,17 @@ describe("Sidebar", () => {
   });
 
   it("exposes the draggable playlist row to assistive tech", () => {
-    // The whole <li> is a native drag source with only an inner cursor-grab
+    // The row div is a native drag source with only an inner cursor-grab
     // hint; aria-roledescription announces the affordance to SR users.
     useSpotifyStore.setState({
       connected: true,
       playlists: [playlist("pl-7", "Roadtrip", 3)],
     });
     render(<Sidebar />);
-    const item = screen.getByText("Roadtrip").closest("li")!;
+    const item = screen
+      .getByText("Roadtrip")
+      .closest('[aria-roledescription="draggable playlist"]')!;
+    expect(item).not.toBeNull();
     expect(item.getAttribute("aria-roledescription")).toBe("draggable playlist");
   });
 

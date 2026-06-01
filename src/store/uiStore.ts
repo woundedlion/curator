@@ -22,6 +22,7 @@ type UiStore = {
   toasts: Toast[];
   showSettings: boolean;
   showCreateDialog: boolean;
+  showAddTrack: boolean;
   enrichmentQueueDepth: number;
   busyCount: number;
 
@@ -29,6 +30,7 @@ type UiStore = {
   dismissToast: (id: number) => void;
   setShowSettings: (show: boolean) => void;
   setShowCreateDialog: (show: boolean) => void;
+  setShowAddTrack: (show: boolean) => void;
   setEnrichmentQueueDepth: (depth: number) => void;
   incrementBusy: () => void;
   decrementBusy: () => void;
@@ -71,6 +73,7 @@ export const useUiStore = create<UiStore>((set, get) => {
     toasts: [],
     showSettings: false,
     showCreateDialog: false,
+    showAddTrack: false,
     enrichmentQueueDepth: 0,
     busyCount: 0,
 
@@ -107,6 +110,10 @@ export const useUiStore = create<UiStore>((set, get) => {
 
     setShowCreateDialog(show) {
       set({ showCreateDialog: show });
+    },
+
+    setShowAddTrack(show) {
+      set({ showAddTrack: show });
     },
 
     setEnrichmentQueueDepth(depth) {
@@ -150,6 +157,7 @@ export function __resetUiStoreForTests(): void {
     toasts: [],
     showSettings: false,
     showCreateDialog: false,
+    showAddTrack: false,
     enrichmentQueueDepth: 0,
     busyCount: 0,
   });

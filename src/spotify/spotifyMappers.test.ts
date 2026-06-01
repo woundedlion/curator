@@ -9,6 +9,7 @@ import {
   toImportedTrack,
   toPlaylistSummary,
   toSpotifyCandidate,
+  trackFromSpotifyCandidate,
 } from "./spotifyMappers";
 
 function buildTrackResponse(
@@ -231,5 +232,65 @@ describe("isImportableTrack", () => {
       } as unknown as SpotifyTrackResponse),
     ).toBe(false);
     expect(isImportableTrack(buildTrackResponse())).toBe(true);
+  });
+});
+
+describe("trackFromSpotifyCandidate (§4.7.1)", () => {
+  const candidate = {
+    uri: "spotify:track:abc",
+    id: "abc",
+    title: "No Surprises",
+    artist: "Radiohead",
+    album: "OK Computer",
+    year: 1997,
+    durationMs: 229000,
+    previewUrl: "https://p.scdn.co/mp3-preview/abc",
+    coverUrl: "https://i.scdn.co/image/abc",
+    score: 0.91,
+  };
+
+  it("builds a matched spotify-import track carrying the chosen uri", () => {
+    const t = trackFromSpotifyCandidate(candidate);
+    expect(t.source).toEqual({
+      kind: "spotify-import",
+      spotifyUri: "spotify:track:abc",
+    });
+    expect(t.spotify.status).toBe("matched");
+    if (t.spotify.status === "matched") {
+      expect(t.spotify.uri).toBe("spotify:track:abc");
+      expect(t.spotify.candidates).toEqual([]);
+      expect(t.spotify.previewUrl).toBe("https://p.scdn.co/mp3-preview/abc");
+    }
+    expect(t.enrichment.status).toBe("idle");
+  });
+
+  it("copies the candidate's displayed identity", () => {
+    const t = trackFromSpotifyCandidate(candidate);
+    expect(t.title).toBe("No Surprises");
+    expect(t.artist).toBe("Radiohead");
+    expect(t.album).toBe("OK Computer");
+    expect(t.year).toBe(1997);
+    expect(t.durationMs).toBe(229000);
+    expect(t.coverUrl).toBe("https://i.scdn.co/image/abc");
+  });
+
+  it("mints a fresh id each call so the same candidate can be added twice", () => {
+    expect(trackFromSpotifyCandidate(candidate).id).not.toBe(
+      trackFromSpotifyCandidate(candidate).id,
+    );
+  });
+
+  it("omits optional fields the candidate didn't carry", () => {
+    const t = trackFromSpotifyCandidate({
+      uri: "spotify:track:x",
+      id: "x",
+      title: "T",
+      artist: "A",
+      score: 0,
+    });
+    expect(t.album).toBeUndefined();
+    expect(t.year).toBeUndefined();
+    expect(t.durationMs).toBeUndefined();
+    expect(t.coverUrl).toBeUndefined();
   });
 });

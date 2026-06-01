@@ -50,6 +50,16 @@ type PlaylistStore = {
 
   hydrateFromStorage: () => Promise<void>;
   addTracks: (tracks: Track[]) => void;
+  /**
+   * Insert tracks at a specific position in the current order. Used by the
+   * sidebar drag-to-insert path (DESIGN §4.7.3). `index` is a slot in the
+   * CURRENT `trackIds` array (0 = before the first row, length = append).
+   * Out-of-range values clamp. Dedups against existing + within batch like
+   * `addTracks`, pushes the same `add` undo entry, and clears the active
+   * sort — an explicit positional insert establishes a manual order,
+   * mirroring `reorderTracks`. Appends when no new tracks survive dedup.
+   */
+  addTracksAt: (tracks: Track[], index: number) => void;
   updateTrack: (id: string, patch: Partial<Track>) => void;
   // Atomic "fill missing displayed fields" — applies only to fields that are
   // currently `undefined` or `""` on the live track. Used by enrichment +
@@ -401,6 +411,51 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => {
             captureSelection(state.selectedTrackIds, state.selectionAnchorId),
           ),
         ),
+      };
+    });
+    if (changed) schedulePersist();
+  },
+
+  addTracksAt(tracks, index) {
+    const changed = mutate((state) => {
+      const seen = new Set<string>();
+      const additions = tracks.filter((t) => {
+        if (state.tracksById[t.id] || seen.has(t.id)) return false;
+        seen.add(t.id);
+        return true;
+      });
+      if (additions.length === 0) return state;
+      const nextById = { ...state.tracksById };
+      for (const track of additions) nextById[track.id] = track;
+      const addedIds = additions.map((t) => t.id);
+      // Clamp the insertion slot into [0, length] of the CURRENT trackIds.
+      const clamped = Math.max(
+        0,
+        Math.min(index, state.playlist.trackIds.length),
+      );
+      const nextIds = [
+        ...state.playlist.trackIds.slice(0, clamped),
+        ...addedIds,
+        ...state.playlist.trackIds.slice(clamped),
+      ];
+      return {
+        tracksById: nextById,
+        playlist: {
+          ...state.playlist,
+          trackIds: nextIds,
+          // A positional insert only has meaning against a manual order —
+          // clear any active sort so the inserted rows stay where dropped.
+          sort: null,
+        },
+        undoStack: pushBounded(
+          state.undoStack,
+          snapshotAddEntry(
+            addedIds,
+            captureSelection(state.selectedTrackIds, state.selectionAnchorId),
+          ),
+        ),
+        // The resulting order is the new manual order.
+        preSortManualOrder: null,
       };
     });
     if (changed) schedulePersist();

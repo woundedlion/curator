@@ -14,141 +14,109 @@ import { usePlaylistStore } from "../store/playlistStore";
 import { useSettingsStore } from "../store/settingsStore";
 import { useSpotifyStore } from "../store/spotifyStore";
 import { useUiStore } from "../store/uiStore";
-import type { SpotifyCandidate } from "../types";
+import type { SpotifyCandidate, Track } from "../types";
 import { formatDuration } from "../util/duration";
-import { ExternalLinkIcon, PauseIcon, PlayIcon } from "./icons";
+import { getSpotifyPreviewUrl } from "../util/trackAccessors";
+import { PauseIcon, PlayIcon } from "./icons";
+import { SpotifyCandidateRow } from "./SpotifyCandidateRow";
 import { Spinner } from "./Spinner";
+
+type WorkflowControls = {
+  // 1-based position and count for the "Resolving N of M" label.
+  position: number;
+  total: number;
+  // Advance to the next work item without resolving the current one
+  // (Skip button / Right arrow).
+  onSkip: () => void;
+  // Step back to the previous work item (Back button / Left arrow). No-op
+  // at the first item — the dialog gates on `position > 1`.
+  onBack: () => void;
+  // Called after a pick commits so the workflow can advance to the next.
+  onResolved: () => void;
+};
 
 type Props = {
   trackId: string;
   onClose: () => void;
+  // Present only when launched from the rapid-disambiguation workflow
+  // (§4.7.5). Normal single-row picker opens leave this undefined.
+  workflow?: WorkflowControls;
 };
 
-type PreviewMode = "preview" | "sdk" | "external";
-
-function previewModeFor(
-  candidate: SpotifyCandidate,
-  sdkAvailable: boolean,
-): PreviewMode {
-  if (candidate.previewUrl) return "preview";
-  if (sdkAvailable) return "sdk";
-  return "external";
-}
-
-function spotifyTrackUrl(candidate: SpotifyCandidate): string {
-  return `https://open.spotify.com/track/${candidate.id}`;
-}
-
-function PreviewControl({
-  candidate,
-  mode,
-  isPlaying,
-  onToggle,
-}: {
-  candidate: SpotifyCandidate;
-  mode: PreviewMode;
-  isPlaying: boolean;
-  onToggle: () => void;
-}) {
-  if (mode === "external") {
-    return (
-      <a
-        href={spotifyTrackUrl(candidate)}
-        target="_blank"
-        rel="noopener noreferrer"
-        aria-label="Open in Spotify"
-        title="Open in Spotify (no preview available)"
-        className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded bg-transparent text-matched transition-opacity hover:opacity-80"
-      >
-        <ExternalLinkIcon />
-      </a>
-    );
+// Human-readable "where this row came from" line for the Original section.
+function sourceLabel(track: Track): string {
+  switch (track.source.kind) {
+    case "file":
+      return `Local file · ${track.source.fileName}`;
+    case "text":
+    case "m3u":
+      return track.source.rawLine
+        ? `Text · ${track.source.rawLine}`
+        : "Text source";
+    case "spotify-import":
+      return "Imported from Spotify";
   }
-  const label = isPlaying
-    ? mode === "sdk"
-      ? "Pause"
-      : "Pause preview"
-    : mode === "sdk"
-      ? "Play full track"
-      : "Play preview";
-  return (
-    <button
-      type="button"
-      aria-label={label}
-      title={label}
-      onClick={onToggle}
-      className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded bg-transparent text-matched transition-opacity hover:opacity-80"
-    >
-      {isPlaying ? <PauseIcon /> : <PlayIcon />}
-    </button>
-  );
 }
 
-function CandidateRow({
-  candidate,
-  isCurrent,
-  sdkAvailable,
-  isPlaying,
-  onTogglePlayback,
-  onPick,
-}: {
-  candidate: SpotifyCandidate;
-  isCurrent: boolean;
-  sdkAvailable: boolean;
-  isPlaying: boolean;
-  onTogglePlayback: () => void;
-  onPick: () => void;
-}) {
-  const yearPart = candidate.year ? ` · ${candidate.year}` : "";
-  const mode = previewModeFor(candidate, sdkAvailable);
+// The Original row: shows the track's source + current identity and lets
+// the user play the ORIGINAL audio (local file / preview) to A/B against
+// the candidates. Distinct from candidate playback — it plays the row
+// itself via playOriginalFile (DESIGN §4.7.2).
+function OriginalRow({ track }: { track: Track }) {
+  const playbackTrackId = usePlaybackStore((state) => state.currentTrackId);
+  const playbackIsPlaying = usePlaybackStore((state) => state.isPlaying);
+  const playOriginalFile = usePlaybackStore((state) => state.playOriginalFile);
+
+  const playable = Boolean(track.localFile) || Boolean(getSpotifyPreviewUrl(track.spotify));
+  const isActive = playbackTrackId === track.id;
+  const isPlaying = isActive && playbackIsPlaying;
+
+  const yearPart = track.year ? ` · ${track.year}` : "";
+  const detail = [
+    track.artist ?? "Unknown artist",
+    "—",
+    track.title ?? "Unknown title",
+  ].join(" ");
+
+  const playLabel = playable
+    ? isPlaying
+      ? "Pause original"
+      : track.localFile
+        ? "Play original file"
+        : "Play original preview"
+    : "No original file or preview to play";
+
   return (
-    <div className="flex items-center gap-2">
-      <PreviewControl
-        candidate={candidate}
-        mode={mode}
-        isPlaying={isPlaying}
-        onToggle={onTogglePlayback}
-      />
-      <button
-        type="button"
-        onClick={onPick}
-        className={`flex min-w-0 flex-1 items-center gap-3 rounded border px-3 py-2 text-left transition-colors ${
-          isCurrent
-            ? "border-matched bg-neutral-800/60"
-            : "border-neutral-800 hover:bg-neutral-800"
-        }`}
-      >
-        {candidate.coverUrl ? (
-          <img
-            src={candidate.coverUrl}
-            alt=""
-            loading="lazy"
-            className="h-10 w-10 rounded object-cover"
-          />
-        ) : (
-          <div className="h-10 w-10 rounded bg-neutral-800" aria-hidden />
-        )}
+    <div className="mb-3 rounded border border-neutral-800 bg-neutral-900/40 p-2">
+      <div className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-neutral-500">
+        Original
+      </div>
+      <div className="flex items-center gap-2">
+        <button
+          type="button"
+          aria-label={playLabel}
+          title={playLabel}
+          disabled={!playable}
+          onClick={() => playOriginalFile(track.id)}
+          className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded bg-transparent text-matched transition-opacity hover:opacity-80 disabled:cursor-not-allowed disabled:opacity-25"
+        >
+          {isPlaying ? <PauseIcon /> : <PlayIcon />}
+        </button>
         <div className="min-w-0 flex-1">
-          <div className="truncate text-sm font-medium">
-            {candidate.title}
-            {isCurrent && (
-              <span className="ml-2 text-xs text-matched">✓ current</span>
-            )}
-          </div>
+          <div className="truncate text-sm font-medium">{detail}</div>
           <div className="truncate text-xs text-neutral-400">
-            {candidate.artist}
-            {candidate.album ? ` · ${candidate.album}` : ""}
+            {sourceLabel(track)}
+            {track.album ? ` · ${track.album}` : ""}
             {yearPart}
-            {" · "}
-            {formatDuration(candidate.durationMs)}
+            {track.durationMs ? ` · ${formatDuration(track.durationMs)}` : ""}
           </div>
         </div>
-      </button>
+      </div>
     </div>
   );
 }
 
-export function AmbiguousMatchDialog({ trackId, onClose }: Props) {
+export function AmbiguousMatchDialog({ trackId, onClose, workflow }: Props) {
   // The parent gates mount on `trackId !== null` and passes
   // `key={trackId}`, so every picker session is a fresh component
   // instance — initial state below initializes naturally per track,
@@ -176,13 +144,37 @@ export function AmbiguousMatchDialog({ trackId, onClose }: Props) {
   const dialogRef = useDialogFocus<HTMLDivElement>(true, onClose);
   const backdropDismiss = useBackdropDismiss(onClose);
 
+  // Left/Right arrows step the disambiguation workflow back/forward. Ignored
+  // outside the workflow, and ignored while the caret is in the search
+  // inputs (where the arrows move the text cursor). Bound on the panel so it
+  // only fires while focus is trapped inside the dialog.
+  function handleWorkflowKeys(event: React.KeyboardEvent<HTMLDivElement>) {
+    if (!workflow) return;
+    const target = event.target as HTMLElement;
+    if (
+      target.tagName === "INPUT" ||
+      target.tagName === "TEXTAREA" ||
+      target.isContentEditable
+    ) {
+      return;
+    }
+    if (event.key === "ArrowRight") {
+      event.preventDefault();
+      workflow.onSkip();
+    } else if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      if (workflow.position > 1) workflow.onBack();
+    }
+  }
+
   // Stop any dialog-initiated candidate playback on unmount. We route
   // through the player's `stopIfCandidate` so the check happens
   // INSIDE the playback operation queue — if a candidate's `play`
   // is still in flight when the dialog unmounts, the enqueued
   // `stopIfCandidate` runs after the play lands and still catches it.
   // A point-in-time read of `currentTrackId` from the cleanup would
-  // miss that race.
+  // miss that race. (Original-file playback is a `track` target and is
+  // intentionally NOT stopped — see DESIGN §4.7.2.)
   useEffect(() => {
     return () => {
       usePlaybackStore.getState().stopIfCandidate();
@@ -328,16 +320,49 @@ export function AmbiguousMatchDialog({ trackId, onClose }: Props) {
         // Stop clicks inside the panel from bubbling to the backdrop's
         // onClose, so interacting with the dialog doesn't dismiss it.
         onClick={(event) => event.stopPropagation()}
+        onKeyDown={handleWorkflowKeys}
         className="flex max-h-[85vh] w-full max-w-2xl flex-col rounded-lg bg-neutral-900 p-4 shadow-xl"
       >
-        <div className="mb-3">
-          <h2 id="ambiguous-match-dialog-title" className="text-base font-semibold">
-            Pick a Spotify version
-          </h2>
-          <p className="text-xs text-neutral-400">
-            {track.artist ?? "Unknown artist"} — {track.title ?? "Unknown title"}
-          </p>
+        <div className="mb-3 flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <h2
+              id="ambiguous-match-dialog-title"
+              className="text-base font-semibold"
+            >
+              Pick a Spotify version
+            </h2>
+            <p className="truncate text-xs text-neutral-400">
+              {track.artist ?? "Unknown artist"} —{" "}
+              {track.title ?? "Unknown title"}
+            </p>
+          </div>
+          {workflow && (
+            <div className="flex shrink-0 items-center gap-2">
+              <span className="text-xs text-neutral-400 tabular-nums">
+                Resolving {workflow.position} of {workflow.total}
+              </span>
+              <button
+                type="button"
+                onClick={workflow.onBack}
+                disabled={workflow.position <= 1}
+                title="Previous track (←)"
+                className="rounded border border-neutral-700 px-2 py-1 text-xs hover:bg-neutral-800 disabled:opacity-40"
+              >
+                Back
+              </button>
+              <button
+                type="button"
+                onClick={workflow.onSkip}
+                title="Skip to next track (→)"
+                className="rounded border border-neutral-700 px-2 py-1 text-xs hover:bg-neutral-800"
+              >
+                Skip
+              </button>
+            </div>
+          )}
         </div>
+
+        <OriginalRow track={track} />
 
         <div className="mb-3 grid grid-cols-[1fr_1fr_auto] gap-2">
           <input
@@ -386,7 +411,7 @@ export function AmbiguousMatchDialog({ trackId, onClose }: Props) {
                   playbackTrackId === candidatePlaybackId(candidate.uri);
                 return (
                   <li key={candidate.uri}>
-                    <CandidateRow
+                    <SpotifyCandidateRow
                       candidate={candidate}
                       isCurrent={candidate.uri === currentUri}
                       sdkAvailable={sdkAvailable}
@@ -424,7 +449,13 @@ export function AmbiguousMatchDialog({ trackId, onClose }: Props) {
                           candidate,
                           candidates,
                         );
-                        onClose();
+                        // In the workflow, a pick advances to the next work
+                        // item; otherwise close the one-off picker.
+                        if (workflow) {
+                          workflow.onResolved();
+                        } else {
+                          onClose();
+                        }
                       }}
                     />
                   </li>
@@ -439,13 +470,14 @@ export function AmbiguousMatchDialog({ trackId, onClose }: Props) {
               unpick/re-ambiguate) is committed to the store the instant it's
               clicked — there is no pending draft to discard. A "Cancel" label
               wrongly implies closing would revert an unpick, so the button is
-              an affirmative close that keeps the change. */}
+              an affirmative close that keeps the change. In the workflow it
+              stops the guided pass and returns to the table. */}
           <button
             type="button"
             className="rounded border border-neutral-700 px-3 py-1 text-sm hover:bg-neutral-800"
             onClick={onClose}
           >
-            Done
+            {workflow ? "Stop" : "Done"}
           </button>
         </div>
       </div>

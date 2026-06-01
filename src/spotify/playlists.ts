@@ -1,5 +1,6 @@
 import { SPOTIFY_TRACK_ADD_CHUNK } from "../constants";
 import type {
+  SpotifyCandidate,
   SpotifyPlaylistSummary,
   Track,
 } from "../types";
@@ -22,6 +23,7 @@ import {
   isMappablePlaylist,
   toImportedTrack,
   toPlaylistSummary,
+  toSpotifyCandidate,
 } from "./spotifyMappers";
 
 type CreatePlaylistInput = {
@@ -138,6 +140,26 @@ export async function fetchPlaylistTracks(
     );
   }
   return importable.map(toImportedTrack);
+}
+
+// Fetch a playlist's tracks as Spotify candidates for the expandable
+// sidebar (DESIGN §4.7.3): the browse list, per-track append, and
+// drag-to-insert all consume candidates so each append builds a FRESH
+// Track (new uuid) — letting the user add the same track more than once,
+// where re-adding a pre-built Track would dedup on its id.
+export async function fetchPlaylistCandidates(
+  playlistId: string,
+  clientId: string,
+): Promise<SpotifyCandidate[]> {
+  const items = await fetchAllPages<SpotifyPlaylistTrackItem>(
+    `/playlists/${playlistId}/items`,
+    clientId,
+    { limit: 100 },
+  );
+  return items
+    .map(extractTrackFromItem)
+    .filter(isImportableTrack)
+    .map(toSpotifyCandidate);
 }
 
 function chunk<T>(items: T[], size: number): T[][] {

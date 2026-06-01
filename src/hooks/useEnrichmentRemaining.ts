@@ -15,8 +15,16 @@ function countRemaining(state: PlaylistState): number {
   for (const id of state.playlist.trackIds) {
     const track = state.tracksById[id];
     if (!track) continue;
-    if (track.source.kind === "spotify-import") continue;
     if (track.enrichment.userOverride) continue;
+    // spotify-import rows ARE MB-enriched — their Spotify identity is fixed,
+    // so the MB runner backfills cover art / recording id for them (whole-
+    // playlist imports and the add-track / sidebar drag-insert paths all
+    // produce spotify-import rows). Excluding them here made the indicator
+    // read "Enriching · 0 remaining" while a just-added track was actively
+    // being enriched (its MB request in flight). They're never `missing` on
+    // Spotify, so they fall through the guard below and count while idle or
+    // pending, giving a real in-flight count and countdown.
+    //
     // A track Spotify resolved as having NO match will never reach MB
     // enrichment — the runner gates MB on a Spotify match (see
     // enrichmentEligibility: "missing tracks stay un-enriched"). Counting
@@ -24,6 +32,7 @@ function countRemaining(state: PlaylistState): number {
     // permanently above zero, since nothing will ever decrement it.
     if (track.spotify.status === "missing") continue;
     const status = track.enrichment.status;
+    // `pending` is an in-flight MB lookup; `idle` is owed one. Both count.
     if (status === "idle" || status === "pending") count++;
   }
   return count;

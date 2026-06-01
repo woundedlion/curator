@@ -16,6 +16,8 @@ import {
 import { useShallow } from "zustand/react/shallow";
 import { ROW_HEIGHT_PX } from "../constants";
 import { usePlaylistStore } from "../store/playlistStore";
+import { addCandidateTrack } from "../services/addTrackController";
+import { dragHasTrack, getTrackCandidateFromDrag } from "./dragData";
 import { ConfirmDialog } from "./ConfirmDialog";
 import { PlaylistTableHeader } from "./PlaylistTableHeader";
 import { RubberbandOverlay } from "./RubberbandOverlay";
@@ -249,6 +251,105 @@ export function PlaylistTable({
 
   const selectedCount = selectedTrackIds.size;
 
+  // ─── External single-track drop (sidebar drag-to-insert, §4.7.3) ─────────
+  // A track dragged out of an expanded sidebar playlist inserts at a slot in
+  // the visible order. `insertSlot` (0..visible length) drives the insertion
+  // line; null hides it. We react ONLY to the curator-track MIME so file /
+  // whole-playlist drags still flow to the window-level DropZone untouched.
+  const [insertSlot, setInsertSlot] = useState<number | null>(null);
+
+  // Map a visible-order insertion slot to an index in the full trackIds
+  // array, accounting for rows hidden by Hide-unmatched.
+  const slotToAllIndex = useCallback(
+    (slot: number): number => {
+      const visible = orderedIds;
+      if (slot >= visible.length) {
+        if (visible.length === allTrackIds.length) return allTrackIds.length;
+        const lastVisible = visible[visible.length - 1];
+        if (lastVisible === undefined) return allTrackIds.length;
+        const idx = allTrackIds.indexOf(lastVisible);
+        return idx === -1 ? allTrackIds.length : idx + 1;
+      }
+      const beforeId = visible[slot]!;
+      const idx = allTrackIds.indexOf(beforeId);
+      return idx === -1 ? allTrackIds.length : idx;
+    },
+    [orderedIds, allTrackIds],
+  );
+
+  function slotForRow(
+    event: React.DragEvent<HTMLDivElement>,
+    visibleIndex: number,
+  ): number {
+    const rect = event.currentTarget.getBoundingClientRect();
+    const topHalf = event.clientY - rect.top < rect.height / 2;
+    return topHalf ? visibleIndex : visibleIndex + 1;
+  }
+
+  const commitTrackDrop = useCallback(
+    (event: React.DragEvent<HTMLDivElement>, slot: number) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const candidate = getTrackCandidateFromDrag(event.dataTransfer);
+      setInsertSlot(null);
+      if (!candidate) return;
+      addCandidateTrack(candidate, slotToAllIndex(slot));
+    },
+    [slotToAllIndex],
+  );
+
+  const handleRowDragOver = useCallback(
+    (event: React.DragEvent<HTMLDivElement>, visibleIndex: number) => {
+      if (!dragHasTrack(event.dataTransfer)) return;
+      event.preventDefault();
+      // Stop the bubble so the container handler doesn't override the precise
+      // slot with the append-at-end slot.
+      event.stopPropagation();
+      event.dataTransfer.dropEffect = "copy";
+      setInsertSlot(slotForRow(event, visibleIndex));
+    },
+    [],
+  );
+
+  const handleRowDrop = useCallback(
+    (event: React.DragEvent<HTMLDivElement>, visibleIndex: number) => {
+      if (!dragHasTrack(event.dataTransfer)) return;
+      commitTrackDrop(event, slotForRow(event, visibleIndex));
+    },
+    [commitTrackDrop],
+  );
+
+  // Empty area below the rows → append (slot past the last visible row).
+  const handleContainerDragOver = useCallback(
+    (event: React.DragEvent<HTMLDivElement>) => {
+      if (!dragHasTrack(event.dataTransfer)) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "copy";
+      setInsertSlot(orderedIds.length);
+    },
+    [orderedIds.length],
+  );
+
+  const handleContainerDrop = useCallback(
+    (event: React.DragEvent<HTMLDivElement>) => {
+      if (!dragHasTrack(event.dataTransfer)) return;
+      commitTrackDrop(event, orderedIds.length);
+    },
+    [commitTrackDrop, orderedIds.length],
+  );
+
+  const handleContainerDragLeave = useCallback(
+    (event: React.DragEvent<HTMLDivElement>) => {
+      // Clear only when the pointer truly left the scroll container — a
+      // dragleave that fires because the pointer crossed into a child row
+      // keeps relatedTarget inside the container.
+      if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+        setInsertSlot(null);
+      }
+    },
+    [],
+  );
+
   // The cursor row's DOM id, fed to aria-activedescendant below. Only
   // set when the cursor points at a still-visible row — a stale anchor
   // (e.g. the cursor row was filtered out by hide-unmatched) would
@@ -303,6 +404,12 @@ export function PlaylistTable({
         role="rowgroup"
         className="relative flex-1 overflow-auto"
         onPointerDown={onContainerPointerDown}
+        // External single-track drops (sidebar drag-to-insert). Row-level
+        // handlers below stopPropagation, so these only fire for the empty
+        // area below the rows → append.
+        onDragOver={handleContainerDragOver}
+        onDrop={handleContainerDrop}
+        onDragLeave={handleContainerDragLeave}
       >
         <DndContext
           sensors={sensors}
@@ -321,6 +428,13 @@ export function PlaylistTable({
                 position: "relative",
               }}
             >
+              {insertSlot !== null && (
+                <div
+                  aria-hidden
+                  className="pointer-events-none absolute inset-x-0 z-10 h-0.5 bg-matched"
+                  style={{ top: `${insertSlot * ROW_HEIGHT_PX}px` }}
+                />
+              )}
               {rowVirtualizer.getVirtualItems().map((virtualRow) => {
                 const track = orderedTracks[virtualRow.index];
                 if (!track) return null;
@@ -341,6 +455,10 @@ export function PlaylistTable({
                       transform: `translateY(${virtualRow.start}px)`,
                       height: `${ROW_HEIGHT_PX}px`,
                     }}
+                    onDragOver={(event) =>
+                      handleRowDragOver(event, virtualRow.index)
+                    }
+                    onDrop={(event) => handleRowDrop(event, virtualRow.index)}
                   >
                     <SortableTrackRow
                       track={track}

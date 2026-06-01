@@ -64,14 +64,26 @@ describe("Toolbar — enriching indicator (isEnriching OR branch)", () => {
   it("shows the enriching region when queueDepth>0 even with zero remaining rows", () => {
     seedTracks([]);
     useUiStore.setState({ enrichmentQueueDepth: 3 });
-    render(<Toolbar hiddenCount={0} onPickFolder={() => {}} />);
+    render(
+      <Toolbar
+        hiddenCount={0}
+        onPickFolder={() => {}}
+        onStartDisambiguation={() => {}}
+      />,
+    );
     expect(screen.getByText(/Enriching ·/)).toBeTruthy();
   });
 
   it("shows the enriching region when remaining>0 even with an empty queue", () => {
     seedTracks([localTrack("t1", "idle"), localTrack("t2", "pending")]);
     useUiStore.setState({ enrichmentQueueDepth: 0 });
-    render(<Toolbar hiddenCount={0} onPickFolder={() => {}} />);
+    render(
+      <Toolbar
+        hiddenCount={0}
+        onPickFolder={() => {}}
+        onStartDisambiguation={() => {}}
+      />,
+    );
     expect(screen.getByText(/Enriching · 2 remaining/)).toBeTruthy();
   });
 
@@ -90,7 +102,38 @@ describe("Toolbar — enriching indicator (isEnriching OR branch)", () => {
     } as unknown as Track;
     seedTracks([localTrack("t1", "idle"), missing]);
     useUiStore.setState({ enrichmentQueueDepth: 0 });
-    render(<Toolbar hiddenCount={0} onPickFolder={() => {}} />);
+    render(
+      <Toolbar
+        hiddenCount={0}
+        onPickFolder={() => {}}
+        onStartDisambiguation={() => {}}
+      />,
+    );
+    expect(screen.getByText(/Enriching · 1 remaining/)).toBeTruthy();
+  });
+
+  it("counts an in-flight spotify-import track (added/inserted, MB enrichment running)", () => {
+    // Regression: spotify-import rows (whole-playlist import, add-track
+    // dialog, sidebar drag-insert) ARE MB-enriched, but were excluded from
+    // the count — so adding one track showed "Enriching · 0 remaining" while
+    // its MB lookup was actually in flight.
+    const importPending = {
+      id: "imp",
+      source: { kind: "spotify-import", spotifyUri: "spotify:track:x" },
+      title: "Imported",
+      artist: "A",
+      enrichment: { status: "pending" },
+      spotify: { status: "matched", uri: "spotify:track:x", candidates: [], score: 1 },
+    } as unknown as Track;
+    seedTracks([importPending]);
+    useUiStore.setState({ enrichmentQueueDepth: 1 });
+    render(
+      <Toolbar
+        hiddenCount={0}
+        onPickFolder={() => {}}
+        onStartDisambiguation={() => {}}
+      />,
+    );
     expect(screen.getByText(/Enriching · 1 remaining/)).toBeTruthy();
   });
 
@@ -105,20 +148,38 @@ describe("Toolbar — enriching indicator (isEnriching OR branch)", () => {
     } as unknown as Track;
     seedTracks([missing]);
     useUiStore.setState({ enrichmentQueueDepth: 0 });
-    render(<Toolbar hiddenCount={0} onPickFolder={() => {}} />);
+    render(
+      <Toolbar
+        hiddenCount={0}
+        onPickFolder={() => {}}
+        onStartDisambiguation={() => {}}
+      />,
+    );
     expect(screen.queryByText(/Enriching ·/)).toBeNull();
   });
 
   it("hides the enriching region when both signals are quiet", () => {
     seedTracks([localTrack("t1", "matched")]);
     useUiStore.setState({ enrichmentQueueDepth: 0 });
-    render(<Toolbar hiddenCount={0} onPickFolder={() => {}} />);
+    render(
+      <Toolbar
+        hiddenCount={0}
+        onPickFolder={() => {}}
+        onStartDisambiguation={() => {}}
+      />,
+    );
     expect(screen.queryByText(/Enriching ·/)).toBeNull();
   });
 
   it("the enriching count is NOT a chatty live region (aria-live off)", () => {
     seedTracks([localTrack("t1", "idle")]);
-    render(<Toolbar hiddenCount={0} onPickFolder={() => {}} />);
+    render(
+      <Toolbar
+        hiddenCount={0}
+        onPickFolder={() => {}}
+        onStartDisambiguation={() => {}}
+      />,
+    );
     const region = screen.getByText(/Enriching ·/);
     expect(region.getAttribute("aria-live")).toBe("off");
   });
@@ -127,7 +188,13 @@ describe("Toolbar — enriching indicator (isEnriching OR branch)", () => {
 describe("Toolbar — disabled states gated on track count", () => {
   it("disables Clear / Resume / Refresh and Undo when the playlist is empty", () => {
     seedTracks([]);
-    render(<Toolbar hiddenCount={0} onPickFolder={() => {}} />);
+    render(
+      <Toolbar
+        hiddenCount={0}
+        onPickFolder={() => {}}
+        onStartDisambiguation={() => {}}
+      />,
+    );
     expect(
       (screen.getByRole("button", { name: "Playlist is empty" }) as HTMLButtonElement)
         .disabled,
@@ -144,7 +211,13 @@ describe("Toolbar — disabled states gated on track count", () => {
 
   it("enables the destructive actions once tracks exist", () => {
     seedTracks([localTrack("t1", "idle")]);
-    render(<Toolbar hiddenCount={0} onPickFolder={() => {}} />);
+    render(
+      <Toolbar
+        hiddenCount={0}
+        onPickFolder={() => {}}
+        onStartDisambiguation={() => {}}
+      />,
+    );
     expect(
       (screen.getByRole("button", { name: "Clear playlist" }) as HTMLButtonElement)
         .disabled,
@@ -157,7 +230,13 @@ describe("Toolbar — confirm gating for destructive actions", () => {
     seedTracks([localTrack("t1", "idle")]);
     const clearPlaylist = vi.fn();
     usePlaylistStore.setState({ clearPlaylist });
-    render(<Toolbar hiddenCount={0} onPickFolder={() => {}} />);
+    render(
+      <Toolbar
+        hiddenCount={0}
+        onPickFolder={() => {}}
+        onStartDisambiguation={() => {}}
+      />,
+    );
 
     fireEvent.click(screen.getByRole("button", { name: "Clear playlist" }));
     // Dialog is up but nothing destructive ran yet.
@@ -173,7 +252,13 @@ describe("Toolbar — confirm gating for destructive actions", () => {
     seedTracks([localTrack("t1", "idle")]);
     const nukeEnrichmentState = vi.fn();
     usePlaylistStore.setState({ nukeEnrichmentState });
-    render(<Toolbar hiddenCount={0} onPickFolder={() => {}} />);
+    render(
+      <Toolbar
+        hiddenCount={0}
+        onPickFolder={() => {}}
+        onStartDisambiguation={() => {}}
+      />,
+    );
 
     fireEvent.click(screen.getByRole("button", { name: /^Refresh:/ }));
     expect(nukeEnrichmentState).not.toHaveBeenCalled();
@@ -186,7 +271,13 @@ describe("Toolbar — confirm gating for destructive actions", () => {
     seedTracks([localTrack("t1", "idle")]);
     const clearPlaylist = vi.fn();
     usePlaylistStore.setState({ clearPlaylist });
-    render(<Toolbar hiddenCount={0} onPickFolder={() => {}} />);
+    render(
+      <Toolbar
+        hiddenCount={0}
+        onPickFolder={() => {}}
+        onStartDisambiguation={() => {}}
+      />,
+    );
 
     fireEvent.click(screen.getByRole("button", { name: "Clear playlist" }));
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));

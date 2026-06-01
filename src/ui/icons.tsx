@@ -132,6 +132,35 @@ export function DragHandleIcon({ className }: IconProps) {
   );
 }
 
+export function PlusIcon({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" className={svgClass(className)} aria-hidden>
+      <path d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6V5z" />
+    </svg>
+  );
+}
+
+// Disclosure chevron for the expandable sidebar playlist rows. Points
+// right when collapsed; the caller rotates it 90° when expanded via a
+// `rotate-90` class so a single glyph covers both states.
+export function ChevronRightIcon({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" className={svgClass(className)} aria-hidden>
+      <path d="M9 6l6 6-6 6V6z" />
+    </svg>
+  );
+}
+
+// "Stacked decisions" wand for the rapid-disambiguation workflow trigger.
+// A small sparkle over a list to read as "auto-step through choices".
+export function ResolveIcon({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" className={svgClass(className)} aria-hidden>
+      <path d="M3 5h10v2H3V5zm0 4h10v2H3V9zm0 4h7v2H3v-2zm14.5-8.5l1.1 2.4 2.4 1.1-2.4 1.1-1.1 2.4-1.1-2.4L13 8l2.4-1.1 1.1-2.4zM18 14l.8 1.7L20.5 16l-1.7.8L18 18.5l-.8-1.7L15.5 16l1.7-.3L18 14z" />
+    </svg>
+  );
+}
+
 export function RefreshIcon({ className }: IconProps) {
   return (
     <svg viewBox="0 0 24 24" className={svgClass(className)} aria-hidden>

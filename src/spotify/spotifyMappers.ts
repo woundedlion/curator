@@ -98,6 +98,38 @@ export function toImportedTrack(item: SpotifyTrackResponse): Track {
   };
 }
 
+// Build a draft Track from a chosen Spotify search candidate (the
+// add-track dialog and the sidebar per-track append/drag-insert paths).
+// Produces the exact shape toImportedTrack does for a playlist import:
+// `spotify-import` source, `matched` Spotify state with the chosen URI,
+// and the candidate's displayed identity — so an added track is
+// publish-ready immediately and round-trips through export like an
+// import. previewUrl carries through when present. The candidate's own
+// score is preserved (vs. the synthetic 1 import uses) since it came from
+// a real search ranking; candidates[] is left empty because this single
+// pick isn't a candidate list the picker should re-offer.
+export function trackFromSpotifyCandidate(candidate: SpotifyCandidate): Track {
+  const track: Track = {
+    id: uuid(),
+    source: { kind: "spotify-import", spotifyUri: candidate.uri },
+    title: candidate.title,
+    artist: candidate.artist,
+    enrichment: { status: "idle" },
+    spotify: {
+      status: "matched",
+      uri: candidate.uri,
+      candidates: [],
+      score: candidate.score,
+      previewUrl: candidate.previewUrl,
+    },
+  };
+  if (candidate.album !== undefined) track.album = candidate.album;
+  if (candidate.year !== undefined) track.year = candidate.year;
+  if (candidate.durationMs !== undefined) track.durationMs = candidate.durationMs;
+  if (candidate.coverUrl !== undefined) track.coverUrl = candidate.coverUrl;
+  return track;
+}
+
 // A Spotify track result (search OR import) is only usable if it carries
 // the identity fields every downstream path depends on: `id` (candidate
 // dedup key), `uri` (selection + publish), and `name` (display + similarity

@@ -13,7 +13,9 @@ import {
   FolderAddIcon,
   GearIcon,
   PlayIcon,
+  PlusIcon,
   RefreshIcon,
+  ResolveIcon,
   TrashIcon,
   TreeIcon,
   UndoIcon,
@@ -24,9 +26,17 @@ import { ToggleIconButton } from "./ToggleIconButton";
 type Props = {
   hiddenCount: number;
   onPickFolder: () => void;
+  // Kick off the rapid-disambiguation workflow (§4.7.5). Owned by App so it
+  // can drive the picker queue; the Toolbar only triggers it and reflects
+  // whether there's anything to resolve.
+  onStartDisambiguation: () => void;
 };
 
-export function Toolbar({ hiddenCount, onPickFolder }: Props) {
+export function Toolbar({
+  hiddenCount,
+  onPickFolder,
+  onStartDisambiguation,
+}: Props) {
   const settings = useSettingsStore((state) => state.settings);
   const updateSettings = useSettingsStore((state) => state.update);
   const hideUnmatched = usePlaylistStore(
@@ -34,6 +44,22 @@ export function Toolbar({ hiddenCount, onPickFolder }: Props) {
   );
   const setHideUnmatched = usePlaylistStore((state) => state.setHideUnmatched);
   const trackCount = usePlaylistStore((state) => state.playlist.trackIds.length);
+  // Count of rows still needing a Spotify decision (drives the
+  // Resolve-ambiguous button's enabled state). Mirrors what the workflow
+  // actually cycles: it respects Hide-unmatched, so a `missing` row counts
+  // only when it's still visible (the useVisibleTrackIds rule). Returns a
+  // primitive so the selector's referential-equality check doesn't re-render
+  // spuriously.
+  const unresolvedCount = usePlaylistStore((state) => {
+    const hide = state.playlist.hideUnmatched;
+    let n = 0;
+    for (const id of state.playlist.trackIds) {
+      const status = state.tracksById[id]?.spotify.status;
+      if (status === "ambiguous") n++;
+      else if (status === "missing" && !hide) n++;
+    }
+    return n;
+  });
   const canUndo = usePlaylistStore((state) => state.undoStack.length > 0);
   const undo = usePlaylistStore((state) => state.undo);
   const clearPlaylist = usePlaylistStore((state) => state.clearPlaylist);
@@ -50,6 +76,7 @@ export function Toolbar({ hiddenCount, onPickFolder }: Props) {
   // "work in progress" indicator, so the OR is correct.
   const isEnriching = queueDepth > 0 || enrichmentRemaining > 0;
   const openSettings = useUiStore((state) => state.setShowSettings);
+  const openAddTrack = useUiStore((state) => state.setShowAddTrack);
   const [showClearConfirm, setShowClearConfirm] = useState(false);
   const [showRefreshConfirm, setShowRefreshConfirm] = useState(false);
 
@@ -124,6 +151,11 @@ export function Toolbar({ hiddenCount, onPickFolder }: Props) {
         onClick={onPickFolder}
       />
       <IconButton
+        label="Add a track from Spotify"
+        icon={<PlusIcon />}
+        onClick={() => openAddTrack(true)}
+      />
+      <IconButton
         label={canUndo ? "Undo last addition" : "Nothing to undo"}
         icon={<UndoIcon />}
         onClick={undo}
@@ -154,6 +186,16 @@ export function Toolbar({ hiddenCount, onPickFolder }: Props) {
         icon={<RefreshIcon />}
         onClick={handleRefresh}
         disabled={trackCount === 0}
+      />
+      <IconButton
+        label={
+          unresolvedCount === 0
+            ? "No ambiguous or missing tracks to resolve"
+            : `Resolve ${unresolvedCount} ambiguous/missing track${unresolvedCount === 1 ? "" : "s"} one by one`
+        }
+        icon={<ResolveIcon />}
+        onClick={onStartDisambiguation}
+        disabled={unresolvedCount === 0}
       />
 
       <div className="ml-auto flex items-center gap-3">

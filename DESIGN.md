@@ -349,9 +349,10 @@ The whole machine is covered by [src/spotify/rateLimit.test.ts](src/spotify/rate
   - `idle / pending` — initial / in-flight.
 - Concurrency: a single serial pacer capped at 180 req/min, shared across all Spotify calls; a 429 trips the circuit breaker (no in-call retries). See §4.5 Unified API wrapper.
 
-**Disambiguation picker** (§4b) — the primary tool for choosing the right version. Clicking any Spotify status glyph (●, ◐, or ○) opens the picker:
+**Disambiguation picker** (§4b) — the primary tool for choosing the right version. Clicking any Spotify status glyph (●, ◐, or ○) opens the picker. It can also be driven in a guided loop over every unresolved row via the **Resolve ambiguous** workflow (§4.7.5):
 
-- Header shows the current track identity (`Artist — Title`) for context.
+- Header shows the current track identity (`Artist — Title`) for context, and — when launched from the disambiguation workflow — a `Resolving N of M` progress label plus a **Skip** control.
+- An **Original** row (§4.7.2) above the candidate list shows the row's source (file name / text line / Spotify import) and a control to play the original local file or preview, so the user can A/B the source against the candidates.
 - A **"Search again with"** input pre-filled with the track's current `title artist` — user can edit and refetch. This is also how a `missing` row gets a second chance (after a typo correction or a deliberate broadening).
 - Candidates rendered as rich rows:
   - Cover thumbnail (40×40)
@@ -395,7 +396,8 @@ The whole machine is covered by [src/spotify/rateLimit.test.ts](src/spotify/rate
 **Existing playlists** (§6):
 - Sidebar lists `GET /v1/me/playlists` (paginated; auto-load all pages).
 - Each row: cover art, name, track count, owner badge (you vs. followed).
-- **Drag a playlist row onto the draft table** to append its tracks to the current draft. There is no separate "Replace" or "Append" button per row — drag is the single, direct gesture. To replace, the user clears the draft first (Clear button → Undo if needed) and then drags. Each Spotify track becomes a Track row with all fields populated and `spotify` status already `matched` (URI preserved).
+- **Drag a playlist row onto the draft table** to append its tracks to the current draft, **or** click the per-row green `+` Append button (§4.7.4) for the keyboard-accessible equivalent. To replace, the user clears the draft first (Clear button → Undo if needed) and then drags. Each Spotify track becomes a Track row with all fields populated and `spotify` status already `matched` (URI preserved).
+- **Expand a playlist row** (disclosure chevron) to fetch and browse its individual tracks, then append a single track (green `+`) or **drag one track into the draft at a chosen insertion point** (§4.7.3) — finer-grained than the whole-playlist append.
 - **Imported tracks are also MB-enriched** so they pick up MB-derived data (cover art from Cover Art Archive when Spotify doesn't supply one, MB recording id for the per-row metadata picker). The displayed `title/artist/album/year` are NOT overwritten by MB though — once a track is marked `spotify.status === "matched"` (or arrived as `source.kind === "spotify-import"`), MB enrichment switches to `prefer-existing` policy for every field, treating Spotify as authoritative for what the row displays.
 - The drag uses HTML5 drag-and-drop with a custom MIME type (`application/x-curator-playlist`) carrying the Spotify playlist id, so we can distinguish playlist drags from file drops on the same drop target.
 - Import implementation: `GET /v1/playlists/{id}/items` (paginated; replaces the deprecated `/tracks` path as of Feb 2026).
@@ -466,6 +468,43 @@ Special actions in the panel:
 A **Close** button is the only modal control; pressing Esc also closes the panel.
 
 **Settings shape validation on load**: localStorage is user-writable from devtools and can carry corruption from older app versions. `loadSettingsFromStorage` runs every persisted value through `sanitizeSettings`: each field is type-checked, `acceptThresholds.mb` / `acceptThresholds.spotify` are clamped to `[0, 1]`, and anything that fails a check falls back to its `defaultSettings` value. The store never sees `NaN` thresholds or string-typed booleans, even after a malformed manual edit.
+
+### 4.7 Track-level add, source-aware picker, and disambiguation workflow
+
+A cluster of features that make the draft editable at the individual-track grain and turn a folder of unmatched rows into a guided sequence of decisions instead of a hunt-and-click chore.
+
+**4.7.1 Add a single track via Spotify search.** The toolbar carries an **Add track** button (green `+` icon, same monotone-green icon system as the rest of the chrome — §6). It opens the **Add-track dialog**: a title/artist search box that runs the same `searchSpotifyCandidatesByFields` query the picker uses, renders the results as the same rich candidate rows (cover, title, artist, album · year · duration, per-row preview/SDK/external-link playback control), and on click **appends** the chosen candidate to the draft as a new `Track`.
+
+- The new track is built by `trackFromSpotifyCandidate` (in `spotify/spotifyMappers.ts`), which produces the same shape `toImportedTrack` produces for a playlist import: `source.kind = "spotify-import"`, `spotify.status = "matched"` with the chosen URI, and the candidate's `title/artist/album/year/durationMs/coverUrl` as the displayed identity. So an added track is publish-ready immediately and round-trips through export exactly like an imported one.
+- After the add, the track is queued for **background MB enrichment** (cover-art backfill / `mbRecordingId`) via the same fill-missing path imports use — Spotify stays authoritative for displayed fields.
+- The dialog reuses the picker's playback wiring (`candidate:{uri}` synthetic ids through the shared playback store) so previewing a result here behaves identically to previewing in the picker, and closing the dialog stops any dialog-initiated candidate playback.
+- Empty query / no client id / no results are handled with the same toasts as the picker's "Search again" path.
+
+**4.7.2 The picker shows the original source and can play it.** The disambiguation picker (§4.5) gains an **Original** row pinned above the candidate list. It surfaces what the row *came from* — distinct from the Spotify identity the user is choosing — so the user can compare against the source they actually have:
+
+- **Source line**: `Local file · {fileName}` for `file` rows, `Text · {rawLine}` for `text`/`m3u` rows, `Imported from Spotify` for `spotify-import` rows.
+- **Original details**: the row's current `artist — title`, plus `album · year · mm:ss` when known. (For an as-yet-unmatched row these are the local tags; for a re-pick of an already-matched row they reflect the current Spotify identity, since the app does not retain pre-match tags separately — the source line is the stable "where it came from" anchor.)
+- **Play the original**: a play/pause control that plays the row's **own** audio — the local file when `track.localFile` is set, otherwise the row's 30-second preview when present. This routes through a dedicated `playOriginalFile(trackId)` playback action that forces the **local-file (or preview) source**, never the SDK full-track substitution that `createPlaybackSource` applies to matched rows — "play the original" must always mean the user's file, not the Spotify version. When neither a local file nor a preview exists (e.g. a text row with no match yet), the control renders disabled with an explanatory tooltip.
+- Original playback uses a `kind: "track"` target (id = trackId), so it shares the one-at-a-time playback invariant with candidate previews (starting a candidate stops the original and vice-versa) and is reflected in the now-playing bar. Unlike candidate previews it is **not** auto-stopped when the dialog closes — playing the original is equivalent to pressing play on the row, so it continues in the now-playing bar.
+
+**4.7.3 Expandable Spotify playlists with per-track add + drag-to-insert.** Sidebar playlist rows (§6) become **expandable**. Clicking the disclosure chevron lazily fetches that playlist's tracks (`fetchPlaylistTracks`, cached per playlist id in `spotifyStore.expandedTracks` so a re-expand is instant) and renders them beneath the row. Each fetched track exposes two ways into the draft:
+
+- **Append** — a green `+` icon button (§4.7.4) that appends just that one track to the end of the draft.
+- **Drag to insert** — each track is a native HTML5 drag source carrying an `application/x-curator-track` payload (the serialized candidate identity). Dropping it onto the playlist table **inserts at a position**, not just appends: each rendered table row is an HTML5 drop target that splits at its vertical midpoint (drop on the top half inserts *before* that row, bottom half *after*), with a visible insertion line at the computed slot. Dropping on the empty area below the rows appends. Insertion goes through a new `addTracksAt(tracks, index)` store action (dedup + `add` undo entry, same as `addTracks`) and **clears the active sort** — an explicit positional insert establishes a manual order, mirroring `reorderTracks`.
+  - The track drag uses its own MIME so it is distinguishable from the existing whole-playlist drag (`application/x-curator-playlist`, which still appends via the window-level DropZone) and from file drops. The window-level DropZone ignores the track MIME (it isn't `Files` or the playlist MIME), so only the table's row-level handlers react — no overlay, no double-handling.
+  - Inserted/appended tracks are built by the same `trackFromSpotifyCandidate` mapper as §4.7.1 and are `matched` + background-MB-enriched.
+
+**4.7.4 Append affordance is a green plus, not a button.** Every "append to draft" affordance — the per-playlist Append in the sidebar and the per-track Append in the expanded list — is a monotone Spotify-green `+` `IconButton` (same `aria-label`/`title` + hover-dim styling as the toolbar/header icons), replacing the earlier bordered `+ Append` text button. This brings the sidebar in line with the §6 icon-button system: bordered text buttons were the last bit of chrome competing with the data view.
+
+**4.7.5 Rapid disambiguation workflow.** The toolbar carries a **Resolve ambiguous** button (a "stacked decisions" / wand icon) that kicks off a guided pass over every unresolved Spotify row. On click it snapshots, in current **visible** order, every track whose `spotify.status` is `ambiguous` or `missing` and drives the picker through them one at a time:
+
+- **Respects the Hide-unmatched filter.** The snapshot is taken from the *visible* track ids (the same `useVisibleTrackIds` set the table renders), so when Hide-unmatched is on — which filters `missing` rows out of the table — the workflow cycles only the rows the user can actually see (`ambiguous` rows, plus `missing` rows only when they're not hidden). The toolbar button's enabled state and count mirror this exact rule, so the button is never enabled when the pass would find nothing.
+- The picker opens on the first work item with a progress affordance in its header (`Resolving 3 of 12`).
+- **Choosing a candidate** commits the pick (identical to a normal picker selection — §4.5) and **immediately advances** to the next work item, reopening the picker on it. The user never returns to the table between decisions.
+- **Forward / back navigation.** A **Skip** control (or the **Right arrow**) advances without resolving, so a row the user can't decide right now doesn't block the rest. A **Back** control (or the **Left arrow**) steps to the previous work item so the user can revisit / correct a row they already passed; it's disabled at the first item. Arrow keys are ignored while the caret is in the picker's search inputs (where they move the text cursor). Forward advance skips rows already resolved out-of-band; back steps strictly one position so revisiting is predictable.
+- **Done / Esc / backdrop** stops the workflow entirely and returns to the table.
+- The work-list is a **snapshot taken at start**: resolving, skipping, or going back walks the snapshot. Forward motion skips rows that became `matched` out-of-band (e.g. a background search promoted one); when forward motion exhausts the snapshot the workflow ends with a summary toast (`Resolved N of M tracks`).
+- The button is disabled when there are no eligible rows, with a tooltip explaining why. It is independent of the single-row picker entry point (clicking a glyph), which continues to open a one-off picker with no workflow chrome.
 
 ---
 
@@ -724,7 +763,8 @@ Filled vs hollow is the key visual distinction: a filled circle means Spotify ha
 4. ✅ **M4 — Spotify write**: create playlist on the new `/v1/playlists/{id}/items` endpoint, chunked track add, progress UI, Replace/Cancel name-collision dialog.
 5. ✅ **M5 — Spotify import**: drag a playlist row onto the draft. Imported tracks are enriched but Spotify-authoritative fields are preserved.
 6. ✅ **Polish (most)**: cover art column from CAA, per-row delete + re-enrich, sticky toolbar, themed scrollbar, Spotify Web Playback SDK (Premium), monotone-green icon system, fade-out toasts, reorder/sort undo, debounced persistence, modal focus traps, ingest-failure surfacing, partial-publish surfacing, settings shape sanitization, cover-art negative cache, worker-pool shutdown.
-7. **Still on the wishlist**: Playwright e2e tests, keyboard shortcuts (`[`/`]` move row, Space toggle play), multi-select drag, multi-playlist drafts, dark/light theme switch.
+7. ✅ **Track-level editing & guided disambiguation** (§4.7): add a single track via Spotify search, source-aware picker with original-file playback, expandable sidebar playlists with per-track append + drag-to-insert, green-plus append affordance, and the Resolve-ambiguous workflow that cycles the picker through every unresolved row.
+8. **Still on the wishlist**: Playwright e2e tests, keyboard shortcuts (`[`/`]` move row, Space toggle play), multi-select drag, multi-playlist drafts, dark/light theme switch.
 
 ---
 

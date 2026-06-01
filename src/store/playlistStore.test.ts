@@ -947,3 +947,58 @@ describe("extendSelectionTo", () => {
     );
   });
 });
+
+describe("addTracksAt — positional insert (§4.7.3)", () => {
+  it("inserts at the given index and clears the active sort", () => {
+    const a = makeTrack({ id: "a" });
+    const b = makeTrack({ id: "b" });
+    usePlaylistStore.getState().addTracks([a, b]);
+    // Put the playlist into a sorted state so we can assert it clears.
+    usePlaylistStore.setState({
+      playlist: {
+        ...usePlaylistStore.getState().playlist,
+        sort: { field: "title", dir: "asc" },
+      },
+    });
+
+    const inserted = makeTrack({ id: "x" });
+    usePlaylistStore.getState().addTracksAt([inserted], 1);
+
+    expect(usePlaylistStore.getState().playlist.trackIds).toEqual([
+      "a",
+      "x",
+      "b",
+    ]);
+    expect(usePlaylistStore.getState().playlist.sort).toBeNull();
+  });
+
+  it("clamps an out-of-range index to an append", () => {
+    const a = makeTrack({ id: "a" });
+    usePlaylistStore.getState().addTracks([a]);
+    usePlaylistStore.getState().addTracksAt([makeTrack({ id: "z" })], 99);
+    expect(usePlaylistStore.getState().playlist.trackIds).toEqual(["a", "z"]);
+  });
+
+  it("inserts at 0 (before the first row)", () => {
+    usePlaylistStore.getState().addTracks([makeTrack({ id: "a" })]);
+    usePlaylistStore.getState().addTracksAt([makeTrack({ id: "head" })], 0);
+    expect(usePlaylistStore.getState().playlist.trackIds).toEqual([
+      "head",
+      "a",
+    ]);
+  });
+
+  it("dedups against existing ids (no duplicate insertion)", () => {
+    const a = makeTrack({ id: "a" });
+    usePlaylistStore.getState().addTracks([a]);
+    usePlaylistStore.getState().addTracksAt([makeTrack({ id: "a" })], 0);
+    expect(usePlaylistStore.getState().playlist.trackIds).toEqual(["a"]);
+  });
+
+  it("pushes an undo entry that removes the inserted ids", () => {
+    usePlaylistStore.getState().addTracks([makeTrack({ id: "a" })]);
+    usePlaylistStore.getState().addTracksAt([makeTrack({ id: "x" })], 0);
+    usePlaylistStore.getState().undo();
+    expect(usePlaylistStore.getState().playlist.trackIds).toEqual(["a"]);
+  });
+});

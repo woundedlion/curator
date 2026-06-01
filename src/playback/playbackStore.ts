@@ -33,7 +33,10 @@ import {
   type PlaybackSource,
 } from "./playbackSource";
 import { SpotifySdkBackend } from "./spotifySdkBackend";
-import { getSpotifyUri } from "../util/trackAccessors";
+import {
+  getSpotifyPreviewUrl,
+  getSpotifyUri,
+} from "../util/trackAccessors";
 
 export function candidatePlaybackId(uri: string): string {
   return `candidate:${uri}`;
@@ -82,6 +85,17 @@ type PlaybackState = {
    */
   connectSdk: () => void;
   playCandidate: (candidate: SpotifyCandidate) => void;
+  /**
+   * Play a row's OWN audio — its local file, or its 30-second preview when
+   * there's no local file. Used by the picker's "Original" control
+   * (DESIGN §4.7.2): it must always play the user's source, never the SDK
+   * full-track substitution createPlaybackSource applies to matched rows.
+   * No-op (with an info toast) when the row has neither a local file nor a
+   * preview. Plays as a `kind: "track"` target so it shares the
+   * one-at-a-time invariant with candidate previews and shows in the
+   * now-playing bar.
+   */
+  playOriginalFile: (trackId: string) => void;
   stop: () => void;
   /**
    * Stop only if the currently-playing target is a candidate (picker
@@ -221,6 +235,34 @@ export const usePlaybackStore = create<PlaybackState>((set, get) => {
     const { sdkReady, sdkInitable } = sdkAvailability();
     const source = createPlaybackSource(track, sdkReady, sdkInitable);
     if (source.kind === "none") return null;
+    return {
+      kind: "track",
+      id: trackId,
+      display: trackDisplay(track),
+      durationMs: seedDuration(track.durationMs),
+      source,
+    };
+  }
+
+  // The original-source target for the picker's "play original" control.
+  // Deliberately bypasses createPlaybackSource's "prefer SDK full track for
+  // matched rows" rule: "original" means the user's own file (or its
+  // preview), never the Spotify version. Returns null when neither exists.
+  function buildOriginalTarget(trackId: string): PlayerTarget | null {
+    const track = usePlaylistStore.getState().tracksById[trackId];
+    if (!track) return null;
+    let source: PlaybackSource;
+    if (track.localFile) {
+      source = { kind: "local", file: track.localFile, label: "Local file" };
+    } else {
+      const previewUrl = getSpotifyPreviewUrl(track.spotify);
+      if (!previewUrl) return null;
+      source = {
+        kind: "spotify-preview",
+        url: previewUrl,
+        label: "Spotify preview (30s)",
+      };
+    }
     return {
       kind: "track",
       id: trackId,
@@ -377,6 +419,19 @@ export const usePlaybackStore = create<PlaybackState>((set, get) => {
           message = "Playback unavailable for this track";
         }
         useUiStore.getState().pushToast({ kind: "info", message });
+        return;
+      }
+      void storeRef.player.play(target);
+    },
+
+    playOriginalFile(trackId) {
+      if (!storeRef.player) return;
+      const target = buildOriginalTarget(trackId);
+      if (!target) {
+        useUiStore.getState().pushToast({
+          kind: "info",
+          message: "No original file or preview to play for this track",
+        });
         return;
       }
       void storeRef.player.play(target);
