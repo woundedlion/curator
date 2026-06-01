@@ -3,6 +3,7 @@ import {
   buildTracksFromExport,
   countResolved,
   tryParseCuratorExport,
+  UnsupportedCuratorExportVersionError,
 } from "./curatorExportParser";
 
 // Well-formed ids: a 22-char base62 Spotify track id and a canonical MBID.
@@ -76,6 +77,15 @@ describe("tryParseCuratorExport", () => {
   it("returns null when the format marker is missing", () => {
     const bad = JSON.stringify({ format: "other-thing", tracks: [] });
     expect(tryParseCuratorExport(bad)).toBeNull();
+  });
+
+  it("throws a typed error for a curator export of an unsupported version", () => {
+    // A future `curator-playlist-v2` must surface a clear signal, not be
+    // silently line-parsed into junk tracks.
+    const v2 = JSON.stringify({ format: "curator-playlist-v2", tracks: [] });
+    expect(() => tryParseCuratorExport(v2)).toThrow(
+      UnsupportedCuratorExportVersionError,
+    );
   });
 
   it("returns null on malformed JSON that happens to contain the marker", () => {

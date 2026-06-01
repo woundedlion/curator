@@ -17,6 +17,25 @@ import {
 // JSON-object shape (trimmed start `{`) keeps the cheap reject cheap.
 const MARKER_SCAN_WINDOW = 1024;
 
+// The versioned family prefix shared by every curator export marker
+// (`curator-playlist-v1`, a hypothetical `…-v2`, etc.). Used to tell a
+// wrong-version export apart from an unrelated `.txt` so the former can
+// surface a clear "unsupported version" signal instead of being silently
+// line-parsed into garbage tracks.
+const CURATOR_EXPORT_FAMILY_PREFIX = "curator-playlist-v";
+
+// Thrown when a file is unmistakably a curator export (right family marker,
+// JSON-object shape) but a version this build doesn't understand. The caller
+// surfaces it to the user rather than treating the file as a plain text list.
+export class UnsupportedCuratorExportVersionError extends Error {
+  constructor(public readonly format: string) {
+    super(
+      `This file was exported by a different version of Curator (${format}); this build expects ${CURATOR_EXPORT_FORMAT}.`,
+    );
+    this.name = "UnsupportedCuratorExportVersionError";
+  }
+}
+
 function looksLikeCuratorExport(text: string): boolean {
   // A curator export is always a JSON object; if it doesn't start with
   // `{` it can't be one, so we never parse it. Scan only the leading
@@ -26,7 +45,11 @@ function looksLikeCuratorExport(text: string): boolean {
   const head = text.slice(0, MARKER_SCAN_WINDOW);
   const firstNonWs = head.search(/\S/);
   if (firstNonWs === -1 || head[firstNonWs] !== "{") return false;
-  return head.includes(CURATOR_EXPORT_FORMAT);
+  // Match the versioned FAMILY prefix, not the exact current marker, so a
+  // wrong-version export (e.g. `…-v2`) still passes this cheap reject and
+  // reaches the version check (which surfaces a clear error) instead of
+  // being silently treated as a plain text list.
+  return head.includes(CURATOR_EXPORT_FAMILY_PREFIX);
 }
 
 function asString(value: unknown): string | undefined {
@@ -102,7 +125,18 @@ export function tryParseCuratorExport(
   }
   if (!parsed || typeof parsed !== "object") return null;
   const obj = parsed as Record<string, unknown>;
-  if (obj.format !== CURATOR_EXPORT_FORMAT) return null;
+  if (obj.format !== CURATOR_EXPORT_FORMAT) {
+    // A curator-family marker of a version we don't support is a clear
+    // signal, not a plain text file — surface it rather than line-parsing
+    // the JSON into junk rows.
+    if (
+      typeof obj.format === "string" &&
+      obj.format.startsWith(CURATOR_EXPORT_FAMILY_PREFIX)
+    ) {
+      throw new UnsupportedCuratorExportVersionError(obj.format);
+    }
+    return null;
+  }
   if (!Array.isArray(obj.tracks)) return null;
   const tracks: CuratorExportedTrack[] = [];
   for (const raw of obj.tracks) {

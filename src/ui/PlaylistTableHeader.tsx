@@ -3,14 +3,24 @@ import { IconButton } from "./IconButton";
 import { TrashIcon } from "./icons";
 import type { SortField, SortSpec } from "../types";
 
-const HEADERS: { field: SortField; label: string; width: string }[] = [
-  { field: "index", label: "Idx", width: "w-12" },
-  { field: "artist", label: "Artist", width: "w-48" },
-  { field: "title", label: "Title", width: "flex-1" },
-  { field: "year", label: "Year", width: "w-16" },
-  { field: "originalYear", label: "Orig", width: "w-16" },
-  { field: "album", label: "Album", width: "w-56" },
-  { field: "trackNo", label: "#", width: "w-12" },
+// `colIndex` is the 1-based grid column position, kept in lockstep with the
+// aria-colindex on each SortableTrackRow gridcell (and aria-colcount=14 on
+// the grid). The decorative spacer columns (drag=1, play=2, cover=4,
+// re-enrich=13, remove=14) are aria-hidden, so the header's columnheaders
+// can't rely on DOM order — the indices must be explicit.
+const HEADERS: {
+  field: SortField;
+  label: string;
+  width: string;
+  colIndex: number;
+}[] = [
+  { field: "index", label: "Idx", width: "w-12", colIndex: 3 },
+  { field: "artist", label: "Artist", width: "w-48", colIndex: 5 },
+  { field: "title", label: "Title", width: "flex-1", colIndex: 6 },
+  { field: "year", label: "Year", width: "w-16", colIndex: 7 },
+  { field: "originalYear", label: "Orig", width: "w-16", colIndex: 8 },
+  { field: "album", label: "Album", width: "w-56", colIndex: 9 },
+  { field: "trackNo", label: "#", width: "w-12", colIndex: 10 },
 ];
 
 function indicatorFor(
@@ -54,6 +64,7 @@ export function PlaylistTableHeader({
         <Fragment key={header.field}>
           <div
             role="columnheader"
+            aria-colindex={header.colIndex}
             aria-sort={
               sort?.field === header.field
                 ? sort.dir === "asc"
@@ -79,6 +90,7 @@ export function PlaylistTableHeader({
       ))}
       <div
         role="columnheader"
+        aria-colindex={11}
         className="w-10 px-2 py-2 text-left"
         title="MusicBrainz enrichment status"
       >
@@ -86,6 +98,7 @@ export function PlaylistTableHeader({
       </div>
       <div
         role="columnheader"
+        aria-colindex={12}
         className="w-10 px-2 py-2 text-left"
         title="Spotify match status"
       >

@@ -28,8 +28,10 @@ const DURATION_HALF_DELTA_MS = 10_000;
 type SpotifyScorable = { title: string; artist: string; album: string };
 
 // Module-level Fuse instance reused across calls via `setCollection`.
-// Search runs are single-threaded (Spotify pacer ensures one in flight)
-// so sharing one instance is safe; the candidate set is swapped per call.
+// Sharing one instance is safe because scoring is fully SYNCHRONOUS: each
+// call swaps the collection and reads the results before yielding, so no
+// two scorings can interleave on the shared instance (it's the sync work,
+// not the network pacer, that rules out re-entrancy).
 const sharedFuse = new Fuse<SpotifyScorable>([], {
   includeScore: true,
   keys: [

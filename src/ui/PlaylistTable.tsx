@@ -270,6 +270,10 @@ export function PlaylistTable({
       // the grid as single-select and never conveys an extended selection.
       aria-multiselectable="true"
       aria-rowcount={visibleTrackIds.length + 1}
+      // Total column count (matches the 1-based aria-colindex on each
+      // header columnheader and row gridcell). Lets AT announce "column M
+      // of N" for the virtualized rows.
+      aria-colcount={14}
       // Focusable grid container with managed focus: rather than moving
       // DOM focus onto individual (virtualized, unmountable) rows, the
       // container keeps focus and points aria-activedescendant at the

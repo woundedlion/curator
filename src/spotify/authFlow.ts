@@ -64,10 +64,10 @@ export class InvalidRedirectUriError extends Error {
 }
 
 // Validate at the point of use (NOT in settingsStore — that's owned
-// elsewhere and stores raw free text). Rejects anything that isn't an
-// absolute http: or https: URL, which is the only shape Spotify's
-// authorize/token endpoints accept. Returns the normalized string.
-function assertValidRedirectUri(redirectUri: string): string {
+// elsewhere and stores raw free text). Throws unless the value is an
+// absolute http:/https: URL, the only shape Spotify's authorize/token
+// endpoints accept.
+function assertValidRedirectUri(redirectUri: string): void {
   let parsed: URL;
   try {
     parsed = new URL(redirectUri);
@@ -77,24 +77,19 @@ function assertValidRedirectUri(redirectUri: string): string {
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
     throw new InvalidRedirectUriError(redirectUri);
   }
-  return redirectUri;
 }
 
-// `requireRefresh` is set on the INITIAL code exchange (no prior token to
-// fall back to). On the refresh path Spotify legitimately omits
-// refresh_token to signal "reuse the existing one", so we fall back and
-// never throw there.
+// On the refresh path Spotify legitimately omits refresh_token to signal
+// "reuse the existing one"; the caller passes that existing token as
+// `fallbackRefresh`. Either way a missing/empty result is unusable — never
+// persist an empty-string sentinel (it would 400 on the next refresh and
+// silently log the user out) — so we always throw.
 function toTokens(
   response: TokenResponse,
   fallbackRefresh?: string,
-  requireRefresh = false,
 ): SpotifyTokens {
   const refreshToken = response.refresh_token ?? fallbackRefresh;
   if (refreshToken === undefined || refreshToken === "") {
-    if (requireRefresh) throw new MissingRefreshTokenError();
-    // Refresh path with no new token and no usable fallback should not
-    // happen (we always pass the existing refreshToken), but guard the
-    // empty-string sentinel from ever being persisted regardless.
     throw new MissingRefreshTokenError();
   }
   return {
@@ -103,6 +98,19 @@ function toTokens(
     expiresAt: Date.now() + response.expires_in * 1000,
     scope: response.scope,
   };
+}
+
+// Length-checked constant-time string compare. The OAuth `state` is a CSRF
+// token; a short-circuiting `!==` is a (weak) timing oracle. A one-shot
+// sessionStorage value makes this largely theoretical, but the constant-time
+// path is cheap defense-in-depth and documents the intent.
+function constantTimeEquals(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) {
+    diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return diff === 0;
 }
 
 function isAccessTokenFresh(tokens: SpotifyTokens): boolean {
@@ -218,11 +226,9 @@ async function exchangeAuthorizationCode(
   const response = await postToTokenEndpoint(body);
   if (!response.ok) throw new Error("Spotify token exchange failed");
   const json = (await response.json()) as TokenResponse;
-  // requireRefresh: the initial exchange MUST yield a refresh_token. If
-  // Spotify returns none, throw rather than persisting an empty-string
-  // sentinel that would 400 on the next refresh and silently log the user
-  // out.
-  return toTokens(json, undefined, true);
+  // The initial exchange MUST yield a refresh_token (no prior token to
+  // fall back to); toTokens throws if it's missing.
+  return toTokens(json);
 }
 
 export type CallbackParams = {
@@ -290,10 +296,11 @@ export async function completeAuthFlow(
     clearPkceKeys();
     throw new Error("Missing PKCE state");
   }
-  if (expectedState !== callback.state) {
+  if (!constantTimeEquals(expectedState, callback.state)) {
     // CSRF defense: a state mismatch may indicate a forged callback. Drop
     // both keys so a follow-up legitimate flow starts fresh, and never
-    // reuse a verifier that was bound to a now-suspect state.
+    // reuse a verifier that was bound to a now-suspect state. Compared in
+    // constant time so the check can't be turned into a timing oracle.
     clearPkceKeys();
     throw new Error("PKCE state mismatch");
   }

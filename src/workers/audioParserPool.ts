@@ -135,6 +135,14 @@ class AudioParserPool {
         { expected: pending.id, got: event.data.id },
       );
       pending.reject(new Error("Audio parser worker desynchronized"));
+      // A desynced worker's message stream is off-by-one — reusing it would
+      // misattribute every subsequent reply. Discard and replace it rather
+      // than returning it to the pool (it was pushed to availableWorkers
+      // above; discardWorker splices it back out).
+      this.discardWorker(worker);
+      this.replaceDiscardedWorker();
+      this.drain();
+      return;
     } else if (event.data.ok) {
       pending.resolve(event.data.fields);
     } else {
@@ -210,6 +218,12 @@ class AudioParserPool {
     }
   }
 
+  // Backpressure invariant: this queue is unbounded. The pool relies on its
+  // caller to cap how many parse() calls are outstanding — the ingest
+  // pipeline wraps fan-out in a ConcurrencyLimiter (PIPELINE_MAX_IN_FLIGHT),
+  // so queue depth stays bounded to that limit. A caller that bypasses the
+  // limiter on a multi-thousand-file drop would hold every File + pending
+  // promise resident at once.
   parse(file: File): Promise<ParsedFields> {
     return new Promise<ParsedFields>((resolve, reject) => {
       // Spawn before queueing so a zero-spawn failure rejects THIS request

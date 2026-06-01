@@ -8,6 +8,7 @@
 // lifecycle symmetry plus the `.catch` guards on the fire-and-forget
 // calls (a rejection must not surface as an unhandled rejection).
 
+import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, renderHook } from "@testing-library/react";
 
@@ -157,6 +158,20 @@ describe("useAppBootstrap — mount", () => {
     renderHook(() => useAppBootstrap());
     await flushMicrotasks();
     expect(connectSdk).not.toHaveBeenCalled();
+  });
+});
+
+describe("useAppBootstrap — StrictMode double-mount", () => {
+  it("runs the one-time async chain exactly once despite the dev double-mount", async () => {
+    // StrictMode runs effect setup→cleanup→setup on the same fiber. Without
+    // the ref guard, the hydrate→bootstrapSpotify chain would fire twice
+    // concurrently (double OAuth/SDK warmup). The guard persists across the
+    // simulated remount, so the chain starts exactly once.
+    renderHook(() => useAppBootstrap(), { wrapper: StrictMode });
+    await flushMicrotasks();
+    expect(hydrateFromStorage).toHaveBeenCalledTimes(1);
+    expect(bootstrapSpotify).toHaveBeenCalledTimes(1);
+    expect(promoteSingleCandidateMatches).toHaveBeenCalledTimes(1);
   });
 });
 

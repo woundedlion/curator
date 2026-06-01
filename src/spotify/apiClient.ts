@@ -14,7 +14,7 @@
 // Spacing semantics: the queue is a strict-interval pacer (NOT a
 // token bucket). Every dispatch sets `nextRunAt = now + intervalMs`,
 // so an idle period does not accumulate burst credit — after 10
-// minutes idle, the next 4 calls still go out 350 ms apart. This is
+// minutes idle, the next 4 calls still go out 334 ms apart. This is
 // deliberate: Spotify's quota is a rolling 30-second sliding-window
 // counter (per-app, per client_id — NOT per user/token), and the
 // dashboard explicitly flags burst patterns even when 30s totals

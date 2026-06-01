@@ -154,13 +154,23 @@ function suppressClickValue(): boolean {
 
 function fireWindowPointer(
   type: "pointermove" | "pointerup" | "pointercancel",
-  opts: { clientX: number; clientY: number; pointerId?: number },
+  opts: {
+    clientX: number;
+    clientY: number;
+    pointerId?: number;
+    buttons?: number;
+  },
 ) {
   const evt = new Event(type) as PointerEvent;
+  // Real PointerEvents always carry `buttons` (a bitmask; bit 0 = primary).
+  // During a drag a move reports `1` (held); a release reports `0`. Default
+  // to that so the harness matches browser behavior.
+  const buttons = opts.buttons ?? (type === "pointermove" ? 1 : 0);
   Object.defineProperties(evt, {
     clientX: { value: opts.clientX },
     clientY: { value: opts.clientY },
     pointerId: { value: opts.pointerId ?? 1 },
+    buttons: { value: buttons },
   });
   window.dispatchEvent(evt);
 }
@@ -311,6 +321,55 @@ describe("useRubberbandSelection — drag selection", () => {
       usePlaylistStore.getState().selectedTrackIds,
     ).sort();
     expect(selection).toEqual(["a", "b", "c"]);
+  });
+
+  it("a move with the primary button no longer held finalizes the press (missed off-window pointerup)", () => {
+    usePlaylistStore.setState({
+      tracksById: {
+        a: makeTrack("a"),
+        b: makeTrack("b"),
+        c: makeTrack("c"),
+        d: makeTrack("d"),
+      },
+      playlist: {
+        id: "active-draft",
+        name: "T",
+        description: "",
+        public: false,
+        collaborative: false,
+        trackIds: ["a", "b", "c", "d"],
+        sort: null,
+        hideUnmatched: false,
+      },
+    });
+    const { getByTestId } = render(
+      <Harness visibleTrackIds={["a", "b", "c", "d"]} />,
+    );
+    const container = getByTestId("container");
+    fireEvent.pointerDown(container, {
+      button: 0,
+      clientX: 50,
+      clientY: 100,
+      pointerId: 1,
+    });
+    // First real drag move selects rows 0..2.
+    fireWindowPointer("pointermove", { clientX: 50, clientY: 200 });
+    expect(
+      Array.from(usePlaylistStore.getState().selectedTrackIds).sort(),
+    ).toEqual(["a", "b", "c"]);
+
+    // The pointerup was missed off-window. A later move reports buttons:0
+    // (primary released) — it must finalize the press, not extend selection.
+    fireWindowPointer("pointermove", { clientX: 50, clientY: 400, buttons: 0 });
+    // Selection is unchanged (the dead-press move did not extend it)...
+    expect(
+      Array.from(usePlaylistStore.getState().selectedTrackIds).sort(),
+    ).toEqual(["a", "b", "c"]);
+    // ...and the press is now cleared: a further move does nothing.
+    fireWindowPointer("pointermove", { clientX: 50, clientY: 500 });
+    expect(
+      Array.from(usePlaylistStore.getState().selectedTrackIds).sort(),
+    ).toEqual(["a", "b", "c"]);
   });
 
   it("snapshots visibleTrackIds at press-down — a mid-drag filter change does not shift index math", () => {

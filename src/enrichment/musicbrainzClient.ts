@@ -416,28 +416,45 @@ const LUCENE_FIELD_PREFIX = /\b\w+:/g;
 // sides; the `\s+` collapse after handles the spacing fallout.
 const LUCENE_AND_OPERATOR = / +AND +/g;
 
+// Residual Lucene/dismax operators in the extracted phrase text. The strict
+// pass escapes these inside quotes; the permissive pass drops the quotes, so
+// without neutralizing them a title like `-Untitled`, `Foo || Bar`, or
+// `M!ssundaztood` would reach dismax=true as prohibit/boolean/NOT operators
+// instead of literal words. `:` is deliberately NOT stripped — dismax
+// disables field syntax, so a colon inside a title (`Song: The Remix`) is
+// harmless and must survive.
+const DISMAX_OPERATOR = /&&|\|\||[-+!()^~]/g;
+
+function neutralizeDismaxOperators(text: string): string {
+  return text.replace(DISMAX_OPERATOR, " ");
+}
+
 export function buildPermissiveQuery(strictQuery: string): string {
-  // Lucene → dismax: produce a free-token bag from the strict query so
-  // MB's dismax parser can tokenize loosely (catches "Lovesponge" vs
-  // "Love Sponge"). The strict query is `field:"value" AND field:"value"`,
-  // so the title/artist text lives inside the quoted segments. Pull
-  // those out verbatim rather than regex-stripping field prefixes — a
-  // blind `\w+:` strip also eats a colon INSIDE a value (a title like
-  // `Song: The Remix` would lose "Song", since the strip can't tell a
-  // real field prefix from quoted content).
+  // Lucene → dismax: produce a free-token bag from the strict query so MB's
+  // dismax parser can tokenize loosely (catches "Lovesponge" vs "Love
+  // Sponge"). The strict query is `field:"value" AND field:"value"`, so the
+  // title/artist text lives inside the quoted segments. Pull those out
+  // verbatim rather than regex-stripping field prefixes — a blind `\w+:`
+  // strip also eats a colon INSIDE a value (a `Song: The Remix` title would
+  // lose "Song", since the strip can't tell a real field prefix from quoted
+  // content). Then neutralize any operators the dropped quotes left active.
   const withoutEscapes = strictQuery.replace(LUCENE_ESCAPE_PAIR, "");
   const quotedValues = [...withoutEscapes.matchAll(/"([^"]*)"/g)]
     .map((match) => match[1] ?? "")
     .filter((value) => value.trim().length > 0);
   if (quotedValues.length > 0) {
-    return quotedValues.join(" ").replace(/\s+/g, " ").trim();
+    return neutralizeDismaxOperators(quotedValues.join(" "))
+      .replace(/\s+/g, " ")
+      .trim();
   }
-  // Bareword fallback: no quoted clauses (e.g. a hand-built unquoted
-  // query). Strip field prefixes and the clause-joining AND directly.
-  return withoutEscapes
-    .replace(LUCENE_FIELD_PREFIX, "")
-    .replace(/"/g, "")
-    .replace(LUCENE_AND_OPERATOR, " ")
+  // Bareword fallback: no quoted clauses (e.g. a hand-built unquoted query).
+  // Strip field prefixes and the clause-joining AND directly.
+  return neutralizeDismaxOperators(
+    withoutEscapes
+      .replace(LUCENE_FIELD_PREFIX, "")
+      .replace(/"/g, "")
+      .replace(LUCENE_AND_OPERATOR, " "),
+  )
     .replace(/\s+/g, " ")
     .trim();
 }

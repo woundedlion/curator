@@ -5,7 +5,13 @@ import { dedupeFiles } from "./dedupe";
 // shim rather than depend on the runtime `File` constructor (which is
 // environment-specific and produces a heavyweight object we don't need
 // here).
-function makeFile(name: string, size: number, lastModified = 0): File {
+// Default to a realistic non-zero timestamp: dedup only engages when
+// lastModified is present, so tests that exercise collapsing need one.
+function makeFile(
+  name: string,
+  size: number,
+  lastModified = 1_700_000_000_000,
+): File {
   return { name, size, lastModified } as unknown as File;
 }
 
@@ -81,6 +87,18 @@ describe("dedupeFiles", () => {
       makeFile("song.mp3", 100, 1_700_000_000_000),
     ];
     expect(dedupeFiles(files)).toHaveLength(1);
+  });
+
+  it("keeps same name+size files when lastModified is 0/missing (no silent drop)", () => {
+    // A 0 or absent timestamp can't disambiguate, so two same name+size
+    // files must both survive rather than collapse to one.
+    const zeroTs = [makeFile("song.mp3", 100, 0), makeFile("song.mp3", 100, 0)];
+    expect(dedupeFiles(zeroTs)).toHaveLength(2);
+    const missingTs = [
+      { name: "song.mp3", size: 100 } as unknown as File,
+      { name: "song.mp3", size: 100 } as unknown as File,
+    ];
+    expect(dedupeFiles(missingTs)).toHaveLength(2);
   });
 
   it("does not collide across field boundaries (cross-field key safety)", () => {

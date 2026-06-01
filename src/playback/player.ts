@@ -473,6 +473,38 @@ export class Player {
     });
   }
 
+  /**
+   * Drop the cached SDK backend after the device reports it is no longer
+   * ready. Without this the Player keeps a dead `sdkBackend` and would route
+   * a future SDK play to it, while the store has already marked the SDK
+   * unavailable — the two disagreeing about SDK liveness. Goes through the
+   * op queue so it serializes with plays/stops; if the dead device was the
+   * active backend, playback is stopped and the snapshot reflects idle.
+   * Resets `sdkLoadAttempted` so a later device recovery can re-load on
+   * demand.
+   */
+  invalidateSdk(): Promise<void> {
+    return this.enqueue(async () => {
+      const dead = this.sdkBackend;
+      if (!dead) {
+        this.sdkLoadAttempted = false;
+        return;
+      }
+      // Detach first so the backend's stop() and any late events can't
+      // reach the Player after we've dropped it.
+      dead.setObserver(null);
+      if (this.activeBackend === dead) {
+        await this.stopAll();
+        this.transitionToIdle();
+      } else {
+        await this.safeStop(dead);
+      }
+      dead.dispose?.();
+      this.sdkBackend = null;
+      this.sdkLoadAttempted = false;
+    });
+  }
+
   private handleBackendEvent(source: Backend, event: BackendEvent): void {
     // Ignore events from a backend that's no longer the active one —
     // they're stale (e.g. an SDK position event arriving after we

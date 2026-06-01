@@ -104,6 +104,20 @@ describe("buildPermissiveQuery", () => {
     ).toBe("Song: The Remix X");
   });
 
+  it("neutralizes dismax operators left active when the quotes are dropped", () => {
+    // Leading `-`/`+` (prohibit/require), `||`/`&&`/`!` (booleans), and
+    // grouping parens would otherwise alter how dismax tokenizes a title.
+    expect(
+      buildPermissiveQuery('recording:"-Untitled" AND artist:"X"'),
+    ).toBe("Untitled X");
+    expect(
+      buildPermissiveQuery('recording:"Foo || (Bar)" AND artist:"Y"'),
+    ).toBe("Foo Bar Y");
+    expect(
+      buildPermissiveQuery('recording:"M!ssundaztood" AND artist:"Pink"'),
+    ).toBe("M ssundaztood Pink");
+  });
+
   it("collapses whitespace", () => {
     expect(buildPermissiveQuery('  foo   bar    baz  ')).toBe("foo bar baz");
   });

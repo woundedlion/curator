@@ -65,6 +65,19 @@ let loadPlaylistsInflight:
   | { clientId: string; promise: Promise<void> }
   | null = null;
 
+// Same clientId-keyed dedup for refreshConnection: bootstrap and a Settings
+// change can both call it, and two concurrent runs would race their final
+// set(). A different-clientId caller starts its own run.
+let refreshConnectionInflight:
+  | { clientId: string; promise: Promise<void> }
+  | null = null;
+
+type SpotifySet = (
+  patch:
+    | Partial<SpotifyStore>
+    | ((state: SpotifyStore) => Partial<SpotifyStore>),
+) => void;
+
 export const useSpotifyStore = create<SpotifyStore>((set) => ({
   user: null,
   playlists: [],
@@ -77,33 +90,19 @@ export const useSpotifyStore = create<SpotifyStore>((set) => ({
       set({ connected: false, user: null, status: "unconfigured" });
       return;
     }
-    try {
-      await getValidAccessToken(clientId);
-      const user = await fetchCurrentUser(clientId);
-      set({
-        connected: true,
-        status: "connected",
-        user: {
-          id: user.id,
-          displayName: user.display_name,
-          country: user.country,
-        },
-      });
-    } catch (error) {
-      // Rate limit is distinct from auth-expired: we couldn't check.
-      // The bootstrap reads `status` and skips auto-reconnect when
-      // rate-limited (redirecting to OAuth doesn't help and just
-      // confuses the user — the OAuth flow itself can't proceed
-      // because token exchange shares the same quota).
-      if (error instanceof SpotifyRateLimitError) {
-        set({ connected: false, user: null, status: "rate-limited" });
-        return;
-      }
-      if (!(error instanceof SpotifyAuthExpiredError)) {
-        console.warn("refreshConnection failed", error);
-      }
-      set({ connected: false, user: null, status: "disconnected" });
+    if (
+      refreshConnectionInflight &&
+      refreshConnectionInflight.clientId === clientId
+    ) {
+      return refreshConnectionInflight.promise;
     }
+    const promise = doRefreshConnection(clientId, set).finally(() => {
+      if (refreshConnectionInflight?.promise === promise) {
+        refreshConnectionInflight = null;
+      }
+    });
+    refreshConnectionInflight = { clientId, promise };
+    return promise;
   },
 
   async loadPlaylists(clientId) {
@@ -135,13 +134,40 @@ export const useSpotifyStore = create<SpotifyStore>((set) => ({
   },
 }));
 
+async function doRefreshConnection(
+  clientId: string,
+  set: SpotifySet,
+): Promise<void> {
+  try {
+    await getValidAccessToken(clientId);
+    const user = await fetchCurrentUser(clientId);
+    set({
+      connected: true,
+      status: "connected",
+      user: {
+        id: user.id,
+        displayName: user.display_name,
+        country: user.country,
+      },
+    });
+  } catch (error) {
+    // Rate limit is distinct from auth-expired: we couldn't check. The
+    // bootstrap reads `status` and skips auto-reconnect when rate-limited
+    // (redirecting to OAuth doesn't help — token exchange shares the quota).
+    if (error instanceof SpotifyRateLimitError) {
+      set({ connected: false, user: null, status: "rate-limited" });
+      return;
+    }
+    if (!(error instanceof SpotifyAuthExpiredError)) {
+      console.warn("refreshConnection failed", error);
+    }
+    set({ connected: false, user: null, status: "disconnected" });
+  }
+}
+
 async function doLoadPlaylists(
   clientId: string,
-  set: (
-    patch:
-      | Partial<SpotifyStore>
-      | ((state: SpotifyStore) => Partial<SpotifyStore>),
-  ) => void,
+  set: SpotifySet,
 ): Promise<void> {
   set({ loadingPlaylists: true });
   try {

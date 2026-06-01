@@ -172,13 +172,15 @@ function SortableTrackRowImpl({
       } focus:outline-none`}
       data-track-id={track.id}
     >
-      {/* role="gridcell" on every cell so the role="grid" / role="row"
-          ancestors have valid grid children — AT can now report "row N,
-          column M" and navigate cells. The drag handle's own cell wraps
-          the button (a gridcell must be the row's child, the button the
-          gridcell's child). Layout is unchanged: the wrapper carries the
-          width class the button previously held. */}
-      <div role="gridcell" className="w-6">
+      {/* role="gridcell" + a 1-based aria-colindex on every cell so the
+          role="grid"/role="row" ancestors have valid grid children and AT
+          can report "row N, column M" and navigate cells. aria-colcount on
+          the grid (PlaylistTable) and the matching columnheader indices in
+          the header complete the contract. The drag handle's cell wraps the
+          button (the gridcell must be the row's child, the button its
+          child); the wrapper carries the width class the button held. Keep
+          these indices in lockstep with TABLE_COLUMNS / TableHeader. */}
+      <div role="gridcell" aria-colindex={1} className="w-6">
         <button
           type="button"
           {...attributes}
@@ -191,13 +193,21 @@ function SortableTrackRowImpl({
           <DragHandleIcon />
         </button>
       </div>
-      <div role="gridcell" className="w-8 px-1">
+      <div role="gridcell" aria-colindex={2} className="w-8 px-1">
         <PlayButton track={track} />
       </div>
-      <div role="gridcell" className="w-12 px-2 tabular-nums text-neutral-400">
+      <div
+        role="gridcell"
+        aria-colindex={3}
+        className="w-12 px-2 tabular-nums text-neutral-400"
+      >
         {displayIndex}
       </div>
-      <div role="gridcell" className="flex w-8 items-center justify-center">
+      <div
+        role="gridcell"
+        aria-colindex={4}
+        className="flex w-8 items-center justify-center"
+      >
         {track.coverUrl ? (
           <img
             src={track.coverUrl}
@@ -209,11 +219,12 @@ function SortableTrackRowImpl({
           <div className="h-7 w-7 rounded bg-neutral-800/60" aria-hidden />
         )}
       </div>
-      <div role="gridcell" className="w-48 truncate px-2">
+      <div role="gridcell" aria-colindex={5} className="w-48 truncate px-2">
         {renderCell(track.artist)}
       </div>
       <div
         role="gridcell"
+        aria-colindex={6}
         className="flex min-w-0 flex-1 items-baseline gap-2 px-2"
       >
         <span className="min-w-0 truncate">{renderCell(track.title)}</span>
@@ -223,31 +234,35 @@ function SortableTrackRowImpl({
           </span>
         )}
       </div>
-      <div role="gridcell" className="w-16 px-2 tabular-nums">
+      <div role="gridcell" aria-colindex={7} className="w-16 px-2 tabular-nums">
         {renderCell(track.year)}
       </div>
-      <div role="gridcell" className="w-16 px-2 tabular-nums text-neutral-400">
+      <div
+        role="gridcell"
+        aria-colindex={8}
+        className="w-16 px-2 tabular-nums text-neutral-400"
+      >
         {renderCell(track.originalYear)}
       </div>
-      <div role="gridcell" className="w-56 truncate px-2">
+      <div role="gridcell" aria-colindex={9} className="w-56 truncate px-2">
         {renderCell(track.album)}
       </div>
-      <div role="gridcell" className="w-12 px-2 tabular-nums">
+      <div role="gridcell" aria-colindex={10} className="w-12 px-2 tabular-nums">
         {formatTrackNumber(track)}
       </div>
-      <div role="gridcell" className="w-10 px-2">
+      <div role="gridcell" aria-colindex={11} className="w-10 px-2">
         <EnrichmentGlyph
           status={track.enrichment.status}
           onPick={handlePickEnrichment}
         />
       </div>
-      <div role="gridcell" className="w-10 px-2">
+      <div role="gridcell" aria-colindex={12} className="w-10 px-2">
         <StatusGlyph
           status={track.spotify.status}
           onPick={handlePickSpotify}
         />
       </div>
-      <div role="gridcell" className="w-8 px-1">
+      <div role="gridcell" aria-colindex={13} className="w-8 px-1">
         <button
           type="button"
           onClick={handleReEnrich}
@@ -258,7 +273,7 @@ function SortableTrackRowImpl({
           <RefreshIcon />
         </button>
       </div>
-      <div role="gridcell" className="w-8 px-1">
+      <div role="gridcell" aria-colindex={14} className="w-8 px-1">
         <button
           type="button"
           onClick={handleRemove}

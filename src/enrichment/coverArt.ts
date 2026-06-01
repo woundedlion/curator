@@ -166,7 +166,10 @@ async function probeOne(
       method: "HEAD",
       signal: controller.signal,
     });
-    if (response.status === 404) {
+    // 404 (no cover for this release) and 410 (release art permanently
+    // gone) are both confirmed-missing — negative-cache them so a
+    // re-enrich-all doesn't re-probe a release that will never have art.
+    if (response.status === 404 || response.status === 410) {
       recordNegative(releaseMbid);
       return { kind: "missing" };
     }

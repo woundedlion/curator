@@ -1,41 +1,62 @@
-name: Deploy to GitHub Pages
+name: CI / Deploy to GitHub Pages
 
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
 
+# Least privilege by default; the deploy job elevates what it needs.
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
-  group: pages
+  # Per-ref so a new push/PR-sync supersedes its own older run, but a PR
+  # build can't cancel the main deploy (different ref).
+  group: pages-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  build:
+  # Quality gates. Runs on every push AND pull request, so a PR can't be
+  # merged green and only fail at deploy time.
+  quality:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # Pinned via .nvmrc for a reproducible runtime — a floating major
+          # could change behavior without a code change.
+          node-version-file: .nvmrc
           cache: npm
       - run: npm ci
-      # Non-blocking supply-chain audit: surfaces high-severity advisories
-      # in the CI logs without failing the build on transitive advisories
-      # we can't immediately fix (avoids blocking deploys on upstream CVEs).
+      # Informational: surface high-severity advisories in the logs without
+      # failing the build on transitive CVEs we can't immediately fix.
       - run: npm audit --audit-level=high
         continue-on-error: true
+      # Blocking: a CRITICAL advisory must not ship silently.
+      - run: npm audit --audit-level=critical
       - run: npm run typecheck
       - run: npm run lint
-      # Run with coverage so the thresholds in vitest.config.ts actually
-      # gate the build. Plain `npm test` never enforces them, which gave
-      # false confidence that coverage was protected; test:coverage fails
-      # the run if coverage drops below the configured floor.
+      # Coverage so the thresholds in vitest.config.ts actually gate the
+      # build (plain `npm test` never enforces them).
       - run: npm run test:coverage
+
+  # Production build artifact — only on a push to main (not PRs).
+  build:
+    needs: quality
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - run: npm ci
       - run: npm run build
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
@@ -44,7 +65,13 @@ jobs:
 
   deploy:
     needs: build
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}

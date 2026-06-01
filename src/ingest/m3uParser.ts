@@ -1,7 +1,7 @@
 import { v4 as uuid } from "uuid";
 import { ARTIST_TITLE_SEPARATOR } from "../constants";
 import type { Track } from "../types";
-import { classifySegments } from "./filenameHeuristic";
+import { classifySegments, deriveHintsFromFileName } from "./filenameHeuristic";
 import { normalizeText, readBlobAsText } from "../util/textNormalize";
 
 const EXTINF_PREFIX = "#EXTINF:";
@@ -56,14 +56,38 @@ function parseExtInfLine(line: string): ExtInfHint {
   };
 }
 
+function deriveHintFromPathLine(line: string): ExtInfHint {
+  // A standard `.m3u` body line is a file path or URL, not "Artist - Title".
+  // Reduce it to a basename (strip any URL query/fragment, take the last
+  // `/`- or `\`-separated segment, percent-decode best-effort) and route it
+  // through the same filename heuristic the dropped-files path uses, so a
+  // plain path-list m3u (no `#EXTINF`) yields usable metadata instead of
+  // empty, unmatchable rows.
+  const withoutQuery = line.split(/[?#]/, 1)[0] ?? line;
+  const segments = withoutQuery.split(/[\\/]/);
+  const base = segments[segments.length - 1] ?? withoutQuery;
+  let decoded = base;
+  try {
+    decoded = decodeURIComponent(base);
+  } catch {
+    // Malformed percent-encoding: fall back to the raw basename.
+  }
+  return deriveHintsFromFileName(decoded.trim());
+}
+
 function buildTrack(rawLine: string, hint: ExtInfHint): Track {
+  // `#EXTINF` metadata wins; the path basename only fills fields it left
+  // blank. A bare path-list line arrives with an empty `hint` and is fully
+  // derived from the path.
+  const pathHint =
+    hint.artist || hint.title ? {} : deriveHintFromPathLine(rawLine);
   return {
     id: uuid(),
     source: { kind: "m3u", rawLine },
-    artist: hint.artist,
-    title: hint.title,
-    album: hint.album,
-    trackNo: hint.trackNo,
+    artist: hint.artist ?? pathHint.artist,
+    title: hint.title ?? pathHint.title,
+    album: hint.album ?? pathHint.album,
+    trackNo: hint.trackNo ?? pathHint.trackNo,
     durationMs: hint.durationMs,
     enrichment: { status: "idle" },
     spotify: { status: "idle" },

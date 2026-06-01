@@ -155,17 +155,18 @@ export const usePlaybackStore = create<PlaybackState>((set, get) => {
         });
       },
       onNotReady: () => {
-        // Mark unavailable so candidate/track target construction
-        // stops feeding the SDK path until a reload. Stop any
-        // in-flight playback so the now-playing bar doesn't pin to
-        // silent audio.
+        // Mark unavailable so candidate/track target construction stops
+        // feeding the SDK path until a reload. invalidateSdk drops the
+        // Player's now-dead SDK backend (so the two agree about SDK
+        // liveness) and stops playback only if that backend was the active
+        // one — a local/preview track keeps playing.
         set({
           sdk: {
             status: "unavailable",
             reason: "device dropped out",
           },
         });
-        void storeRef.player?.stop();
+        void storeRef.player?.invalidateSdk();
         useUiStore.getState().pushToast({
           kind: "error",
           message:

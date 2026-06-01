@@ -111,23 +111,12 @@ async function applyCoverArtIfAvailable(
   const probe = await probeCoverArtUrl(releaseId);
   if (probe.kind === "transient") return true;
   if (probe.kind !== "ok") return false;
-  // Re-check: the track may have been removed, or its identity may have
-  // changed (different mbRecordingId picked, or a Spotify candidate
-  // selected) during the cover-art HEAD probe.
+  // Late-result guard: during the HEAD probe the row may have been removed,
+  // re-identified (different recording / Spotify candidate), or nuked back
+  // to idle. Only write when it's still the SAME matched recording — gating
+  // on status === "matched" (not just recordingId equality) also rejects a
+  // nuked row whose recordingId is now undefined.
   const current = usePlaylistStore.getState().tracksById[trackId];
-  // Gate on status === "matched" too, not just recordingId equality. A
-  // nukeEnrichmentState firing during the HEAD probe resets the row to
-  // an idle/failed arm whose recordingId is undefined. The caller only
-  // reaches here with a truthy recordingId today (buildEnrichmentFromOutcome
-  // produces a `matched` arm only when recordingId is set, and we pass
-  // `outcome.recordingId` straight through), so a bare
-  // `currentRecordingId === recordingId` check would already reject the
-  // nuked row. The explicit status check is defense-in-depth: it stops an
-  // undefined-passed-as-recordingId regression from letting an
-  // `undefined === undefined` comparison repaint cover art onto a nuked
-  // row, and it mirrors the main body's late-result guard so the intent
-  // — "only write if the row is still the same matched recording" —
-  // stays unambiguous.
   const currentRecordingId =
     current?.enrichment.status === "matched"
       ? current.enrichment.mbRecordingId

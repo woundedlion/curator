@@ -282,6 +282,15 @@ export function useRubberbandSelection(
     function pointerMove(e: PointerEvent) {
       const pending = pendingRef.current;
       if (!pending || pending.pointerId !== e.pointerId) return;
+      // The originating pointerup can be missed if the button was released
+      // off-window. A subsequent move whose primary button is no longer held
+      // means the press is already over — finalize as a release (so an
+      // active marquee suppresses its trailing click) rather than letting a
+      // dead press resurrect a selection drag.
+      if ((e.buttons & 1) === 0) {
+        pointerUp(e);
+        return;
+      }
       const container = parentRef.current;
       if (!container) return;
       const dx = e.clientX - pending.startClientX;

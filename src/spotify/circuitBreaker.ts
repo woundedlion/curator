@@ -59,6 +59,14 @@
 // once it has fully elapsed the escalation memory is stale (see the
 // constructor) and is dropped, so a lone transient 429 after a long idle
 // can't be treated as trip #(n+1) and escalate straight to hours.
+//
+// KNOWN LIMITATION — wall-clock dependence: every timing decision uses
+// Date.now() (required, since the open window is persisted to localStorage
+// and must survive a reload, which a monotonic clock can't). A backward
+// system-clock/NTP correction therefore extends an open window; a forward
+// jump can lift it early or admit the half-open probe prematurely. There is
+// no monotonic fallback by design; the worst case is a mis-timed probe,
+// which the half-open single-canary logic still contains.
 
 import {
   SPOTIFY_CIRCUIT_FAILURE_COUNT_KEY,

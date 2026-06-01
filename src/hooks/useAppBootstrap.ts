@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { pruneStaleCacheEntries } from "../db/musicbrainzCache";
 import { getMusicbrainzQueue } from "../enrichment/musicbrainzClient";
 import { usePlaybackStore } from "../playback/playbackStore";
@@ -46,41 +46,45 @@ function handleOnline(): void {
 }
 
 export function useAppBootstrap(): void {
+  // One-time async chain guard. StrictMode's dev double-mount runs effect
+  // setup→cleanup→setup on the SAME fiber, so this ref persists across it
+  // and the second setup skips the chain — preventing two concurrent
+  // hydrate→bootstrapSpotify→SDK-warmup runs (a double OAuth/SDK warmup). A
+  // genuine remount gets a fresh fiber (fresh ref) and re-runs, as intended.
+  const bootstrapChainStarted = useRef(false);
   useEffect(() => {
     usePlaybackStore.getState().initialize();
-    // Hydrate the draft FIRST, then run the store-content-dependent steps.
-    // Both promoteSingleCandidateMatches (which reads tracks to promote
-    // single-candidate matches) and bootstrapSpotify's follow-on side
-    // effects (loadPlaylists / SDK warmup, which act against the connected
-    // session and the hydrated playlist) must observe a populated store —
-    // kicking them off as independent chains let them race the hydration.
-    // Sequencing them after the awaited hydrate makes that dependency
-    // explicit. Each downstream step still guards its own errors; the
-    // outer .catch is the belt-and-suspenders for an unexpected throw so
-    // nothing surfaces as an unhandled rejection.
-    void (async () => {
-      await usePlaylistStore.getState().hydrateFromStorage();
-      promoteSingleCandidateMatches();
-      await bootstrapSpotify();
-      // Once Spotify is connected, eagerly warm up the Web Playback SDK
-      // when the user has opted into full-track playback — so the first
-      // play of a matched track plays the full Spotify track instead of
-      // falling back while init runs. Gated on `connected` because
-      // connecting the SDK before auth completes would mark it
-      // permanently unavailable for the session (the OAuth token
-      // callback would return empty). connectSdk() re-checks the opt-in.
-      const { preferFullPlayback, spotifyClientId } =
-        useSettingsStore.getState().settings;
-      if (
-        preferFullPlayback &&
-        spotifyClientId &&
-        useSpotifyStore.getState().connected
-      ) {
-        usePlaybackStore.getState().connectSdk();
-      }
-    })().catch((error) => {
-      console.error("app bootstrap chain crashed", error);
-    });
+    // Hydrate the draft FIRST, then run the store-content-dependent steps:
+    // promoteSingleCandidateMatches and bootstrapSpotify's follow-on side
+    // effects (loadPlaylists / SDK warmup) must observe a populated store,
+    // so they are sequenced after the awaited hydrate rather than racing it.
+    // Each downstream step guards its own errors; the outer .catch is the
+    // backstop so nothing surfaces as an unhandled rejection.
+    if (!bootstrapChainStarted.current) {
+      bootstrapChainStarted.current = true;
+      void (async () => {
+        await usePlaylistStore.getState().hydrateFromStorage();
+        promoteSingleCandidateMatches();
+        await bootstrapSpotify();
+        // Once Spotify is connected, eagerly warm up the Web Playback SDK
+        // when the user opted into full-track playback, so the first play of
+        // a matched track plays the full track instead of falling back while
+        // init runs. Gated on `connected`: connecting before auth completes
+        // would mark the SDK permanently unavailable for the session (the
+        // token callback returns empty). connectSdk() re-checks the opt-in.
+        const { preferFullPlayback, spotifyClientId } =
+          useSettingsStore.getState().settings;
+        if (
+          preferFullPlayback &&
+          spotifyClientId &&
+          useSpotifyStore.getState().connected
+        ) {
+          usePlaybackStore.getState().connectSdk();
+        }
+      })().catch((error) => {
+        console.error("app bootstrap chain crashed", error);
+      });
+    }
     // Eagerly drop MB cache rows from prior `MB_CACHE_VERSION`s. Reads
     // already skip them (see `isCurrentVersion`), so this is a quota
     // reclaim, not a correctness fix — but a long-lived profile that

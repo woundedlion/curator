@@ -71,25 +71,27 @@ describe("parseM3uContent", () => {
     expect(tracks[0]).toMatchObject({ title: "Just A Title", artist: undefined });
   });
 
-  it("treats EXTINF with no content after the comma as no hint", () => {
+  it("derives metadata from the path basename when EXTINF gives no hint (empty tail)", () => {
+    // EXTINF contributed nothing, so the row falls back to the path
+    // basename: a bare filename yields a title (no " - " ⇒ no artist).
     const m3u = ["#EXTINF:120,", "song.mp3"].join("\n");
     const tracks = parseM3uContent(m3u);
-    expect(tracks[0]!.title).toBeUndefined();
+    expect(tracks[0]!.title).toBe("song");
     expect(tracks[0]!.artist).toBeUndefined();
   });
 
-  it("treats EXTINF with whitespace-only content as no hint", () => {
+  it("derives from the basename when EXTINF tail is whitespace-only", () => {
     const m3u = ["#EXTINF:120,   ", "song.mp3"].join("\n");
     const tracks = parseM3uContent(m3u);
-    expect(tracks[0]!.title).toBeUndefined();
+    expect(tracks[0]!.title).toBe("song");
     expect(tracks[0]!.artist).toBeUndefined();
   });
 
 
-  it("treats EXTINF without a comma at all as no hint", () => {
+  it("derives from the basename when EXTINF has no comma at all", () => {
     const m3u = ["#EXTINF:120", "song.mp3"].join("\n");
     const tracks = parseM3uContent(m3u);
-    expect(tracks[0]!.title).toBeUndefined();
+    expect(tracks[0]!.title).toBe("song");
     expect(tracks[0]!.artist).toBeUndefined();
   });
 
@@ -102,9 +104,39 @@ describe("parseM3uContent", () => {
     const tracks = parseM3uContent(m3u);
     expect(tracks).toHaveLength(2);
     expect(tracks[0]).toMatchObject({ artist: "Hinted Artist", title: "Hinted Title" });
-    // No carry-over hint into the second row.
+    // No carry-over EXTINF hint; the second row derives from its basename.
     expect(tracks[1]!.artist).toBeUndefined();
-    expect(tracks[1]!.title).toBeUndefined();
+    expect(tracks[1]!.title).toBe("second");
+  });
+
+  it("derives artist/title from a path-only line (no EXTINF)", () => {
+    const tracks = parseM3uContent("/music/Radiohead - Karma Police.mp3");
+    expect(tracks[0]).toMatchObject({
+      artist: "Radiohead",
+      title: "Karma Police",
+    });
+  });
+
+  it("uses the basename of a URL line, stripping query/fragment and percent-encoding", () => {
+    const tracks = parseM3uContent(
+      "https://cdn.example.com/a/b/Daft%20Punk%20-%20One%20More%20Time.mp3?token=xyz#t=0",
+    );
+    expect(tracks[0]).toMatchObject({
+      artist: "Daft Punk",
+      title: "One More Time",
+    });
+  });
+
+  it("lets EXTINF metadata win over the path basename, filling only gaps", () => {
+    const m3u = [
+      "#EXTINF:200,Real Artist - Real Title",
+      "/music/Wrong - Name.mp3",
+    ].join("\n");
+    const tracks = parseM3uContent(m3u);
+    expect(tracks[0]).toMatchObject({
+      artist: "Real Artist",
+      title: "Real Title",
+    });
   });
 
   it("normalizes Windows / classic-Mac line endings", () => {
@@ -139,10 +171,10 @@ describe("parseM3uContent", () => {
     expect(tracks[0]!.title).toBe("B");
   });
 
-  it("retains durationMs even when the metadata tail is empty", () => {
+  it("retains durationMs and derives the title from the basename when the tail is empty", () => {
     const tracks = parseM3uContent("#EXTINF:200,\nx.mp3");
     expect(tracks[0]!.durationMs).toBe(200_000);
-    expect(tracks[0]!.title).toBeUndefined();
+    expect(tracks[0]!.title).toBe("x");
     expect(tracks[0]!.artist).toBeUndefined();
   });
 

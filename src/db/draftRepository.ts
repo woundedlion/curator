@@ -33,6 +33,11 @@ function trackWithoutFile(track: Track): Track {
 // track or its file-less variant — never both, never on an inactive txn.
 function trackSafeToPut(track: Track): Track {
   if (track.localFile === undefined) return track;
+  // A genuine File/Blob is always structured-clone-safe (the clone is
+  // reference-based, not a byte copy), so skip the probe for the common
+  // case rather than trial-cloning every track on every debounced save.
+  // Anything else (an unexpected non-Blob value) still gets the probe.
+  if (track.localFile instanceof Blob) return track;
   try {
     structuredClone(track.localFile);
     return track;

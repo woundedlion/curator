@@ -280,15 +280,26 @@ function applyUndo(
       ...restoreSelection(new Set(entry.priorTrackIds)),
     };
   }
-  return {
-    tracksById: { ...entry.priorTracksById },
-    playlist: {
-      ...state.playlist,
-      trackIds: [...entry.priorTrackIds],
-      sort: entry.priorSort,
-    },
-    ...restoreSelection(new Set(entry.priorTrackIds)),
-  };
+  if (entry.kind === "replace") {
+    return {
+      tracksById: { ...entry.priorTracksById },
+      playlist: {
+        ...state.playlist,
+        trackIds: [...entry.priorTrackIds],
+        sort: entry.priorSort,
+      },
+      ...restoreSelection(new Set(entry.priorTrackIds)),
+    };
+  }
+  // Exhaustiveness: a new UndoEntry kind must add its own branch above
+  // rather than silently inheriting the replace shape.
+  return assertNeverUndoEntry(entry);
+}
+
+function assertNeverUndoEntry(entry: never): never {
+  throw new Error(
+    `applyUndo: unhandled UndoEntry kind: ${String((entry as { kind?: unknown }).kind)}`,
+  );
 }
 
 export const usePlaylistStore = create<PlaylistStore>((set, get) => {
@@ -768,9 +779,20 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => {
   },
 
   selectOnly(id) {
-    set({
-      selectedTrackIds: new Set([id]),
-      selectionAnchorId: id,
+    set((state) => {
+      // No-op guard: re-selecting the already-sole selection would allocate
+      // a fresh Set and re-render every subscriber for no state change.
+      if (
+        state.selectedTrackIds.size === 1 &&
+        state.selectedTrackIds.has(id) &&
+        state.selectionAnchorId === id
+      ) {
+        return state;
+      }
+      return {
+        selectedTrackIds: new Set([id]),
+        selectionAnchorId: id,
+      };
     });
   },
 
@@ -817,15 +839,34 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => {
   },
 
   setSelection(ids, anchorId) {
-    set({
-      selectedTrackIds: new Set(ids),
-      selectionAnchorId: anchorId ?? null,
+    set((state) => {
+      const nextAnchor = anchorId ?? null;
+      const nextSet = new Set(ids);
+      // No-op guard: skip the store update (and the subscriber re-render it
+      // triggers) when the set and anchor are unchanged. The rubber-band
+      // hook already dedups, so this is defense-in-depth for other callers.
+      if (
+        state.selectionAnchorId === nextAnchor &&
+        setsEqual(nextSet, state.selectedTrackIds)
+      ) {
+        return state;
+      }
+      return { selectedTrackIds: nextSet, selectionAnchorId: nextAnchor };
     });
   },
 
   addToSelection(ids) {
     set((state) => {
-      const next = new Set(state.selectedTrackIds);
+      const current = state.selectedTrackIds;
+      let anyNew = false;
+      for (const id of ids) {
+        if (!current.has(id)) {
+          anyNew = true;
+          break;
+        }
+      }
+      if (!anyNew) return state;
+      const next = new Set(current);
       for (const id of ids) next.add(id);
       return { selectedTrackIds: next };
     });
@@ -867,12 +908,22 @@ function mergeOnlyMissing(
   const merged: Track = { ...existing };
   for (const key of Object.keys(fillIns) as (keyof FillableTrackFields)[]) {
     const candidate = fillIns[key];
-    if (candidate === undefined) continue;
+    // Skip candidates that are themselves "missing" (undefined/null/"")
+    // using the SAME predicate as the existing-side check — a null/empty
+    // fill-in must not overwrite an already-missing field, which would
+    // churn row identity for no display gain.
+    if (isFieldMissing(candidate)) continue;
     if (!isFieldMissing(existing[key])) continue;
     (merged[key] as FillableTrackFields[typeof key]) = candidate;
     changed = true;
   }
   return changed ? merged : existing;
+}
+
+function setsEqual(a: Set<string>, b: Set<string>): boolean {
+  if (a.size !== b.size) return false;
+  for (const id of a) if (!b.has(id)) return false;
+  return true;
 }
 
 function pruneSelection(

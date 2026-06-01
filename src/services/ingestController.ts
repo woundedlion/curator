@@ -4,6 +4,7 @@ import {
   buildTracksFromExport,
   countResolved,
   tryParseCuratorExport,
+  UnsupportedCuratorExportVersionError,
 } from "../ingest/curatorExportParser";
 import { isTextFile } from "../ingest/fileExtension";
 import { walkDirectoryHandle } from "../ingest/folderWalker";
@@ -116,7 +117,10 @@ async function addAndEnrich(files: File[]): Promise<void> {
 // error rather than us swallowing it here.
 type Classification =
   | { kind: "envelope"; env: CuratorExportEnvelope }
-  | { kind: "other"; file: File };
+  | { kind: "other"; file: File }
+  // A curator export of an unsupported version: dropped entirely (not
+  // line-parsed into junk) after surfacing a toast.
+  | { kind: "skip" };
 
 async function classifyOne(file: File): Promise<Classification> {
   if (!isTextFile(file.name)) return { kind: "other", file };
@@ -130,7 +134,14 @@ async function classifyOne(file: File): Promise<Classification> {
     // keeps encoding handling consistent.
     const env = tryParseCuratorExport(await readBlobAsText(file));
     return env ? { kind: "envelope", env } : { kind: "other", file };
-  } catch {
+  } catch (error) {
+    if (error instanceof UnsupportedCuratorExportVersionError) {
+      useUiStore.getState().pushToast({
+        kind: "error",
+        message: `Can't import "${file.name}": ${error.message}`,
+      });
+      return { kind: "skip" };
+    }
     return { kind: "other", file };
   }
 }
@@ -146,7 +157,8 @@ async function partitionCuratorExports(
   const others: File[] = [];
   for (const c of classifications) {
     if (c.kind === "envelope") envelopes.push(c.env);
-    else others.push(c.file);
+    else if (c.kind === "other") others.push(c.file);
+    // "skip": already surfaced; drop it.
   }
   return { envelopes, others };
 }

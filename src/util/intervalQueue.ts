@@ -244,6 +244,13 @@ export class IntervalQueue {
    * equal priorities (we never cut in front of an equal-priority task).
    * O(n) scan — n is the queue depth, which stays small under the
    * 334ms pacer.
+   *
+   * KNOWN LIMITATION: this is strict priority with no aging, so a
+   * sustained stream of higher-priority tasks can starve a lower-priority
+   * one indefinitely. Acceptable for the current callers — the only
+   * priority split is user-triggered work ahead of background enrichment,
+   * and user bursts are bounded — but add aging here if a long-running
+   * background task ever needs a guaranteed-progress floor.
    */
   private insertByPriority(task: Task<unknown>): void {
     const idx = this.pending.findIndex((t) => t.priority < task.priority);
