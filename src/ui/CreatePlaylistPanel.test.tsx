@@ -141,6 +141,49 @@ describe("CreatePlaylistPanel — publish gating", () => {
     }) as HTMLButtonElement;
     expect(btn.disabled).toBe(false);
   });
+
+  it("does NOT block publish while MusicBrainz enrichment is still pending", () => {
+    // Enrichment only adds metadata (recording ids, cover art) and is
+    // irrelevant to the Spotify export, which needs only the matched URI.
+    // A Spotify-matched track whose MB enrichment is still in flight must
+    // remain publishable — waiting on enrichment was the reported bug.
+    const enrichingMatched = {
+      id: "t1",
+      source: { kind: "text", rawLine: "t1" },
+      title: "t1",
+      artist: "A",
+      enrichment: { status: "pending" },
+      spotify: { status: "matched", uri: "spotify:track:t1", candidates: [], score: 1 },
+    } as unknown as Track;
+    seed([enrichingMatched]);
+    setSpotify({ connected: true });
+    render(<CreatePlaylistPanel />);
+    const btn = screen.getByRole("button", {
+      name: "Create / update on Spotify",
+    }) as HTMLButtonElement;
+    expect(btn.disabled).toBe(false);
+  });
+
+  it("still blocks publish while a Spotify search is in flight (URI not resolved yet)", () => {
+    // Spotify 'pending' DOES gate: publishing now would silently omit a
+    // track whose match hasn't landed. (This is the one in-flight state
+    // that legitimately blocks — distinct from enrichment, above.)
+    const searching = {
+      id: "t1",
+      source: { kind: "text", rawLine: "t1" },
+      title: "t1",
+      artist: "A",
+      enrichment: { status: "idle" },
+      spotify: { status: "pending" },
+    } as unknown as Track;
+    seed([searching]);
+    setSpotify({ connected: true });
+    render(<CreatePlaylistPanel />);
+    const btn = screen.getByRole("button", {
+      name: "Wait for Spotify search to finish",
+    }) as HTMLButtonElement;
+    expect(btn.disabled).toBe(true);
+  });
 });
 
 describe("CreatePlaylistPanel — publish flow", () => {

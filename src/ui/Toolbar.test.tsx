@@ -75,6 +75,40 @@ describe("Toolbar — enriching indicator (isEnriching OR branch)", () => {
     expect(screen.getByText(/Enriching · 2 remaining/)).toBeTruthy();
   });
 
+  it("does NOT count tracks Spotify resolved as 'missing' (they will never be enriched)", () => {
+    // Regression: a track with no Spotify match is gated out of MB
+    // enrichment by the runner, so counting it as "remaining" stranded
+    // the indicator above zero forever. Only the genuinely-eligible
+    // idle track should be counted here.
+    const missing = {
+      id: "m1",
+      source: { kind: "file", fileName: "m1.mp3" },
+      title: "m1",
+      artist: "A",
+      enrichment: { status: "idle" },
+      spotify: { status: "missing" },
+    } as unknown as Track;
+    seedTracks([localTrack("t1", "idle"), missing]);
+    useUiStore.setState({ enrichmentQueueDepth: 0 });
+    render(<Toolbar hiddenCount={0} onPickFolder={() => {}} />);
+    expect(screen.getByText(/Enriching · 1 remaining/)).toBeTruthy();
+  });
+
+  it("a playlist of ONLY missing-Spotify tracks reports zero remaining (indicator hidden)", () => {
+    const missing = {
+      id: "m1",
+      source: { kind: "file", fileName: "m1.mp3" },
+      title: "m1",
+      artist: "A",
+      enrichment: { status: "idle" },
+      spotify: { status: "missing" },
+    } as unknown as Track;
+    seedTracks([missing]);
+    useUiStore.setState({ enrichmentQueueDepth: 0 });
+    render(<Toolbar hiddenCount={0} onPickFolder={() => {}} />);
+    expect(screen.queryByText(/Enriching ·/)).toBeNull();
+  });
+
   it("hides the enriching region when both signals are quiet", () => {
     seedTracks([localTrack("t1", "matched")]);
     useUiStore.setState({ enrichmentQueueDepth: 0 });

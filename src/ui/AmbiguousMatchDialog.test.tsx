@@ -196,6 +196,18 @@ describe("AmbiguousMatchDialog", () => {
     expect(screen.getByRole("button", { name: /OKNOTOK/ })).toBeTruthy();
   });
 
+  it("the footer button is 'Done' (affirmative close) and closes the dialog", () => {
+    // Bug fix: picks/unpicks commit to the store immediately, so the footer
+    // is an affirmative "Done" — a "Cancel" label wrongly implied closing
+    // would discard an unpick. Clicking it closes; the store change persists.
+    seedTrack(ambiguousTrack([candidate()]));
+    const onClose = vi.fn();
+    render(<AmbiguousMatchDialog trackId="t1" onClose={onClose} />);
+    expect(screen.queryByRole("button", { name: "Cancel" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Done" }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
   it("dedupes candidates that share a uri (no duplicate React keys)", () => {
     // A re-search merge can occasionally surface the same Spotify track
     // twice; the render must collapse them to a single row.
@@ -242,17 +254,58 @@ describe("AmbiguousMatchDialog", () => {
     expect(searchSpotifyCandidatesByFields).toHaveBeenCalledTimes(1);
   });
 
+  it("typing in the fields while a search is in flight keeps the dialog mounted", () => {
+    seedTrack(ambiguousTrack([candidate()]));
+    // Search never resolves → `searching` stays true (the spinner phase
+    // the user is typing during).
+    vi.mocked(searchSpotifyCandidatesByFields).mockImplementationOnce(
+      () => new Promise<SpotifyCandidate[]>(() => {}),
+    );
+    render(<AmbiguousMatchDialog trackId="t1" onClose={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: "Search" }));
+    const titleInput = screen.getByPlaceholderText("Title");
+    const artistInput = screen.getByPlaceholderText("Artist");
+    fireEvent.change(titleInput, { target: { value: "Karma Police (live)" } });
+    fireEvent.change(artistInput, { target: { value: "Radiohead!" } });
+    // The dialog must still be mounted after typing mid-search.
+    expect(screen.getByText("Pick a Spotify version")).toBeTruthy();
+    expect((titleInput as HTMLInputElement).value).toBe("Karma Police (live)");
+  });
+
   it("clicking the backdrop closes the dialog (== onClose)", () => {
     seedTrack(ambiguousTrack([candidate()]));
     const onClose = vi.fn();
     const { container } = render(
       <AmbiguousMatchDialog trackId="t1" onClose={onClose} />,
     );
-    // The backdrop is the outermost fixed-inset overlay; clicking it
-    // (NOT the panel) cancels.
+    // The backdrop is the outermost fixed-inset overlay; a genuine click on
+    // it (press AND release on the backdrop) cancels. A real click is always
+    // preceded by a mousedown on the same element, so simulate both.
     const backdrop = container.querySelector(".fixed.inset-0") as HTMLElement;
+    fireEvent.mouseDown(backdrop);
     fireEvent.click(backdrop);
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("REGRESSION: selecting text in a field and releasing the drag on the backdrop does NOT close", () => {
+    // The reported bug: press inside an input to select text, drag outside
+    // the panel, release — the browser synthesizes a click whose target is
+    // the backdrop, which used to dismiss the dialog mid-edit. The press
+    // STARTED in the panel, so it must not count as a backdrop dismiss.
+    seedTrack(ambiguousTrack([candidate()]));
+    const onClose = vi.fn();
+    const { container } = render(
+      <AmbiguousMatchDialog trackId="t1" onClose={onClose} />,
+    );
+    const titleInput = screen.getByPlaceholderText("Title");
+    const backdrop = container.querySelector(".fixed.inset-0") as HTMLElement;
+    // mousedown on the input (inside the panel), then the synthesized click
+    // lands on the backdrop (common ancestor of press + outside release).
+    fireEvent.mouseDown(titleInput);
+    fireEvent.click(backdrop);
+    expect(onClose).not.toHaveBeenCalled();
+    // Dialog is still mounted.
+    expect(screen.getByText("Pick a Spotify version")).toBeTruthy();
   });
 
   it("clicking inside the panel does NOT close the dialog", () => {

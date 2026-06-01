@@ -69,26 +69,34 @@ export function CreatePlaylistPanel() {
   // these were two separate selectors that each scanned every track on
   // every store mutation; consolidating halves the work and lets
   // useShallow shortcut the re-render when neither value changed.
-  // Ambiguous rows demand a user pick before publish — silently dropping
-  // them produces partial playlists the user didn't authorize.
-  const { inFlightWork, unresolvedAmbiguousCount } = usePlaylistStore(
+  //
+  // What gates publish, and what deliberately does NOT:
+  //   - Spotify search still in flight (`pending`) DOES gate: the export
+  //     publishes matched URIs, so a track whose match hasn't resolved
+  //     yet would be silently omitted from the playlist.
+  //   - An unresolved ambiguous row DOES gate: it demands a user pick
+  //     before publish — silently dropping it produces a partial playlist
+  //     the user didn't authorize.
+  //   - MusicBrainz enrichment status does NOT gate. Enrichment only adds
+  //     metadata (recording ids, cover art) and is irrelevant to the
+  //     Spotify export, which needs only the matched URIs. Blocking
+  //     publish until enrichment finished forced users to wait on
+  //     background work that doesn't affect the result at all.
+  const { spotifySearchInFlight, unresolvedAmbiguousCount } = usePlaylistStore(
     useShallow((state) => {
-      let inFlightWork = false;
+      let spotifySearchInFlight = false;
       let unresolvedAmbiguousCount = 0;
       for (const id of state.playlist.trackIds) {
         const track = state.tracksById[id];
         if (!track) continue;
-        if (
-          track.enrichment.status === "pending" ||
-          track.spotify.status === "pending"
-        ) {
-          inFlightWork = true;
+        if (track.spotify.status === "pending") {
+          spotifySearchInFlight = true;
         }
         if (track.spotify.status === "ambiguous" && !track.spotify.uri) {
           unresolvedAmbiguousCount++;
         }
       }
-      return { inFlightWork, unresolvedAmbiguousCount };
+      return { spotifySearchInFlight, unresolvedAmbiguousCount };
     }),
   );
 
@@ -100,13 +108,13 @@ export function CreatePlaylistPanel() {
   const publishDisabledReason = useMemo(() => {
     if (!connected) return "Connect to Spotify first";
     if (!playlist.name.trim()) return "Name the playlist first";
-    if (inFlightWork) return "Wait for enrichment/search to finish";
+    if (spotifySearchInFlight) return "Wait for Spotify search to finish";
     if (unresolvedAmbiguousCount > 0) {
       return `Pick a Spotify match for ${unresolvedAmbiguousCount} ambiguous track${unresolvedAmbiguousCount === 1 ? "" : "s"}`;
     }
     if (trackCount === 0) return "Add tracks before publishing";
     return null;
-  }, [connected, playlist.name, inFlightWork, unresolvedAmbiguousCount, trackCount]);
+  }, [connected, playlist.name, spotifySearchInFlight, unresolvedAmbiguousCount, trackCount]);
 
   async function publish(mode: "create" | { update: string }) {
     if (!clientId) return;

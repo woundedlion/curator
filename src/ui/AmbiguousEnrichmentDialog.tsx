@@ -1,3 +1,4 @@
+import { useBackdropDismiss } from "../hooks/useBackdropDismiss";
 import { useDialogFocus } from "../hooks/useDialogFocus";
 import { usePlaylistStore } from "../store/playlistStore";
 
@@ -27,6 +28,7 @@ export function AmbiguousEnrichmentDialog({ trackId, onClose }: Props) {
   );
 
   const dialogRef = useDialogFocus<HTMLDivElement>(Boolean(trackId), onClose);
+  const backdropDismiss = useBackdropDismiss(onClose);
 
   if (!trackId || !track) return null;
   const candidates =
@@ -39,10 +41,10 @@ export function AmbiguousEnrichmentDialog({ trackId, onClose }: Props) {
   return (
     <div
       className="fixed inset-0 z-40 flex items-center justify-center bg-black/70 p-4"
-      // Clicking the backdrop cancels (== onClose), matching ConfirmDialog/
-      // SettingsDialog so all dialogs dismiss the same way. This picker is
-      // fully cancelable, so backdrop-close is safe (no destructive footgun).
-      onClick={onClose}
+      // Backdrop click dismisses (== onClose). useBackdropDismiss so a
+      // text-selection drag that releases outside the panel can't synthesize
+      // a backdrop click and close the dialog mid-edit (see the hook).
+      {...backdropDismiss}
     >
       <div
         ref={dialogRef}

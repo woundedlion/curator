@@ -17,6 +17,12 @@ function countRemaining(state: PlaylistState): number {
     if (!track) continue;
     if (track.source.kind === "spotify-import") continue;
     if (track.enrichment.userOverride) continue;
+    // A track Spotify resolved as having NO match will never reach MB
+    // enrichment — the runner gates MB on a Spotify match (see
+    // enrichmentEligibility: "missing tracks stay un-enriched"). Counting
+    // it as "remaining" strands the "Enriching · N remaining" indicator
+    // permanently above zero, since nothing will ever decrement it.
+    if (track.spotify.status === "missing") continue;
     const status = track.enrichment.status;
     if (status === "idle" || status === "pending") count++;
   }

@@ -310,6 +310,22 @@ export class Player {
       // now-playing row for silent audio.
       await this.stopAll();
       this.transitionToIdle();
+      // CRITICAL: do NOT fail silently. A play that resolves to a source
+      // whose backend can't be obtained — in practice the Spotify SDK
+      // failing to initialize (DRM/EME blocked, non-Premium, init timeout)
+      // — used to drop straight to idle with no toast, no console line, and
+      // no now-playing bar. To the user that's "I clicked play and nothing
+      // happened at all," with the real reason invisible. Surface it. The
+      // store-level loadSdk() toasts the DETAILED reason on the FIRST init
+      // attempt, but every later SDK play short-circuits in
+      // ensureSdkBackend() (sdkLoadAttempted) and reached here mutely — so a
+      // generic, recoverable message here is the backstop that guarantees
+      // feedback on EVERY failed play, not just the first.
+      if (target.source.kind === "spotify-sdk") {
+        this.onError(
+          "Spotify full-track playback is unavailable — the Web Playback SDK didn't start (reload to retry; requires Spotify Premium).",
+        );
+      }
       return;
     }
 

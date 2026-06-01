@@ -17,11 +17,19 @@
                        set inline style ATTRIBUTES for drag transforms and row
                        positioning; a static SPA on Pages cannot use nonces.
         - connect-src  Spotify API + accounts (token), the Web Playback SDK's
-                       *.spotify.com / wss dealer sockets, MusicBrainz, and the
-                       Cover Art Archive (which 30x-redirects image probes to
-                       *.archive.org).
-        - img-src      Spotify CDN (*.scdn.co), Cover Art Archive + archive.org,
-                       plus data:/blob: for any in-process thumbnails.
+                       *.spotify.com / wss dealer sockets, plus its encrypted
+                       audio-segment / license CDNs (*.scdn.co, *.spotifycdn.com,
+                       *.akamaized.net) — the streamer fetches these over XHR, so
+                       connect-src (not media-src) governs them. MusicBrainz, and
+                       the Cover Art Archive: the CAA cover-art HEAD probe
+                       30x-redirects to the APEX archive.org/download host, and
+                       fetch() re-checks the redirect target against connect-src,
+                       so both archive.org (apex) AND *.archive.org are required.
+        - img-src      Spotify CDN (*.scdn.co), Cover Art Archive + archive.org
+                       (the CAA 30x-redirects to the APEX archive.org/download
+                       host — apex AND *.archive.org are both needed; the
+                       wildcard does not match the bare apex), plus data:/blob:
+                       for any in-process thumbnails and the inline favicon.
         - media-src    blob: for local-file playback (createObjectURL) and
                        *.scdn.co for Spotify 30s previews.
         - frame-src    the Web Playback SDK renders an iframe from sdk.scdn.co.
@@ -33,9 +41,9 @@
         default-src 'self';
         script-src 'self' https://sdk.scdn.co;
         style-src 'self' 'unsafe-inline';
-        img-src 'self' data: blob: https://*.scdn.co https://coverartarchive.org https://*.archive.org;
+        img-src 'self' data: blob: https://*.scdn.co https://coverartarchive.org https://archive.org https://*.archive.org;
         media-src 'self' blob: https://*.scdn.co;
-        connect-src 'self' https://api.spotify.com https://accounts.spotify.com https://*.spotify.com wss://*.spotify.com https://musicbrainz.org https://coverartarchive.org https://*.archive.org https://*.scdn.co;
+        connect-src 'self' https://api.spotify.com https://accounts.spotify.com https://*.spotify.com wss://*.spotify.com https://*.scdn.co https://*.spotifycdn.com https://*.akamaized.net https://musicbrainz.org https://coverartarchive.org https://archive.org https://*.archive.org;
         frame-src https://sdk.scdn.co https://*.spotify.com;
         worker-src 'self' blob:;
         font-src 'self';
@@ -45,6 +53,13 @@
       "
     />
     <meta name="referrer" content="no-referrer" />
+    <!-- Inline SVG favicon (data: URI, allowed by img-src) so the browser's
+         automatic /favicon.ico request doesn't 404 on every load. -->
+    <link
+      rel="icon"
+      type="image/svg+xml"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23171717'/%3E%3Ctext x='16' y='23' font-size='21' text-anchor='middle' fill='%23e5e5e5' font-family='system-ui,sans-serif'%3EC%3C/text%3E%3C/svg%3E"
+    />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Curator</title>
   </head>

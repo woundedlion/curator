@@ -121,9 +121,29 @@ describe("NameCollisionDialog", () => {
       />,
     );
     const backdrop = container.querySelector(".fixed.inset-0") as HTMLElement;
+    // A genuine backdrop click presses AND releases on the backdrop.
+    fireEvent.mouseDown(backdrop);
     fireEvent.click(backdrop);
     expect(onCancel).toHaveBeenCalledTimes(1);
     expect(onReplace).not.toHaveBeenCalled();
+  });
+
+  it("REGRESSION: a press starting in the panel and releasing on the backdrop does NOT cancel", () => {
+    const onReplace = vi.fn();
+    const onCancel = vi.fn();
+    const { container } = render(
+      <NameCollisionDialog
+        candidateName="My Mix"
+        matches={[summary("pl-1", "My Mix", 12)]}
+        onReplace={onReplace}
+        onCancel={onCancel}
+      />,
+    );
+    const backdrop = container.querySelector(".fixed.inset-0") as HTMLElement;
+    const panel = screen.getByRole("dialog");
+    fireEvent.mouseDown(panel);
+    fireEvent.click(backdrop);
+    expect(onCancel).not.toHaveBeenCalled();
   });
 
   it("clicking inside the panel does NOT cancel", () => {

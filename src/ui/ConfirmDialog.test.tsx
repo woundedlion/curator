@@ -64,8 +64,30 @@ describe("ConfirmDialog", () => {
     // The dialog itself is role=alertdialog; its parent is the backdrop.
     const dialog = screen.getByRole("alertdialog");
     const backdrop = dialog.parentElement!;
+    // A genuine backdrop click presses AND releases on the backdrop.
+    fireEvent.mouseDown(backdrop);
     fireEvent.click(backdrop);
     expect(onCancel).toHaveBeenCalledTimes(1);
+  });
+
+  it("REGRESSION: a press starting in the panel and releasing on the backdrop does NOT cancel", () => {
+    const onCancel = vi.fn();
+    render(
+      <ConfirmDialog
+        open
+        title="t"
+        message="m"
+        onConfirm={() => {}}
+        onCancel={onCancel}
+      />,
+    );
+    const dialog = screen.getByRole("alertdialog");
+    const backdrop = dialog.parentElement!;
+    // Press inside the panel (e.g. selecting message text), release on the
+    // backdrop — the synthesized click must not cancel.
+    fireEvent.mouseDown(dialog);
+    fireEvent.click(backdrop);
+    expect(onCancel).not.toHaveBeenCalled();
   });
 
   it("does not call onCancel when the dialog body is clicked", () => {

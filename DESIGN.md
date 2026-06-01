@@ -691,7 +691,7 @@ Filled vs hollow is the key visual distinction: a filled circle means Spotify ha
 - **No telemetry** in v1. Add only if opt-in.
 - **Audio files never leave the device** — they're read locally to extract tags, then the `File` reference is held only in memory.
 - **Tokens** in sessionStorage (not localStorage) to limit persistence and XSS blast radius.
-- **CSP**: strict — only `accounts.spotify.com`, `api.spotify.com`, `musicbrainz.org`, `coverartarchive.org` in `connect-src`.
+- **CSP**: strict `connect-src` allow-list — Spotify auth/API (`accounts.spotify.com`, `api.spotify.com`, `*.spotify.com` + `wss://`), the Web Playback SDK's audio/license CDNs (`*.scdn.co`, `*.spotifycdn.com`, `*.akamaized.net`), `musicbrainz.org`, and `coverartarchive.org`/`*.archive.org`.
 - **MusicBrainz contact email** identifies traffic per MB's TOS. Because browser support for setting `User-Agent` is uneven, we attach the contact via MB's `client=` query parameter (see §4.3) — guaranteed to work regardless of browser. We treat the field as **required**: it's mandatory in Settings, and enrichment is blocked until it's provided. This keeps us in good standing with MB and attributes rate-limit issues to the actual user, not a shared default.
 
 ---

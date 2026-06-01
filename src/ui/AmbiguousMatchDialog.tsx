@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useBackdropDismiss } from "../hooks/useBackdropDismiss";
 import { useDialogFocus } from "../hooks/useDialogFocus";
 import {
   candidatePlaybackId,
@@ -173,6 +174,7 @@ export function AmbiguousMatchDialog({ trackId, onClose }: Props) {
   const [searching, setSearching] = useState(false);
 
   const dialogRef = useDialogFocus<HTMLDivElement>(true, onClose);
+  const backdropDismiss = useBackdropDismiss(onClose);
 
   // Stop any dialog-initiated candidate playback on unmount. We route
   // through the player's `stopIfCandidate` so the check happens
@@ -305,9 +307,12 @@ export function AmbiguousMatchDialog({ trackId, onClose }: Props) {
     <div
       className="fixed inset-0 z-40 flex items-center justify-center bg-black/70 p-4"
       // Clicking the backdrop cancels (== onClose), matching ConfirmDialog/
-      // SettingsDialog so all dialogs dismiss the same way. This picker is
-      // fully cancelable, so backdrop-close is safe (no destructive footgun).
-      onClick={onClose}
+      // SettingsDialog so all dialogs dismiss the same way. useBackdropDismiss
+      // (not a bare onClick) so selecting text in an input and releasing the
+      // drag outside the panel doesn't synthesize a backdrop click and close
+      // the dialog mid-edit — only a press that starts AND ends on the
+      // backdrop dismisses.
+      {...backdropDismiss}
     >
       <div
         ref={dialogRef}
@@ -430,12 +435,17 @@ export function AmbiguousMatchDialog({ trackId, onClose }: Props) {
         </div>
 
         <div className="mt-3 flex justify-end">
+          {/* "Done", not "Cancel": every action in this picker (pick,
+              unpick/re-ambiguate) is committed to the store the instant it's
+              clicked — there is no pending draft to discard. A "Cancel" label
+              wrongly implies closing would revert an unpick, so the button is
+              an affirmative close that keeps the change. */}
           <button
             type="button"
             className="rounded border border-neutral-700 px-3 py-1 text-sm hover:bg-neutral-800"
             onClick={onClose}
           >
-            Cancel
+            Done
           </button>
         </div>
       </div>

@@ -672,11 +672,57 @@ describe("Player — backend selection", () => {
     expect(player.getSnapshot().currentTrackId).toBeNull();
   });
 
+  it("REGRESSION: a play that can't get an SDK backend surfaces an error instead of failing silently", async () => {
+    // The original bug behind 'I click play on a playlist row and NOTHING
+    // happens — no sound, no now-playing bar, no message': when the
+    // Spotify SDK fails to initialize, resolveBackend returns null and the
+    // player dropped to idle MUTELY. A matched/Premium track resolves to a
+    // spotify-sdk source, so this was the entire user-visible failure mode.
+    // install() must now report it through onError so a toast always fires.
+    sdkLoader.mockResolvedValueOnce(null);
+    await player.play(sdkTrack("x"));
+    expect(player.getSnapshot().phase).toBe("idle");
+    expect(errors.length).toBeGreaterThan(0);
+    expect(errors.some((m) => /full-track|unavailable|SDK/i.test(m))).toBe(true);
+  });
+
   it("after sdkLoader returns null, it is NOT called again (cached failure)", async () => {
     sdkLoader.mockResolvedValueOnce(null);
     await player.play(sdkTrack("x"));
     await player.play(sdkTrack("y"));
     expect(sdkLoader).toHaveBeenCalledTimes(1);
+  });
+
+  it("REGRESSION: EVERY repeat SDK play after a failed init still surfaces feedback (not just the first)", async () => {
+    // The cached-failure short-circuit (ensureSdkBackend returns null once
+    // sdkLoadAttempted is set) is exactly where later clicks went mute: the
+    // store's loadSdk() only toasts on the FIRST attempt. install() is the
+    // backstop, so the 2nd, 3rd, … click must each produce an error too —
+    // otherwise the user clicks repeatedly into total silence.
+    sdkLoader.mockResolvedValueOnce(null);
+    await player.play(sdkTrack("x"));
+    const afterFirst = errors.length;
+    await player.play(sdkTrack("y"));
+    await player.play(sdkTrack("z"));
+    expect(sdkLoader).toHaveBeenCalledTimes(1); // loader never re-invoked
+    expect(errors.length).toBe(afterFirst + 2); // but each play still reports
+  });
+
+  it("a non-SDK source that resolves to no backend stays silent (only SDK failures toast)", async () => {
+    // Defensive: local/preview always resolve to the HTMLAudio backend, so
+    // the only real null-backend case is the SDK. Guard the message on the
+    // source kind so a hypothetical future no-backend source can't spam a
+    // misleading 'Spotify full-track' toast.
+    const noneTarget: PlayerTarget = {
+      kind: "track",
+      id: "none",
+      display: { title: "T", artist: "A" },
+      durationMs: 0,
+      source: { kind: "none" },
+    };
+    await player.play(noneTarget);
+    expect(player.getSnapshot().phase).toBe("idle");
+    expect(errors).toEqual([]);
   });
 
   it("preloadSdk warms up the SDK backend without playing, and a later play reuses it", async () => {

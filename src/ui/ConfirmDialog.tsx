@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef } from "react";
+import { useBackdropDismiss } from "../hooks/useBackdropDismiss";
 import { useDialogFocus } from "../hooks/useDialogFocus";
 
 type ConfirmKind = "info" | "danger";
@@ -28,6 +29,7 @@ export function ConfirmDialog({
   onCancel,
 }: Props) {
   const dialogRef = useDialogFocus<HTMLDivElement>(open, onCancel);
+  const backdropDismiss = useBackdropDismiss(onCancel);
   const confirmRef = useRef<HTMLButtonElement>(null);
   // Unique per instance so two ConfirmDialogs mounted in the same tree
   // (e.g. Toolbar mounts Clear + Nuke confirms) can't collide on a
@@ -54,9 +56,10 @@ export function ConfirmDialog({
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/60"
-      // Clicking the backdrop cancels — matches the SettingsDialog
-      // pattern users already know.
-      onClick={onCancel}
+      // Backdrop click cancels. useBackdropDismiss so a press that starts
+      // inside the panel and releases on the backdrop (text selection drag)
+      // doesn't synthesize a backdrop click and cancel unintentionally.
+      {...backdropDismiss}
     >
       <div
         ref={dialogRef}

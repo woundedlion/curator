@@ -1,3 +1,4 @@
+import { useBackdropDismiss } from "../hooks/useBackdropDismiss";
 import { useDialogFocus } from "../hooks/useDialogFocus";
 import type { SpotifyPlaylistSummary } from "../types";
 
@@ -98,16 +99,16 @@ export function NameCollisionDialog({
     matches.length > 0,
     onCancel,
   );
+  const backdropDismiss = useBackdropDismiss(onCancel);
   if (matches.length === 0) return null;
 
   return (
     <div
       className="fixed inset-0 z-40 flex items-center justify-center bg-black/70 p-4"
-      // Clicking the backdrop cancels (== onCancel), matching ConfirmDialog/
-      // SettingsDialog so all dialogs dismiss the same way. Cancel is the
-      // safe/non-destructive choice here (Replace is the only mutation, and
-      // it's behind an explicit button), so backdrop-close is fine.
-      onClick={onCancel}
+      // Backdrop click cancels (== onCancel). useBackdropDismiss so a press
+      // that starts inside the panel and releases on the backdrop (e.g. a
+      // text-selection drag) can't synthesize a backdrop click and cancel.
+      {...backdropDismiss}
     >
       <div
         ref={dialogRef}

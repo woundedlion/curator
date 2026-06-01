@@ -140,8 +140,23 @@ describe("AmbiguousEnrichmentDialog", () => {
       <AmbiguousEnrichmentDialog trackId="t1" onClose={onClose} />,
     );
     const backdrop = container.querySelector(".fixed.inset-0") as HTMLElement;
+    // A genuine backdrop click presses AND releases on the backdrop.
+    fireEvent.mouseDown(backdrop);
     fireEvent.click(backdrop);
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("REGRESSION: a press starting in the panel and releasing on the backdrop does NOT close", () => {
+    seedTrack(ambiguousTrack([candidate()]));
+    const onClose = vi.fn();
+    const { container } = render(
+      <AmbiguousEnrichmentDialog trackId="t1" onClose={onClose} />,
+    );
+    const backdrop = container.querySelector(".fixed.inset-0") as HTMLElement;
+    const panel = screen.getByRole("dialog");
+    fireEvent.mouseDown(panel);
+    fireEvent.click(backdrop);
+    expect(onClose).not.toHaveBeenCalled();
   });
 
   it("clicking inside the panel does NOT close the dialog", () => {
