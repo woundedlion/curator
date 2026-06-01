@@ -38,11 +38,13 @@ type RunOutcome = {
   coverArtTransientFailure?: boolean;
 };
 
-function shouldSkipTrack(trackId: string): boolean {
+// `spotifyConfigured` is passed in rather than read here: whether Spotify
+// is configured can't change mid-sweep, so the streaming hot loop hoists
+// it once and reuses it across every per-track call instead of hitting
+// the settings store on each track. The track itself genuinely changes
+// per call, so it's still read fresh from the store every time.
+function shouldSkipTrack(trackId: string, spotifyConfigured: boolean): boolean {
   const track = usePlaylistStore.getState().tracksById[trackId];
-  const spotifyConfigured = Boolean(
-    useSettingsStore.getState().settings.spotifyClientId,
-  );
   return !shouldEnrichTrack(track, spotifyConfigured);
 }
 
@@ -115,13 +117,17 @@ async function applyCoverArtIfAvailable(
   const current = usePlaylistStore.getState().tracksById[trackId];
   // Gate on status === "matched" too, not just recordingId equality. A
   // nukeEnrichmentState firing during the HEAD probe resets the row to
-  // an idle/failed arm whose recordingId is undefined; if `recordingId`
-  // were ALSO undefined (matched outcome with no recordingId — rare but
-  // possible) the bare `currentRecordingId === recordingId` check would
-  // pass (undefined === undefined) and repaint cover art onto a freshly
-  // nuked row. The explicit status check mirrors the main body's
-  // late-result guard and makes the intent — "only write if the row is
-  // still the same matched recording" — unambiguous.
+  // an idle/failed arm whose recordingId is undefined. The caller only
+  // reaches here with a truthy recordingId today (buildEnrichmentFromOutcome
+  // produces a `matched` arm only when recordingId is set, and we pass
+  // `outcome.recordingId` straight through), so a bare
+  // `currentRecordingId === recordingId` check would already reject the
+  // nuked row. The explicit status check is defense-in-depth: it stops an
+  // undefined-passed-as-recordingId regression from letting an
+  // `undefined === undefined` comparison repaint cover art onto a nuked
+  // row, and it mirrors the main body's late-result guard so the intent
+  // — "only write if the row is still the same matched recording" —
+  // stays unambiguous.
   const currentRecordingId =
     current?.enrichment.status === "matched"
       ? current.enrichment.mbRecordingId
@@ -384,13 +390,20 @@ export async function enrichAllPending(
   scope?: ReadonlySet<string>,
   options: EnrichAllOptions = {},
 ): Promise<void> {
+  // Hoisted once for the whole sweep: Spotify configuration can't change
+  // mid-sweep, so we read it here instead of in the per-track gate that
+  // runs on every poll iteration for every track.
+  const spotifyConfigured = Boolean(
+    useSettingsStore.getState().settings.spotifyClientId,
+  );
+
   if (!hasContactEmail()) {
     // Only warn when there's actually work to do at function entry —
     // otherwise an empty playlist would needlessly toast.
     const anyEligible = usePlaylistStore
       .getState()
       .playlist.trackIds.some(
-        (id) => !shouldSkipTrack(id) && (!scope || scope.has(id)),
+        (id) => !shouldSkipTrack(id, spotifyConfigured) && (!scope || scope.has(id)),
       );
     if (anyEligible) warnMissingContactEmail();
     return;
@@ -431,7 +444,7 @@ export async function enrichAllPending(
     const trackIds = liveIds.filter(
       (id) =>
         !seen.has(id) &&
-        !shouldSkipTrack(id) &&
+        !shouldSkipTrack(id, spotifyConfigured) &&
         (!scope || scope.has(id)),
     );
     if (trackIds.length === 0) {

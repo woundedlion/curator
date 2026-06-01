@@ -12,10 +12,9 @@ import {
   type SpotifyPlayerListener,
   type SpotifyPlayerSdkState,
 } from "../spotify/spotifyPlayer";
+import { SPOTIFY_SDK_POLL_INTERVAL_MS } from "../constants";
 import type { Backend, BackendObserver } from "./player";
 import type { PlaybackSource } from "./playbackSource";
-
-const POLL_INTERVAL_MS = 500;
 
 export class SpotifySdkBackend implements Backend {
   readonly kind = "spotify-sdk" as const;
@@ -203,7 +202,7 @@ export class SpotifySdkBackend implements Backend {
         .finally(() => {
           inFlight = false;
         });
-    }, POLL_INTERVAL_MS);
+    }, SPOTIFY_SDK_POLL_INTERVAL_MS);
   }
 
   private stopPoller(): void {

@@ -162,4 +162,27 @@ describe("useTableKeyboardNav — existing nav still works alongside the toggle"
     dispatchKey("Escape");
     expect(usePlaylistStore.getState().selectedTrackIds.size).toBe(0);
   });
+
+  it("a keystroke right after a re-render reads the FRESH visibleTrackIds (layout-effect sync, no stale window)", () => {
+    // The ref-sync effect is a useLayoutEffect, so the visibleTrackIds
+    // ref is current the moment the commit completes — before control
+    // returns to the event loop. We dispatch a Space toggle against the
+    // cursor row immediately after a rerender that newly includes that
+    // row; if the ref were synced via a passive effect, the keydown could
+    // fire before the flush and read the prior (shorter) id list, so the
+    // `visibleIds.includes(cursorId)` guard would reject the toggle.
+    usePlaylistStore.setState({
+      selectedTrackIds: new Set<string>(),
+      selectionAnchorId: "d",
+    });
+    const { rerender } = render(<Harness visibleTrackIds={["a", "b", "c"]} />);
+    // "d" is the cursor but not yet visible — a toggle here would bail.
+    // Rerender to bring "d" into the visible set, then dispatch WITHOUT
+    // awaiting any microtask/paint.
+    rerender(<Harness visibleTrackIds={["a", "b", "c", "d"]} />);
+    const evt = dispatchKey(" ");
+    // The handler saw the fresh list including "d" and toggled it on.
+    expect(evt.defaultPrevented).toBe(true);
+    expect(usePlaylistStore.getState().selectedTrackIds.has("d")).toBe(true);
+  });
 });

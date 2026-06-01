@@ -193,7 +193,13 @@ export function tryParseRetryAfterMs(
   if (!headerValue) return null;
   const trimmed = headerValue.trim();
   if (/^\d+$/.test(trimmed)) {
-    return Math.max(1, parseInt(trimmed, 10)) * 1000;
+    // Floor at 0, NOT 1: a legitimate `Retry-After: 0` means "retry now"
+    // and must pass through faithfully — this helper documents "no
+    // clamping or defaulting." Downstream applies its own floor (Spotify
+    // via clampRetryAfterMs / the breaker's minOpenMs; MusicBrainz its
+    // own cap), so clamping here would lie to callers that want the raw
+    // value.
+    return Math.max(0, parseInt(trimmed, 10)) * 1000;
   }
   const dateMs = Date.parse(trimmed);
   if (Number.isFinite(dateMs)) {
@@ -325,14 +331,22 @@ export type SpotifyRequest = {
   query?: Record<string, string | number | undefined>;
 };
 
-function appendQuery(path: string, query?: SpotifyRequest["query"]): string {
+// Exported for unit testing. Builds the request path's query string,
+// extending any query the path already carries rather than clobbering it.
+export function appendQuery(path: string, query?: SpotifyRequest["query"]): string {
   if (!query) return path;
   const params = new URLSearchParams();
   for (const [key, value] of Object.entries(query)) {
     if (value !== undefined) params.set(key, String(value));
   }
   const queryString = params.toString();
-  return queryString ? `${path}?${queryString}` : path;
+  if (!queryString) return path;
+  // A path may already carry its own query string (e.g. a Spotify
+  // `next` pagination URL fragment). Unconditionally appending `?` would
+  // produce a malformed `path?a=b?c=d`; switch to `&` when a `?` is
+  // already present so the extra params extend the existing query.
+  const separator = path.includes("?") ? "&" : "?";
+  return `${path}${separator}${queryString}`;
 }
 
 function buildHeaders(
@@ -650,7 +664,16 @@ export async function submitTokenRefresh(
     // Self-contained recovery: a standalone successful refresh that
     // traversed a half-open breaker closes it, so it can't be left stuck
     // half-open with no enclosing probe to restore it.
-    if (adoptProbe) breaker.close();
+    //
+    // Re-check isProbeInFlight() at close time (not just at entry): the
+    // breaker was half-open with no probe when we decided `adoptProbe`,
+    // but during our `await send()` an unrelated API call could have
+    // become the half-open probe (the file's ~618-626 invariant says the
+    // nested case must NOT close — closing would reset the escalation
+    // counter out from under a probe that might still 429). Single-flight
+    // refresh + this guard means we only close when we're still the sole
+    // recovery owner; deferring to a live probe is always safe.
+    if (adoptProbe && !breaker.isProbeInFlight()) breaker.close();
     return response;
   }
 

@@ -24,6 +24,14 @@ export class HtmlAudioBackend implements Backend {
   // would leak this backend (and its closed-over observer) for the life
   // of the <audio> element across a teardown/re-init cycle.
   private listenerBindings: Array<[string, EventListener]> = [];
+  // The object URL this backend minted for the currently-loaded local
+  // file, or null for a preview / nothing loaded. This backend OWNS the
+  // URL's lifecycle: load() revokes any prior one before minting the
+  // next, and stop()/dispose() revoke it. Centralizing ownership here
+  // (rather than in createPlaybackSource + scattered Player revokes)
+  // guarantees each blob URL is revoked exactly once and never leaks
+  // when a source is built but never loaded.
+  private currentObjectUrl: string | null = null;
 
   constructor(audio: HTMLAudioElement) {
     this.audio = audio;
@@ -45,6 +53,7 @@ export class HtmlAudioBackend implements Backend {
    */
   dispose(): void {
     this.audio.pause();
+    this.releaseObjectUrl();
     for (const [event, handler] of this.listenerBindings) {
       this.audio.removeEventListener(event, handler);
     }
@@ -53,7 +62,11 @@ export class HtmlAudioBackend implements Backend {
   }
 
   async load(source: PlaybackSource): Promise<boolean> {
-    const url = getAudioElementUrl(source);
+    // Mint the blob URL for a local file HERE, at the moment of use, and
+    // revoke any prior one first — replacing the src orphans the old blob
+    // URL, so it must be revoked or it leaks. Preview sources already
+    // carry a plain HTTPS URL (getAudioElementUrl), which we don't own.
+    const url = this.resolveUrl(source);
     if (!url) return false;
     // Assigning a new src on the audio element automatically aborts
     // any prior load and starts the new one. We deliberately do NOT
@@ -106,6 +119,12 @@ export class HtmlAudioBackend implements Backend {
    */
   async stop(): Promise<void> {
     this.audio.pause();
+    // Stopping ends this backend's use of the current source, so release
+    // the blob URL we minted for it (if any). A later load() will mint a
+    // fresh one. Revoking here is safe even though we don't clear
+    // audio.src: stop() only fires on the backend being switched AWAY
+    // from, and the next load() always assigns a new src before play().
+    this.releaseObjectUrl();
   }
 
   async seek(positionMs: number): Promise<void> {
@@ -114,6 +133,29 @@ export class HtmlAudioBackend implements Backend {
       this.audio.currentTime = positionMs / 1000;
     } catch (error) {
       console.warn("html-audio seek failed", error);
+    }
+  }
+
+  /**
+   * Resolve the media URL for a source, creating + taking ownership of a
+   * blob URL for a local File. Revokes any previously-minted URL first so
+   * a same-backend replacement (local → local) can't orphan the old blob.
+   * Returns null for sources this backend can't play (none / spotify-sdk).
+   */
+  private resolveUrl(source: PlaybackSource): string | null {
+    if (source.kind === "local") {
+      this.releaseObjectUrl();
+      this.currentObjectUrl = URL.createObjectURL(source.file);
+      return this.currentObjectUrl;
+    }
+    return getAudioElementUrl(source);
+  }
+
+  /** Revoke the owned blob URL exactly once, if one is held. */
+  private releaseObjectUrl(): void {
+    if (this.currentObjectUrl) {
+      URL.revokeObjectURL(this.currentObjectUrl);
+      this.currentObjectUrl = null;
     }
   }
 

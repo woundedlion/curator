@@ -22,7 +22,12 @@ export type SpotifyTrackResponse = {
   duration_ms: number;
   preview_url: string | null;
   artists: SpotifyArtistRef[];
-  album: SpotifyAlbumRef;
+  // Optional to match reality: Spotify can omit `album` on some track
+  // shapes (and we don't validate its presence upstream — isImportableTrack
+  // only checks id/uri/name). The mappers already access it defensively
+  // (`track.album?.name`); declaring it non-optional was a drift that made
+  // those guards look redundant.
+  album?: SpotifyAlbumRef;
 };
 
 export type SpotifySearchResponse = {

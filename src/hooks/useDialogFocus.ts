@@ -62,6 +62,33 @@ function isolateBackground(container: HTMLElement): () => void {
 // prevent any non-trap window listener from also acting.
 const dialogStack: { container: HTMLElement }[] = [];
 
+// Where to send focus on close when the element that opened the dialog is
+// gone. The originating control is often a per-row glyph button inside a
+// VIRTUALIZED grid: by the time the dialog closes, that row may have
+// scrolled out and unmounted, so `previouslyFocused` is detached from the
+// document. Restoring focus to a detached node is a no-op and focus
+// silently falls to <body>, dropping a keyboard user out of the grid.
+// Walk a prioritized list of still-present landmarks and focus the first
+// one, making it programmatically focusable if it isn't already.
+function focusFallbackTarget(): void {
+  const candidates: (HTMLElement | null)[] = [
+    document.querySelector<HTMLElement>('[role="grid"]'),
+    document.querySelector<HTMLElement>("main"),
+    document.body,
+  ];
+  for (const target of candidates) {
+    if (!target) continue;
+    // role="grid"/main are not natively focusable; give them a
+    // programmatic-only tab stop (tabindex=-1) so .focus() takes effect
+    // without inserting them into the Tab order.
+    if (!target.hasAttribute("tabindex")) {
+      target.setAttribute("tabindex", "-1");
+    }
+    target.focus();
+    if (document.activeElement === target) return;
+  }
+}
+
 // Modal-dialog focus management: when `open` is true, focus moves into the
 // container, Tab cycles within it, Escape closes the dialog, and the
 // previously-focused element is restored when the dialog closes.
@@ -83,6 +110,12 @@ export function useDialogFocus<T extends HTMLElement>(
       document.activeElement instanceof HTMLElement
         ? document.activeElement
         : null;
+    // Initial focus is captured once, synchronously, at open. The app's
+    // dialogs render their focusable content synchronously, so the first
+    // focusable exists by the time this effect runs. A dialog whose
+    // focusable content appeared ASYNCHRONOUSLY after open would keep focus
+    // on the container until the user Tabs — acceptable given no such
+    // dialog exists; revisit (e.g. via a MutationObserver) if one is added.
     const focusables = getFocusable(container);
     (focusables[0] ?? container).focus();
 
@@ -133,6 +166,11 @@ export function useDialogFocus<T extends HTMLElement>(
       if (idx !== -1) dialogStack.splice(idx, 1);
       if (previouslyFocused && document.contains(previouslyFocused)) {
         previouslyFocused.focus();
+      } else {
+        // The originating element unmounted while the dialog was open (a
+        // virtualized grid row scrolled out). Don't let focus drop to
+        // <body> — restore it to the grid / nearest landmark instead.
+        focusFallbackTarget();
       }
     };
   }, [open]);

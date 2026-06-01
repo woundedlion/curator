@@ -64,6 +64,24 @@ describe("deriveHintsFromFileName", () => {
     expect(deriveHintsFromFileName("03.mp3")).toEqual({ title: "03" });
   });
 
+  it("parses a leading track number with a dot separator ('03.Title')", () => {
+    // A dot counts as a separator just like dash/space, so "03.Stargazer"
+    // splits into track 3 + title.
+    expect(deriveHintsFromFileName("03.Stargazer.flac")).toEqual({
+      trackNo: 3,
+      title: "Stargazer",
+    });
+  });
+
+  it("does NOT split leading digits with no separator ('03Title')", () => {
+    // A separator between the digits and the rest is required: "03Stargazer"
+    // has none, so the whole segment is kept as the title rather than
+    // guessing track 3 (the digits are too ambiguous, cf. "2pac"/"1975").
+    expect(deriveHintsFromFileName("03Stargazer.flac")).toEqual({
+      title: "03Stargazer",
+    });
+  });
+
   it("strips only the final extension segment", () => {
     // The "extension" is everything after the last dot, not the first —
     // titles can legitimately contain periods.

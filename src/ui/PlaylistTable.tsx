@@ -228,6 +228,9 @@ export function PlaylistTable({
       selectOnly(trackId);
     },
     [
+      // suppressClickRef is a stable ref, but react-hooks/exhaustive-deps
+      // still wants it listed; including it is harmless (refs never change
+      // identity) and keeps the lint clean.
       suppressClickRef,
       extendSelectionTo,
       toggleSelection,

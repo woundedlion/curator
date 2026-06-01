@@ -66,6 +66,16 @@ describe("toSpotifyCandidate", () => {
     expect(c.coverUrl).toBe("small.jpg");
   });
 
+  it("tolerates a wholly missing album (DTO field is optional)", () => {
+    // Spotify can omit `album` on some track shapes and we don't validate
+    // its presence upstream; the mapper's `?.` guards must hold without a
+    // crash, yielding undefined album/year/cover.
+    const c = toSpotifyCandidate(buildTrackResponse({ album: undefined }));
+    expect(c.album).toBeUndefined();
+    expect(c.year).toBeUndefined();
+    expect(c.coverUrl).toBeUndefined();
+  });
+
   it("handles missing album images without throwing", () => {
     const c = toSpotifyCandidate(
       buildTrackResponse({

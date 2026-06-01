@@ -25,6 +25,7 @@
 // progress — so we let the real default test timeout be the failure signal.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { SPOTIFY_SCOPES } from "../constants";
 import {
   submitSpotifyRequest,
   __resetSpotifyRateLimitStateForTests,
@@ -47,7 +48,9 @@ function tokenRefreshResponse(): Response {
       access_token: "fresh-access",
       refresh_token: "refresh-1",
       expires_in: 3600,
-      scope: "playlist-modify-public",
+      // Full scope set — getValidAccessToken now re-validates the
+      // refreshed token's scopes and rejects a narrowed grant.
+      scope: SPOTIFY_SCOPES,
       token_type: "Bearer",
     }),
     { status: 200, headers: { "Content-Type": "application/json" } },

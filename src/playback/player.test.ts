@@ -81,7 +81,14 @@ function localTrack(id: string): PlayerTarget {
     id,
     display: { title: `T${id}`, artist: `A${id}` },
     durationMs: 200_000,
-    source: { kind: "local", objectUrl: `blob://${id}`, label: "Local file" },
+    // The source carries the File; the blob URL is minted + owned inside
+    // HtmlAudioBackend.load, never here. FakeBackend ignores the source
+    // contents, so a lightweight stand-in File is sufficient.
+    source: {
+      kind: "local",
+      file: new File([id], `${id}.mp3`, { type: "audio/mpeg" }),
+      label: "Local file",
+    },
   };
 }
 
@@ -253,7 +260,11 @@ describe("Player — at most one backend is producing audio (I1)", () => {
     sdk.emit({ kind: "playing" });
     html.calls.length = 0;
     sdk.calls.length = 0;
-    await player.play(localTrack("a"));
+    // Capture the target once: a local source now carries the File itself,
+    // and each localTrack() call mints a fresh File instance that would not
+    // deep-equal the one actually played.
+    const a = localTrack("a");
+    await player.play(a);
     // The SDK was the prior backend — must be stopped so it doesn't
     // keep playing. The HTML backend is NEW — must NOT be pre-paused
     // (that's what broke real-world playback).
@@ -261,7 +272,7 @@ describe("Player — at most one backend is producing audio (I1)", () => {
     expect(html.calls).not.toContainEqual({ kind: "stop" });
     expect(html.calls).toContainEqual({
       kind: "load",
-      source: localTrack("a").source,
+      source: a.source,
     });
   });
 
@@ -401,6 +412,26 @@ describe("Player — currentTrackId reflects what can be stopped (I2)", () => {
     expect(errors).toContain("decode failed");
     expect(player.getSnapshot().currentTrackId).toBeNull();
   });
+
+  it("REGRESSION: an error emitted DURING a failed load does not enqueue a redundant stop (finding #3)", async () => {
+    // When load() emits an error and then returns false, install() already
+    // drives the player to idle (stopAll + transitionToIdle). The error
+    // handler must NOT also enqueue a doStop while phase is "loading" — the
+    // load-failure path owns that transition. We assert no SECOND stop op
+    // runs after install's own teardown (the only stop calls are install's).
+    html.load = async (source) => {
+      html.calls.push({ kind: "load", source });
+      html.emit({ kind: "error", message: "autoplay blocked" });
+      return false; // load fails → install transitions to idle
+    };
+    await player.play(localTrack("a"));
+    await drain();
+    expect(errors).toContain("autoplay blocked");
+    expect(player.getSnapshot().currentTrackId).toBeNull();
+    // install()'s failed-load cleanup stops both backends exactly once
+    // each (stopAll). A redundant queued doStop would stop them AGAIN.
+    expect(html.calls.filter((c) => c.kind === "stop")).toHaveLength(1);
+  });
 });
 
 // ─── 3b. Replay + seek after end-of-track (findings #1, #2) ──────────
@@ -480,25 +511,31 @@ describe("Player — pause/resume on current target", () => {
     expect(html.calls).toContainEqual({ kind: "pause" });
   });
 
-  it("REGRESSION: a same-track play() releases the unused freshly-built source (no object-URL leak)", async () => {
-    // The store rebuilds a target (allocating a new object URL for local
-    // files) on every toggle press. When the id matches the current track
-    // the player toggles instead of installing, so that new source is
-    // thrown away — it MUST be released or a blob URL leaks per press.
+  it("REGRESSION: a same-track play() that toggles allocates/revokes NO object URL (leak class eliminated)", async () => {
+    // The store rebuilds a target on every toggle press, but the source
+    // now carries only a File reference — the blob URL is minted lazily
+    // inside HtmlAudioBackend.load and never on the toggle path. So a
+    // same-track play() that routes to pause/resume must touch neither
+    // createObjectURL nor revokeObjectURL: there is no orphaned URL to
+    // leak by construction. (The backend's own load/stop tests cover
+    // mint+revoke; this asserts the toggle path stays allocation-free.)
+    const create = vi.spyOn(URL, "createObjectURL");
     const revoke = vi.spyOn(URL, "revokeObjectURL");
     await player.play(localTrack("a"));
     html.emit({ kind: "playing" });
+    create.mockClear();
     revoke.mockClear();
 
-    await player.play(localTrack("a")); // pause — new source discarded
+    await player.play(localTrack("a")); // pause — incoming source discarded
     expect(html.calls).toContainEqual({ kind: "pause" });
-    expect(revoke).toHaveBeenCalledWith("blob://a");
     html.emit({ kind: "paused" });
 
-    revoke.mockClear();
-    await player.play(localTrack("a")); // resume — new source discarded
+    await player.play(localTrack("a")); // resume — incoming source discarded
     expect(html.calls).toContainEqual({ kind: "resume" });
-    expect(revoke).toHaveBeenCalledWith("blob://a");
+
+    expect(create).not.toHaveBeenCalled();
+    expect(revoke).not.toHaveBeenCalled();
+    create.mockRestore();
     revoke.mockRestore();
   });
 });
@@ -566,9 +603,14 @@ describe("Player — operation queue serializes (I3)", () => {
     html.loadGate = new Promise<void>((r) => {
       resolveA = r;
     });
-    const playA = player.play(localTrack("a"));
+    // Capture targets once: a local source carries its File, and each
+    // localTrack() call mints a fresh File that would not deep-equal the
+    // one actually played.
+    const a = localTrack("a");
+    const b = localTrack("b");
+    const playA = player.play(a);
     // Enqueue B immediately.
-    const playB = player.play(localTrack("b"));
+    const playB = player.play(b);
     // Yield enough microtasks for A's install to reach its load() call
     // but no further (load is gated).
     for (let i = 0; i < 10; i++) await Promise.resolve();
@@ -579,8 +621,8 @@ describe("Player — operation queue serializes (I3)", () => {
     await playB;
     const loads = html.calls.filter((c) => c.kind === "load");
     expect(loads).toEqual([
-      { kind: "load", source: localTrack("a").source },
-      { kind: "load", source: localTrack("b").source },
+      { kind: "load", source: a.source },
+      { kind: "load", source: b.source },
     ]);
   });
 
@@ -690,6 +732,34 @@ describe("Player — position + duration are mirrored from backend events", () =
     expect(html.calls).toContainEqual({ kind: "seek", positionMs: 100_000 });
     await player.seek(-1234);
     expect(html.calls).toContainEqual({ kind: "seek", positionMs: 0 });
+  });
+
+  it("rolls the optimistic position back if the backend seek rejects (finding #2)", async () => {
+    await player.play(localTrack("a"));
+    html.emit({ kind: "playing" });
+    html.emit({ kind: "position", positionMs: 10_000, durationMs: 100_000 });
+    expect(player.getSnapshot().positionMs).toBe(10_000);
+
+    // A backend whose seek rejects (future-proofing — today's backends
+    // swallow their own seek errors). The optimistic patch must roll back
+    // to the pre-seek position rather than stranding the UI at the
+    // never-reached target.
+    html.seek = async () => {
+      throw new Error("seek device offline");
+    };
+    await player.seek(70_000);
+    expect(player.getSnapshot().positionMs).toBe(10_000);
+    expect(errors.some((m) => m.includes("Seek failed"))).toBe(true);
+  });
+
+  it("keeps the optimistic position on a successful seek (no rollback)", async () => {
+    await player.play(localTrack("a"));
+    html.emit({ kind: "playing" });
+    html.emit({ kind: "position", positionMs: 10_000, durationMs: 100_000 });
+    await player.seek(70_000);
+    // Success path leaves the optimistic value in place until the next
+    // position event re-syncs.
+    expect(player.getSnapshot().positionMs).toBe(70_000);
   });
 });
 

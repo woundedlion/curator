@@ -31,7 +31,11 @@ jobs:
         continue-on-error: true
       - run: npm run typecheck
       - run: npm run lint
-      - run: npm test
+      # Run with coverage so the thresholds in vitest.config.ts actually
+      # gate the build. Plain `npm test` never enforces them, which gave
+      # false confidence that coverage was protected; test:coverage fails
+      # the run if coverage drops below the configured floor.
+      - run: npm run test:coverage
       - run: npm run build
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3

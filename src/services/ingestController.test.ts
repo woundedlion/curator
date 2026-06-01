@@ -36,6 +36,13 @@ const mocks = vi.hoisted(() => ({
   enrichAllPending: vi.fn(async () => undefined),
   fetchPlaylistTracks: vi.fn(),
   pushToast: vi.fn(),
+  // Real ref-counting busy state so tests can assert the spinner stays
+  // lit continuously across a multi-envelope drop and its post-ingest
+  // sweep, rather than flickering off between phases.
+  busyCount: { value: 0 },
+  // busyCount sampled inside each unit of work (ingest + both runners).
+  // A 0 here would mean that work ran with the spinner OFF.
+  busySamples: [] as number[],
 }));
 
 vi.mock("../ingest/ingestPipeline", () => ({
@@ -55,7 +62,18 @@ vi.mock("../store/uiStore", () => ({
   useUiStore: {
     getState: () => ({
       pushToast: mocks.pushToast,
-      withBusy: async (fn: () => Promise<void>) => fn(),
+      // Faithful ref-counted withBusy: increment on entry, decrement in a
+      // finally on exit. The runner/ingest mocks sample busyCount.value
+      // while they execute so a test can prove the spinner was lit during
+      // every real unit of work (no flicker between drop phases).
+      withBusy: async <T>(fn: () => Promise<T>): Promise<T> => {
+        mocks.busyCount.value += 1;
+        try {
+          return await fn();
+        } finally {
+          mocks.busyCount.value -= 1;
+        }
+      },
     }),
   },
 }));
@@ -112,11 +130,19 @@ beforeEach(() => {
   resetStore();
   mocks.ingestFiles.mockReset();
   mocks.matchAllOnSpotify.mockReset();
-  mocks.matchAllOnSpotify.mockResolvedValue(undefined);
+  mocks.matchAllOnSpotify.mockImplementation(async () => {
+    mocks.busySamples.push(mocks.busyCount.value);
+    return undefined;
+  });
   mocks.enrichAllPending.mockReset();
-  mocks.enrichAllPending.mockResolvedValue(undefined);
+  mocks.enrichAllPending.mockImplementation(async () => {
+    mocks.busySamples.push(mocks.busyCount.value);
+    return undefined;
+  });
   mocks.fetchPlaylistTracks.mockReset();
   mocks.pushToast.mockReset();
+  mocks.busyCount.value = 0;
+  mocks.busySamples.length = 0;
   useSettingsStore.setState((state) => ({
     ...state,
     settings: { ...state.settings, spotifyClientId: undefined },
@@ -236,6 +262,55 @@ describe("ingestDroppedFiles", () => {
     // ...but the match+enrich runners ran exactly once for the whole batch.
     expect(mocks.matchAllOnSpotify).toHaveBeenCalledTimes(1);
     expect(mocks.enrichAllPending).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the busy spinner lit continuously across a multi-envelope drop and its post-ingest sweep", async () => {
+    // Regression: importEnvelope and the trailing sweep each used to
+    // bracket their own busy, so the global busyCount fell back to 0
+    // between envelopes and again before the sweep — the spinner
+    // flickered. Now a single continuous bracket spans the whole drop.
+    const envelope = (name: string) => ({
+      format: "curator-playlist-v1" as const,
+      name,
+      tracks: [{ title: `Song ${name}`, artist: `Artist ${name}` }],
+    });
+    const files = [
+      makeTextFile("a.curator.txt", JSON.stringify(envelope("A"))),
+      makeTextFile("b.curator.txt", JSON.stringify(envelope("B"))),
+    ];
+
+    await ingestDroppedFiles(files);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // The sweep runners ran while busy was held (>= 1), never with the
+    // spinner off.
+    expect(mocks.busySamples.length).toBeGreaterThan(0);
+    for (const sample of mocks.busySamples) {
+      expect(sample).toBeGreaterThanOrEqual(1);
+    }
+    // And the counter is balanced back to 0 once the drop fully settles.
+    expect(mocks.busyCount.value).toBe(0);
+  });
+
+  it("keeps the busy spinner lit across an audio drop's ingest and post-ingest sweep", async () => {
+    // Same continuity guarantee for the addAndEnrich path: ingest + the
+    // awaited sweep run under one bracket (addAndEnrich nests inside, so
+    // the ref count rises to 2 then back, never to 0 mid-drop).
+    mocks.ingestFiles.mockImplementation(async () => {
+      mocks.busySamples.push(mocks.busyCount.value);
+      return { tracks: [track("a")], failures: [] };
+    });
+
+    await ingestDroppedFiles([makeAudioFile("song.mp3")]);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(mocks.busySamples.length).toBeGreaterThan(0);
+    for (const sample of mocks.busySamples) {
+      expect(sample).toBeGreaterThanOrEqual(1);
+    }
+    expect(mocks.busyCount.value).toBe(0);
   });
 
   it("does NOT overwrite playlist meta when the draft already has tracks", async () => {

@@ -450,6 +450,11 @@ export class IntervalQueue {
             }
             value = raced;
           }
+          // `as never`: tasks are stored type-erased as Task<unknown>, so
+          // `value` is `unknown` here; the cast is the necessary escape
+          // hatch to satisfy resolve's parameter. Soundness is guaranteed
+          // at the enqueue site, where the generic ties run()'s result type
+          // to the resolved value the caller receives.
           task.resolve(value as never);
         } catch (error) {
           // When `cancelByTag` aborted us, the underlying fetch throws

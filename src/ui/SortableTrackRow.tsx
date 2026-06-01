@@ -4,7 +4,7 @@ import { CSS } from "@dnd-kit/utilities";
 import type { Track } from "../types";
 import { formatDuration } from "../util/duration";
 import { EnrichmentGlyph } from "./EnrichmentGlyph";
-import { TrashIcon } from "./icons";
+import { DragHandleIcon, RefreshIcon, TrashIcon } from "./icons";
 import { PlayButton } from "./PlayButton";
 import { StatusGlyph } from "./StatusGlyph";
 
@@ -188,7 +188,7 @@ function SortableTrackRowImpl({
           aria-keyshortcuts="Space ArrowUp ArrowDown"
           title="Drag to reorder"
         >
-          ⋮⋮
+          <DragHandleIcon />
         </button>
       </div>
       <div role="gridcell" className="w-8 px-1">
@@ -253,9 +253,9 @@ function SortableTrackRowImpl({
           onClick={handleReEnrich}
           aria-label="Re-search Spotify and re-enrich from MusicBrainz"
           title="Re-search Spotify and re-enrich from MusicBrainz"
-          className="inline-flex items-center justify-center bg-transparent px-1 py-0.5 text-sm text-matched transition-opacity hover:opacity-70"
+          className="inline-flex items-center justify-center bg-transparent px-1 py-0.5 text-matched transition-opacity hover:opacity-70"
         >
-          ↻
+          <RefreshIcon />
         </button>
       </div>
       <div role="gridcell" className="w-8 px-1">

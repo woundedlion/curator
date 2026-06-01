@@ -52,6 +52,7 @@ vi.mock("./enrichmentRunner", () => ({
 }));
 
 import { pickSpotifyCandidate, unpickSpotifyMatch } from "./spotifyPicker";
+import { isTrackPendingLookup } from "./enrichmentEligibility";
 import { usePlaylistStore } from "../store/playlistStore";
 import { useSettingsStore } from "../store/settingsStore";
 
@@ -217,6 +218,43 @@ describe("pickSpotifyCandidate — identity-change contract (DESIGN §4.5 item 1
     }
   });
 
+  it("marks the row userOverride so a later re-enrich-all can't re-resolve away the pick", async () => {
+    seedTrack(
+      trackOf({
+        id: "t1",
+        spotify: {
+          status: "ambiguous",
+          candidates: [],
+          score: 0.5,
+        },
+      }),
+    );
+
+    await pickSpotifyCandidate("t1", candidate(), [candidate()]);
+
+    const row = usePlaylistStore.getState().tracksById["t1"]!;
+    // The pick is the user's chosen identity; the bit must be written so
+    // the no-reclobber guarantee survives a later reset to idle.
+    expect(row.enrichment.userOverride).toBe(true);
+    expect(row.enrichment.status).toBe("idle");
+
+    // Even if the row falls back to enrichment.idle while spotify stays
+    // matched (the exact shape reenrichAll would normally treat as
+    // "needs MB next" and re-queue), userOverride opts it out of the
+    // pending set — so matchAllOnSpotify never re-searches and the
+    // user's URI stays put.
+    expect(isTrackPendingLookup(row, /* spotifyConfigured */ true)).toBe(false);
+
+    // Sanity: without userOverride the same shape WOULD be pending,
+    // confirming the bit is what protects the pick rather than some
+    // incidental status combination.
+    const withoutOverride = {
+      ...row,
+      enrichment: { status: "idle" as const },
+    };
+    expect(isTrackPendingLookup(withoutOverride, true)).toBe(true);
+  });
+
   it("clears the MB cache for the row's PRE-PICK identity", async () => {
     seedTrack(
       trackOf({
@@ -307,8 +345,8 @@ describe("pickSpotifyCandidate — identity-change contract (DESIGN §4.5 item 1
     await Promise.resolve();
     await Promise.resolve();
 
-    // clearMbCacheForCurrentIdentity also early-returns on a missing
-    // track, so the cache is not touched either.
+    // The pre-pick identity key is null when the track is missing, so
+    // clearMbCacheForKey is never reached and the cache is not touched.
     expect(mocks.deleteCachedCandidates).not.toHaveBeenCalled();
     // The runner gates on hasContact, not on existence, so it still
     // fires. That's an acceptable behavior — enrichOneTrackMb itself

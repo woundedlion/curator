@@ -92,6 +92,18 @@ describe("Sidebar", () => {
     expect(wroteId).toBe(true);
   });
 
+  it("exposes the draggable playlist row to assistive tech", () => {
+    // The whole <li> is a native drag source with only an inner cursor-grab
+    // hint; aria-roledescription announces the affordance to SR users.
+    useSpotifyStore.setState({
+      connected: true,
+      playlists: [playlist("pl-7", "Roadtrip", 3)],
+    });
+    render(<Sidebar />);
+    const item = screen.getByText("Roadtrip").closest("li")!;
+    expect(item.getAttribute("aria-roledescription")).toBe("draggable playlist");
+  });
+
   it("refresh button calls loadPlaylists with the configured client id", async () => {
     const loadPlaylists = vi.fn().mockResolvedValue(undefined);
     useSpotifyStore.setState({ connected: true, loadPlaylists });

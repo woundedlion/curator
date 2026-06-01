@@ -15,7 +15,11 @@
 //   - Unmatched / ambiguous rows keep the local-file-first order.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createPlaybackSource, hasInAppSource } from "./playbackSource";
+import {
+  createPlaybackSource,
+  hasInAppSource,
+  resolveSdkAvailability,
+} from "./playbackSource";
 import type { SpotifyCandidate, SpotifyMatch, Track } from "../types";
 
 function makeFile(): File {
@@ -121,6 +125,40 @@ describe("createPlaybackSource — matched rows prefer Spotify when the SDK is c
       false,
     );
     expect(source.kind).toBe("none");
+  });
+});
+
+describe("resolveSdkAvailability — single source of SDK-priority truth", () => {
+  it("'ready' yields sdkReady AND sdkInitable regardless of opt-in", () => {
+    expect(resolveSdkAvailability("ready", false)).toEqual({
+      sdkReady: true,
+      sdkInitable: true,
+    });
+  });
+
+  it("opted-in but not yet connected ('off'/'loading') is initable but not ready", () => {
+    expect(resolveSdkAvailability("off", true)).toEqual({
+      sdkReady: false,
+      sdkInitable: true,
+    });
+    expect(resolveSdkAvailability("loading", true)).toEqual({
+      sdkReady: false,
+      sdkInitable: true,
+    });
+  });
+
+  it("not opted-in is neither ready nor initable", () => {
+    expect(resolveSdkAvailability("off", false)).toEqual({
+      sdkReady: false,
+      sdkInitable: false,
+    });
+  });
+
+  it("'unavailable' closes the SDK for the session even when opted-in", () => {
+    expect(resolveSdkAvailability("unavailable", true)).toEqual({
+      sdkReady: false,
+      sdkInitable: false,
+    });
   });
 });
 

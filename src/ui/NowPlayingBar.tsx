@@ -158,8 +158,11 @@ export function NowPlayingBar() {
           aria-label="Seek"
           // Native <input type="range"> derives valuemin/max/now from
           // min/max/value, so only aria-valuetext is worth setting — it
-          // overrides the spoken value with the mm:ss form.
-          aria-valuetext={`${formatDuration(sliderValue)} of ${formatDuration(durationMs)}`}
+          // overrides the spoken value with the mm:ss form. Use the
+          // quantized `sliderThumb` (not the raw `sliderValue`) so the
+          // announced position matches the visible thumb exactly; otherwise
+          // keyboard scrub could speak a value up to ~1s off the thumb.
+          aria-valuetext={`${formatDuration(sliderThumb)} of ${formatDuration(durationMs)}`}
           className="h-1 min-w-0 flex-1 cursor-pointer appearance-none rounded bg-neutral-700 accent-matched disabled:cursor-not-allowed disabled:opacity-50"
         />
         <span

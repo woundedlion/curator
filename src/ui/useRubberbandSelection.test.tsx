@@ -483,6 +483,51 @@ describe("useRubberbandSelection — drag selection", () => {
   });
 });
 
+// ─── 3b. Per-frame dedup of the store write ─────────────────────────
+
+describe("useRubberbandSelection — skips redundant store writes", () => {
+  it("does not call setSelection again when a frame computes the same selection set", () => {
+    usePlaylistStore.setState({
+      tracksById: {
+        a: makeTrack("a"),
+        b: makeTrack("b"),
+        c: makeTrack("c"),
+      },
+      playlist: {
+        id: "active-draft",
+        name: "T",
+        description: "",
+        public: false,
+        collaborative: false,
+        trackIds: ["a", "b", "c"],
+        sort: null,
+        hideUnmatched: false,
+      },
+    });
+    const setSpy = vi.spyOn(usePlaylistStore.getState(), "setSelection");
+    const { getByTestId } = render(<Harness visibleTrackIds={["a", "b", "c"]} />);
+    const container = getByTestId("container");
+    fireEvent.pointerDown(container, {
+      button: 0,
+      clientX: 50,
+      clientY: 100,
+      pointerId: 1,
+    });
+    // First move past threshold → one store write for rows 0..1.
+    fireWindowPointer("pointermove", { clientX: 50, clientY: 150 });
+    const callsAfterFirst = setSpy.mock.calls.length;
+    expect(callsAfterFirst).toBeGreaterThan(0);
+    // A second move to a nearby Y that lands on the SAME row band must not
+    // write again (selection set unchanged).
+    fireWindowPointer("pointermove", { clientX: 50, clientY: 151 });
+    expect(setSpy.mock.calls.length).toBe(callsAfterFirst);
+    // A move that grows the band to a NEW row writes again.
+    fireWindowPointer("pointermove", { clientX: 50, clientY: 230 });
+    expect(setSpy.mock.calls.length).toBeGreaterThan(callsAfterFirst);
+    setSpy.mockRestore();
+  });
+});
+
 // ─── 4. suppressClickRef ────────────────────────────────────────────
 
 describe("useRubberbandSelection — suppressClickRef on drag end", () => {
@@ -523,6 +568,44 @@ describe("useRubberbandSelection — suppressClickRef on drag end", () => {
           }, 0),
         ),
     );
+    expect(suppressClickValue()).toBe(false);
+  });
+
+  it("clears suppressClickRef when the drag-end click actually fires (robust to a delayed synthetic click)", () => {
+    // The window click listener is the primary clear path: it fires
+    // whenever the click lands, regardless of macrotask timing, so the
+    // flag survives until the click consumes it rather than racing a 0ms
+    // timer. Here we simulate the click arriving AFTER drag end with the
+    // flag still set, and assert it gets cleared by the click — not before.
+    usePlaylistStore.setState({
+      tracksById: { a: makeTrack("a"), b: makeTrack("b") },
+      playlist: {
+        id: "active-draft",
+        name: "T",
+        description: "",
+        public: false,
+        collaborative: false,
+        trackIds: ["a", "b"],
+        sort: null,
+        hideUnmatched: false,
+      },
+    });
+    const { getByTestId } = render(<Harness visibleTrackIds={["a", "b"]} />);
+    const container = getByTestId("container");
+    fireEvent.pointerDown(container, {
+      button: 0,
+      clientX: 50,
+      clientY: 100,
+      pointerId: 1,
+    });
+    fireWindowPointer("pointermove", { clientX: 50, clientY: 150 });
+    fireWindowPointer("pointerup", { clientX: 50, clientY: 150 });
+    // Flag is still set right after release (no click consumed it yet).
+    expect(suppressClickValue()).toBe(true);
+    // The synthetic click now lands → window listener clears the flag.
+    act(() => {
+      window.dispatchEvent(new Event("click", { bubbles: true }));
+    });
     expect(suppressClickValue()).toBe(false);
   });
 

@@ -94,6 +94,10 @@ function buildTrackFromParsed(
     album: id3Album ?? filenameHint.album,
     albumArtist: id3AlbumArtist,
     year: saneYear(parsed.year),
+    // The worker already sanitizes originalYear via saneOriginalYear; repeat
+    // saneYear here (as we do for year) so a direct buildTrackFromParsed
+    // caller can't leak a junk year into the Track.
+    originalYear: saneYear(parsed.originalYear),
     trackNo: sanePosition(parsed.trackNo) ?? filenameHint.trackNo,
     trackOf: sanePosition(parsed.trackOf),
     discNo: sanePosition(parsed.discNo),

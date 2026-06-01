@@ -10,6 +10,7 @@ import { describe, expect, it } from "vitest";
 import {
   durationToMs,
   sanePosition,
+  saneOriginalYear,
   saneYear,
 } from "./audioParser.worker";
 
@@ -97,5 +98,33 @@ describe("saneYear", () => {
     expect(saneYear(undefined)).toBeUndefined();
     expect(saneYear(null)).toBeUndefined();
     expect(saneYear("2020")).toBeUndefined();
+  });
+});
+
+describe("saneOriginalYear", () => {
+  it("prefers the numeric originalyear field", () => {
+    expect(saneOriginalYear(1997, undefined)).toBe(1997);
+    // originalyear wins even when originaldate is also present.
+    expect(saneOriginalYear(1997, "1999-06-16")).toBe(1997);
+  });
+
+  it("falls back to the leading year of originaldate", () => {
+    expect(saneOriginalYear(undefined, "1997-06-16")).toBe(1997);
+    expect(saneOriginalYear(undefined, "  2001-12")).toBe(2001);
+    expect(saneOriginalYear(undefined, "1985")).toBe(1985);
+  });
+
+  it("runs both sources through saneYear (rejects junk)", () => {
+    // 5-digit garbage in either source is filtered.
+    expect(saneOriginalYear(99999, undefined)).toBeUndefined();
+    expect(saneOriginalYear(undefined, "99999-01-01")).toBeUndefined();
+    // Out-of-range leading year from originaldate is rejected.
+    expect(saneOriginalYear(undefined, "1700-01-01")).toBeUndefined();
+  });
+
+  it("returns undefined when neither source yields a year", () => {
+    expect(saneOriginalYear(undefined, undefined)).toBeUndefined();
+    expect(saneOriginalYear(undefined, "no-year-here")).toBeUndefined();
+    expect(saneOriginalYear(undefined, "")).toBeUndefined();
   });
 });

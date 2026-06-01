@@ -58,6 +58,10 @@ function makeFakeDb() {
             store.set(value.key, value);
             return value.key;
           },
+          delete: async (key: string) => {
+            if (isWrite) await headReached;
+            store.delete(key);
+          },
           // Minimal cursor over a snapshot of the current rows. Deletes
           // hit the live `store` Map; iteration advances by index over the
           // snapshot, which is sufficient for the version-sweep test (real

@@ -254,14 +254,18 @@ async function fetchWithTimeout(
     // `instanceof DOMException` is too narrow — fetch in some browsers
     // (Safari, some polyfills) throws an Error subclass with
     // name="AbortError" that isn't a DOMException. Checking the name
-    // alone is the portable test. Also catches the raw "signal is
-    // aborted without reason" message that surfaces when an Error
-    // shape we don't expect carries the abort.
-    const message = error instanceof Error ? error.message : String(error);
+    // alone is the portable test. We also key off our own `timedOut`
+    // flag, so when the timeout fired we don't depend on the abort
+    // error's shape at all. A prior `message.includes("aborted")`
+    // fallback was removed: a substring match is fragile and could
+    // misclassify an unrelated failure whose message merely contains
+    // "aborted" (e.g. an upstream "transaction aborted") as a timeout.
+    // The AbortError name + the timedOut flag cover every real abort
+    // path — cancellation is already handled above via the
+    // `cancelSignal.aborted` early return, so any abort reaching here
+    // is our timeout.
     const isAbort =
-      timedOut ||
-      (error instanceof Error && error.name === "AbortError") ||
-      message.includes("aborted");
+      timedOut || (error instanceof Error && error.name === "AbortError");
     if (isAbort) {
       throw new Error(
         `MusicBrainz request timed out after ${Math.round(
@@ -299,6 +303,11 @@ async function runOneAttempt(
     // a misconfigured upstream advertising Retry-After: 86400
     // would otherwise pin the head of the MB queue (and every
     // queued track behind it) for a day.
+    // Drain/discard the 503 body before returning or throwing, matching
+    // the non-OK branch below. Leaving the body unread can keep the
+    // underlying connection from being reused by the next queued request
+    // (connection-reuse hygiene); a 503 page is never useful to us.
+    await response.text().catch(() => "");
     if (!canRetry) {
       throw new Error(`MusicBrainz unavailable (503) — try again later`);
     }
@@ -466,7 +475,24 @@ export async function searchRecordings(
   if (strictResults.length > 0) return strictResults;
 
   const permissiveQuery = buildPermissiveQuery(strictQuery);
-  if (!permissiveQuery || permissiveQuery === strictQuery) {
+  // Skip the permissive pass when it adds nothing the strict pass didn't
+  // already search — a redundant second request burns a 1 req/sec MB slot
+  // for zero new candidates. The permissive pass only earns its slot when
+  // it LOOSENS the strict query: stripping Lucene structure (field
+  // prefixes, quoted-phrase boundaries, the clause-joining AND) so the
+  // dismax parser can tokenize freely. When the strict query carries no
+  // such structure — it's already a bare token bag — the permissive form
+  // is byte-identical content and the dismax pass would re-search the
+  // exact same terms the strict pass just did.
+  //
+  // A raw `permissiveQuery === strictQuery` compare is too brittle to
+  // detect that: `buildPermissiveQuery` collapses internal whitespace, so
+  // a bareword strict query with doubled/leading spaces survives as a
+  // byte-different (but semantically identical) permissive string and the
+  // guard misses it. Normalize the strict query's whitespace the same way
+  // before comparing so the guard fires on semantic, not byte, equality.
+  const normalizedStrict = strictQuery.replace(/\s+/g, " ").trim();
+  if (!permissiveQuery || permissiveQuery === normalizedStrict) {
     console.warn(
       "[curator] MusicBrainz strict + permissive returned 0 recordings.\n  strict:     " +
         strictQuery,

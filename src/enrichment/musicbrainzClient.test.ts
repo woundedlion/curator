@@ -285,6 +285,24 @@ describe("searchRecordings (mocked fetch)", () => {
 
       expect(fetchMock).toHaveBeenCalledTimes(1);
     });
+
+    it("does NOT issue a permissive call when strict differs only by whitespace from its permissive form", async () => {
+      const fetchMock = vi.fn(async () => jsonResponse({ recordings: [] }));
+      vi.stubGlobal("fetch", fetchMock);
+
+      // A bareword strict query with doubled/leading whitespace has no
+      // Lucene structure to loosen — buildPermissiveQuery only collapses
+      // the whitespace, so the dismax pass would re-search the exact same
+      // tokens. The guard must normalize whitespace before comparing so it
+      // recognizes this as semantically identical and skips the redundant
+      // second request (a byte-equality compare would miss it and burn a
+      // 1 req/sec slot).
+      const p = searchRecordings("  just   plain  text  ", CONTACT);
+      await vi.advanceTimersByTimeAsync(0);
+      await p;
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe("rate limiting", () => {
@@ -539,6 +557,47 @@ describe("searchRecordings (mocked fetch)", () => {
       expect(String(error)).toContain("non-JSON");
     });
 
+    it("classifies a name='AbortError' fetch rejection as a timeout", async () => {
+      // The fetchWithTimeout wrapper aborts via AbortController on its own
+      // 30s timeout; the resulting AbortError must surface as the
+      // user-facing timeout message, keyed off the AbortError name (the
+      // portable check across browsers/polyfills).
+      const abortError = new Error("the operation was aborted");
+      abortError.name = "AbortError";
+      const fetchMock = vi.fn(async () => {
+        throw abortError;
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      const rej = captureRejection(
+        searchRecordings('recording:"A" AND artist:"X"', CONTACT),
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      const error = await rej;
+      expect(error).toBeInstanceOf(Error);
+      expect(String(error)).toContain("timed out");
+    });
+
+    it("does NOT misclassify an unrelated error whose message contains 'aborted'", async () => {
+      // Regression for the removed `message.includes("aborted")` fallback:
+      // a non-abort failure (no AbortError name, timeout never fired) whose
+      // message merely contains the substring "aborted" must propagate
+      // verbatim, NOT be rewritten as a timeout.
+      const fetchMock = vi.fn(async () => {
+        throw new TypeError("connection aborted by peer");
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      const rej = captureRejection(
+        searchRecordings('recording:"A" AND artist:"X"', CONTACT),
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      const error = await rej;
+      expect(error).toBeInstanceOf(TypeError);
+      expect(String(error)).toContain("connection aborted by peer");
+      expect(String(error)).not.toContain("timed out");
+    });
+
     it("returns [] for an empty query without calling fetch", async () => {
       const fetchMock = vi.fn();
       vi.stubGlobal("fetch", fetchMock);
@@ -612,6 +671,102 @@ describe("searchRecordings (mocked fetch)", () => {
       expect(candidates[0]!.releaseId).toBe("rel-1995");
       expect(candidates[0]!.album).toBe("Album '95");
       expect(candidates[0]!.originalYear).toBeUndefined();
+    });
+
+    it("falls back to releases[0] when no release has a parseable date", async () => {
+      // earliestRelease scans for the earliest parseable year; when every
+      // release is missing/has an unparseable date it must still surface
+      // album/releaseId from the first release rather than dropping them,
+      // and leave year undefined (no canonical first-release-date either).
+      const fetchMock = vi.fn(async () =>
+        jsonResponse({
+          recordings: [
+            {
+              id: "rec-1",
+              title: "Song",
+              "artist-credit": [{ name: "Artist" }],
+              releases: [
+                { id: "rel-a", title: "First Listed" },
+                { id: "rel-b", title: "Second", date: "" },
+              ],
+            },
+          ],
+        }),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+
+      const p = searchRecordings(
+        'recording:"Song" AND artist:"Artist"',
+        CONTACT,
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      const candidates = await p;
+
+      expect(candidates[0]!.releaseId).toBe("rel-a");
+      expect(candidates[0]!.album).toBe("First Listed");
+      expect(candidates[0]!.year).toBeUndefined();
+      expect(candidates[0]!.originalYear).toBeUndefined();
+    });
+  });
+
+  describe("recording → candidate untrusted-JSON guard", () => {
+    it("drops a recording with a missing or empty id (can't seed cover-art / cache key)", async () => {
+      // MB scalar fields are typed `string`, but the response is untrusted
+      // (maintenance HTML, schema drift, truncated body). A recording with
+      // no usable id can't be matched or cover-art-probed, so it must be
+      // filtered out rather than letting `undefined` flow into a `string`
+      // slot. The valid sibling recording must still come through.
+      const fetchMock = vi.fn(async () =>
+        jsonResponse({
+          recordings: [
+            { title: "No Id Here", "artist-credit": [{ name: "A" }] },
+            { id: "", title: "Empty Id", "artist-credit": [{ name: "A" }] },
+            {
+              id: "rec-ok",
+              title: "Valid",
+              "artist-credit": [{ name: "A" }],
+            },
+          ],
+        }),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+
+      const p = searchRecordings(
+        'recording:"Song" AND artist:"A"',
+        CONTACT,
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      const candidates = await p;
+
+      expect(candidates).toHaveLength(1);
+      expect(candidates[0]!.recordingId).toBe("rec-ok");
+    });
+
+    it("drops a recording with a missing or empty title (title seeds the cache key)", async () => {
+      const fetchMock = vi.fn(async () =>
+        jsonResponse({
+          recordings: [
+            { id: "rec-1", "artist-credit": [{ name: "A" }] },
+            { id: "rec-2", title: "", "artist-credit": [{ name: "A" }] },
+            {
+              id: "rec-ok",
+              title: "Valid",
+              "artist-credit": [{ name: "A" }],
+            },
+          ],
+        }),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+
+      const p = searchRecordings(
+        'recording:"Song" AND artist:"A"',
+        CONTACT,
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      const candidates = await p;
+
+      expect(candidates).toHaveLength(1);
+      expect(candidates[0]!.recordingId).toBe("rec-ok");
     });
   });
 });

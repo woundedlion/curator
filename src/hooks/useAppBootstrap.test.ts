@@ -89,25 +89,50 @@ afterEach(() => {
   cleanup();
 });
 
-// Let the mount's fire-and-forget async chains settle.
+// Let the mount's fire-and-forget async chain settle. The chain awaits
+// hydrate → promote → bootstrapSpotify → SDK-warmup, so it spans several
+// microtask hops; drain generously.
 async function flushMicrotasks(): Promise<void> {
-  await Promise.resolve();
-  await Promise.resolve();
+  for (let i = 0; i < 8; i++) await Promise.resolve();
 }
 
 describe("useAppBootstrap — mount", () => {
   it("initializes playback, hydrates the draft, boots Spotify, prunes cache, observes the queue", async () => {
     renderHook(() => useAppBootstrap());
 
+    // Synchronous at mount: playback init, the queue observer, cache prune,
+    // and the start of the hydrate chain (it reaches its first await).
     expect(initialize).toHaveBeenCalledTimes(1);
     expect(hydrateFromStorage).toHaveBeenCalledTimes(1);
-    expect(bootstrapSpotify).toHaveBeenCalledTimes(1);
     expect(pruneStaleCacheEntries).toHaveBeenCalledTimes(1);
     expect(observe).toHaveBeenCalledTimes(1);
+    // bootstrapSpotify is now sequenced AFTER hydrate (so its store-content
+    // side effects see a hydrated store), not kicked off synchronously.
+    expect(bootstrapSpotify).not.toHaveBeenCalled();
 
     await flushMicrotasks();
-    // After hydration resolves, single-candidate matches are promoted.
+    // After hydration resolves, single-candidate matches are promoted and
+    // Spotify bootstrap runs.
     expect(promoteSingleCandidateMatches).toHaveBeenCalledTimes(1);
+    expect(bootstrapSpotify).toHaveBeenCalledTimes(1);
+  });
+
+  it("runs bootstrapSpotify only AFTER hydrate resolves (ordering)", async () => {
+    // Gate hydrate on a manually-resolved promise so we can observe the
+    // ordering: bootstrapSpotify must not fire while hydrate is pending.
+    let resolveHydrate!: () => void;
+    hydrateFromStorage.mockImplementationOnce(
+      () => new Promise<void>((r) => (resolveHydrate = r)),
+    );
+    renderHook(() => useAppBootstrap());
+    await flushMicrotasks();
+    // Hydrate is still pending → Spotify bootstrap has not started.
+    expect(bootstrapSpotify).not.toHaveBeenCalled();
+    expect(promoteSingleCandidateMatches).not.toHaveBeenCalled();
+    resolveHydrate();
+    await flushMicrotasks();
+    expect(promoteSingleCandidateMatches).toHaveBeenCalledTimes(1);
+    expect(bootstrapSpotify).toHaveBeenCalledTimes(1);
   });
 
   it("warms the SDK after bootstrap when the user opted into full playback and is connected", async () => {

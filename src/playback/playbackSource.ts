@@ -4,17 +4,27 @@ import {
   getSpotifyUri,
 } from "../util/trackAccessors";
 
+// A "local" source carries the File itself, NOT a pre-allocated object
+// URL. The blob URL is created lazily inside HtmlAudioBackend.load — at
+// the moment it's actually consumed — and the backend owns its full
+// lifecycle (create on load, revoke on stop/dispose/replace). Allocating
+// the URL up front in createPlaybackSource forced every Player exit path
+// to remember to revoke and leaked the URL whenever a target was built
+// but never loaded (e.g. the teardown-races-click window in
+// playbackStore.toggle). Carrying the File defers allocation past the
+// decision, so an un-loaded source allocates nothing to leak.
 export type PlaybackSource =
-  | { kind: "local"; objectUrl: string; label: string }
+  | { kind: "local"; file: File; label: string }
   | { kind: "spotify-sdk"; uri: string; label: string }
   | { kind: "spotify-preview"; url: string; label: string }
   | { kind: "none" };
 
 // Whether `createPlaybackSource` will produce a non-`none` source for this
-// track. Mirrors that function's branches so callers can pre-check without
-// allocating an objectUrl. Round-tripped tracks that have only a Spotify
-// URI (no localFile, no previewUrl, no SDK) return `false` here — the
-// external-link affordance lives in PlayButton, not in the playback source.
+// track. Mirrors that function's branches so callers can pre-check (e.g.
+// to decide whether to render an in-app play affordance) without building
+// a full source. Round-tripped tracks that have only a Spotify URI (no
+// localFile, no previewUrl, no SDK) return `false` here — the external-link
+// affordance lives in PlayButton, not in the playback source.
 export function hasInAppSource(
   track: Track,
   sdkEnabled: boolean,
@@ -33,6 +43,41 @@ export function externalSpotifyUrl(spotifyUri: string): string | null {
   const id = spotifyUri.slice(prefix.length);
   if (!id) return null;
   return `https://open.spotify.com/track/${id}`;
+}
+
+// The SDK lifecycle status the store mirrors from the Player's lazy init
+// outcome. Defined here so the priority policy that consumes it lives in
+// one place (see resolveSdkAvailability).
+export type SdkAvailabilityStatus =
+  | "off"
+  | "loading"
+  | "ready"
+  | "unavailable";
+
+// The two distinct SDK signals the source-selection policy needs. See
+// createPlaybackSource for what each one gates. Bundled so the single
+// place that derives them (resolveSdkAvailability) is the only thing that
+// has to encode the priority rules — every caller (main-view track,
+// picker candidate) funnels through it instead of re-deriving and risking
+// drift.
+export type SdkAvailability = { sdkReady: boolean; sdkInitable: boolean };
+
+// SINGLE SOURCE OF TRUTH for "is the SDK an option, and how strong a one?"
+// Previously the store's isSdkUsable() and the candidate-target builder
+// each re-derived this from sdk.status + opt-in, and had to be kept in
+// sync by hand (comments literally said they must "mirror" each other).
+//   - `sdkReady`: connected RIGHT NOW — only "ready" qualifies.
+//   - `sdkInitable`: usable enough to attempt — "ready", OR opted-in and
+//     not-yet-failed ("unavailable" closes the SDK for the session).
+// `shouldTry` carries the user opt-in + client-id check (the store's
+// shouldTryEnableSdk), kept out of this module so it stays settings-free.
+export function resolveSdkAvailability(
+  status: SdkAvailabilityStatus,
+  shouldTry: boolean,
+): SdkAvailability {
+  const sdkReady = status === "ready";
+  const sdkInitable = sdkReady || (status !== "unavailable" && shouldTry);
+  return { sdkReady, sdkInitable };
 }
 
 // Source selection policy. Two SDK signals, deliberately distinct:
@@ -64,7 +109,7 @@ export function createPlaybackSource(
   if (track.localFile) {
     return {
       kind: "local",
-      objectUrl: URL.createObjectURL(track.localFile),
+      file: track.localFile,
       label: "Local file",
     };
   }
@@ -92,12 +137,11 @@ export function createPlaybackSource(
   return { kind: "none" };
 }
 
-export function releasePlaybackSource(source: PlaybackSource): void {
-  if (source.kind === "local") URL.revokeObjectURL(source.objectUrl);
-}
-
+// Direct media URL for sources that already carry one (Spotify previews
+// are ordinary HTTPS URLs the <audio> element can stream as-is). "local"
+// is deliberately absent: its blob URL is created and owned inside
+// HtmlAudioBackend.load, never minted here, so there's nothing to return.
 export function getAudioElementUrl(source: PlaybackSource): string | null {
-  if (source.kind === "local") return source.objectUrl;
   if (source.kind === "spotify-preview") return source.url;
   return null;
 }

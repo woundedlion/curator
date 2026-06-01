@@ -188,13 +188,25 @@ export function AmbiguousMatchDialog({ trackId, onClose }: Props) {
   }, []);
 
   const candidates = useMemo<SpotifyCandidate[]>(() => {
-    if (searchedCandidates) return searchedCandidates;
-    if (!track) return [];
-    const match = track.spotify;
-    if (match.status === "matched" || match.status === "ambiguous") {
-      return match.candidates;
+    let source: SpotifyCandidate[] = [];
+    if (searchedCandidates) {
+      source = searchedCandidates;
+    } else if (track) {
+      const match = track.spotify;
+      if (match.status === "matched" || match.status === "ambiguous") {
+        source = match.candidates;
+      }
     }
-    return [];
+    // Dedupe by uri: a re-search merge can occasionally surface the same
+    // Spotify track twice, which would collide on the `key={candidate.uri}`
+    // list keys below (React duplicate-key warning + reconciliation bugs).
+    // Keeping the first occurrence preserves search-rank order.
+    const seen = new Set<string>();
+    return source.filter((c) => {
+      if (seen.has(c.uri)) return false;
+      seen.add(c.uri);
+      return true;
+    });
   }, [searchedCandidates, track]);
 
   // SDK is "available" if the user has opted in and either it's already
@@ -389,13 +401,17 @@ export function AmbiguousMatchDialog({ trackId, onClose }: Props) {
                         if (candidate.uri === currentUri) {
                           // Clicking the already-selected match toggles it
                           // off: revert the row to unmatched. Keep the
-                          // dialog open and pin the candidate list (the
-                          // row's status flips to "missing", which carries
-                          // no candidates of its own) so the click visibly
-                          // de-highlights this row and the user can pick a
-                          // different version or close.
-                          setSearchedCandidates(candidates);
+                          // dialog open and PIN the current candidate list
+                          // so it survives the row flipping to "missing"
+                          // (which carries no candidates of its own) — the
+                          // user can then pick a different version or close,
+                          // and a rapid reopen still shows the list. Snapshot
+                          // into a fresh array so the pinned value is fully
+                          // detached from the store's render-closure
+                          // reference and can't be invalidated underneath us.
+                          const pinned = [...candidates];
                           unpickSpotifyMatch(trackId);
+                          setSearchedCandidates(pinned);
                           return;
                         }
                         void pickSpotifyCandidate(

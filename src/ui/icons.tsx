@@ -121,6 +121,17 @@ export function CircleGlyphIcon({
   );
 }
 
+// Six-dot drag affordance for the row reorder handle. SVG (not the unicode
+// `⋮⋮`) so it renders at a fixed pixel size across platform fonts — same
+// rationale as CircleGlyphIcon above.
+export function DragHandleIcon({ className }: IconProps) {
+  return (
+    <svg viewBox="0 0 24 24" className={svgClass(className)} aria-hidden>
+      <path d="M9 5a2 2 0 1 1-4 0 2 2 0 0 1 4 0zm0 7a2 2 0 1 1-4 0 2 2 0 0 1 4 0zm0 7a2 2 0 1 1-4 0 2 2 0 0 1 4 0zm10-14a2 2 0 1 1-4 0 2 2 0 0 1 4 0zm0 7a2 2 0 1 1-4 0 2 2 0 0 1 4 0zm0 7a2 2 0 1 1-4 0 2 2 0 0 1 4 0z" />
+    </svg>
+  );
+}
+
 export function RefreshIcon({ className }: IconProps) {
   return (
     <svg viewBox="0 0 24 24" className={svgClass(className)} aria-hidden>

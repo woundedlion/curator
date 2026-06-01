@@ -187,6 +187,9 @@ function postToTokenEndpoint(
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
         body,
+        // Defense-in-depth: never let a token response touch the HTTP
+        // cache. Auth material must not be served from / written to cache.
+        cache: "no-store",
         signal: controller.signal,
       }).finally(() => clearTimeout(timer));
     },
@@ -263,6 +266,11 @@ export function clearCallbackParams(): void {
   url.searchParams.delete("code");
   url.searchParams.delete("state");
   url.searchParams.delete("error");
+  // OAuth denials also carry error_description/error_uri; strip them too
+  // so a rejection doesn't leave provider error text lingering in the
+  // address bar and browser history after we've handled it.
+  url.searchParams.delete("error_description");
+  url.searchParams.delete("error_uri");
   window.history.replaceState({}, "", url.toString());
 }
 
@@ -346,6 +354,17 @@ async function refreshAccessToken(
   }
   const json = (await response.json()) as TokenResponse;
   const refreshed = toTokens(json, tokens.refreshToken);
+  // Re-validate the refreshed token's scopes (mirrors
+  // readTokensIfScopesValid for the cached-token path). Spotify can mint a
+  // refreshed token with a narrower scope set than originally granted — if
+  // a required scope is now missing, the session is effectively unusable
+  // for our endpoints, so treat it like the initial missing-scope case:
+  // clear tokens and surface the typed auth error prompting a reconnect.
+  // Persisting it would just defer the failure to a confusing 403 later.
+  if (missingScopes(refreshed).length > 0) {
+    clearTokens();
+    throw new SpotifyAuthExpiredError();
+  }
   writeTokens(refreshed);
   return refreshed;
 }

@@ -12,17 +12,19 @@ export function ToastList() {
 
   return (
     <div
-      aria-live="polite"
-      // assertive politeness for errors would interrupt screen readers
-      // mid-utterance, which is jarring. polite + sticky errors strikes
-      // the right balance: they announce when there's a pause, and stay
-      // on screen until the user dismisses them.
+      // No live region on the container: each toast carries its OWN role so
+      // there is a single, coherent announcement model. Nesting a polite
+      // container around per-toast role="alert" (assertive) children made
+      // screen readers double-announce / disagree on politeness. Now errors
+      // use role="alert" (assertive — surfaced promptly because they're
+      // actionable and stay sticky) and non-errors use role="status"
+      // (polite — announced at the next pause, never interrupting).
       className="pointer-events-none fixed bottom-20 right-4 z-30 flex flex-col gap-2"
     >
       {toasts.map((toast) => (
         <div
           key={toast.id}
-          role={toast.kind === "error" ? "alert" : undefined}
+          role={toast.kind === "error" ? "alert" : "status"}
           className={`pointer-events-auto flex items-center gap-2 rounded border px-3 py-2 text-sm shadow-lg transition-opacity duration-300 ${
             toast.fading ? "opacity-0" : "opacity-100"
           } ${TOAST_COLORS[toast.kind]}`}

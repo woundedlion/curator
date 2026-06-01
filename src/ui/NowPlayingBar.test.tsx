@@ -15,6 +15,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { NowPlayingBar } from "./NowPlayingBar";
 import { usePlaybackStore } from "../playback/playbackStore";
+import { formatDuration } from "../util/duration";
 
 afterEach(() => {
   cleanup();
@@ -44,7 +45,11 @@ describe("NowPlayingBar — visibility contract", () => {
     setStore({
       currentTrackId: "a",
       currentDisplay: { title: "Title A", artist: "Artist A" },
-      currentSource: { kind: "local", objectUrl: "blob://a", label: "Local file" },
+      currentSource: {
+        kind: "local",
+        file: new File(["a"], "a.mp3", { type: "audio/mpeg" }),
+        label: "Local file",
+      },
       isPlaying: false,
       durationMs: 0,
     });
@@ -57,7 +62,11 @@ describe("NowPlayingBar — visibility contract", () => {
     setStore({
       currentTrackId: "a",
       currentDisplay: { title: "Title A", artist: "Artist A" },
-      currentSource: { kind: "local", objectUrl: "blob://a", label: "Local file" },
+      currentSource: {
+        kind: "local",
+        file: new File(["a"], "a.mp3", { type: "audio/mpeg" }),
+        label: "Local file",
+      },
       isPlaying: true,
       durationMs: 200_000,
     });
@@ -93,7 +102,11 @@ describe("NowPlayingBar — visibility contract", () => {
     setStore({
       currentTrackId: "a",
       currentDisplay: null,
-      currentSource: { kind: "local", objectUrl: "blob://a", label: "Local file" },
+      currentSource: {
+        kind: "local",
+        file: new File(["a"], "a.mp3", { type: "audio/mpeg" }),
+        label: "Local file",
+      },
       isPlaying: true,
       durationMs: 200_000,
     });
@@ -127,7 +140,11 @@ describe("NowPlayingBar — toggle button gating", () => {
     setStore({
       currentTrackId: "track-a",
       currentDisplay: { title: "A", artist: "X" },
-      currentSource: { kind: "local", objectUrl: "blob://a", label: "Local file" },
+      currentSource: {
+        kind: "local",
+        file: new File(["a"], "a.mp3", { type: "audio/mpeg" }),
+        label: "Local file",
+      },
       isPlaying: true,
       durationMs: 100_000,
       toggle,
@@ -181,7 +198,11 @@ describe("NowPlayingBar — seek slider", () => {
     setStore({
       currentTrackId: "track-a",
       currentDisplay: { title: "A", artist: "X" },
-      currentSource: { kind: "local", objectUrl: "blob://a", label: "Local file" },
+      currentSource: {
+        kind: "local",
+        file: new File(["a"], "a.mp3", { type: "audio/mpeg" }),
+        label: "Local file",
+      },
       isPlaying: true,
       positionMs: 10_000,
       durationMs: 100_000,
@@ -232,11 +253,30 @@ describe("NowPlayingBar — seek slider", () => {
     expect(seek).not.toHaveBeenCalled();
   });
 
+  it("aria-valuetext reports the QUANTIZED thumb position, matching the slider value", () => {
+    // The spoken position must track the visible (1s-quantized) thumb, not
+    // the raw drag value, so keyboard scrub announces what the user sees.
+    const seek = vi.fn();
+    setSeekable(seek);
+    render(<NowPlayingBar />);
+    const slider = screen.getByRole("slider", { name: "Seek" });
+    // Scrub to a non-grid value; the thumb snaps to the 1s grid.
+    fireEvent.change(slider, { target: { value: "20500" } });
+    const valuetext = slider.getAttribute("aria-valuetext");
+    const thumbMs = Number((slider as HTMLInputElement).value);
+    // The announced text is derived from the same quantized thumb value.
+    expect(valuetext).toBe(`${formatDuration(thumbMs)} of ${formatDuration(100_000)}`);
+  });
+
   it("is disabled until duration is known", () => {
     setStore({
       currentTrackId: "track-a",
       currentDisplay: { title: "A", artist: "X" },
-      currentSource: { kind: "local", objectUrl: "blob://a", label: "Local file" },
+      currentSource: {
+        kind: "local",
+        file: new File(["a"], "a.mp3", { type: "audio/mpeg" }),
+        label: "Local file",
+      },
       isPlaying: true,
       positionMs: 0,
       durationMs: 0,

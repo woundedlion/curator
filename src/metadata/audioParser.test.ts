@@ -70,6 +70,24 @@ describe("parseAudioFile — ID3 vs filename precedence", () => {
     const track = await parseAudioFile(audioFile("03 - Artist - T.mp3"));
     expect(track.trackNo).toBe(3);
   });
+
+  it("wires originalYear through from the worker's parsed fields", async () => {
+    parseAudioInPool.mockResolvedValue({
+      title: "T",
+      year: 2009,
+      originalYear: 1997,
+    });
+    const track = await parseAudioFile(audioFile("x.mp3"));
+    expect(track.year).toBe(2009);
+    expect(track.originalYear).toBe(1997);
+  });
+
+  it("drops a junk originalYear from the parsed fields", async () => {
+    // saneYear re-runs here so a direct caller can't leak out-of-range junk.
+    parseAudioInPool.mockResolvedValue({ title: "T", originalYear: 99999 });
+    const track = await parseAudioFile(audioFile("x.mp3"));
+    expect(track.originalYear).toBeUndefined();
+  });
 });
 
 describe("parseAudioFile — altQuery / altQueryIfDifferent", () => {

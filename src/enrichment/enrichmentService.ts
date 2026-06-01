@@ -76,19 +76,6 @@ function fieldLooksSimilar(
   );
 }
 
-function altQueryDiffers(
-  primary: { title?: string; artist?: string },
-  alt: { title?: string; artist?: string },
-): boolean {
-  // Compare the actual Lucene queries the two field tuples produce, not
-  // a weaker ad-hoc lowercase/trim. buildRecordingQuery normalizes
-  // (strips parentheticals, `feat.`, diacritics, &→and), so an alt that
-  // differs from the primary only by, say, a "(Live)" suffix collapses
-  // to the SAME query — issuing it would burn a 1 req/sec MB slot on a
-  // byte-identical request.
-  return buildRecordingQuery(primary) !== buildRecordingQuery(alt);
-}
-
 function mergeCandidatesPreferringPrimary(
   primary: MBCandidate[],
   alternate: MBCandidate[],
@@ -103,13 +90,18 @@ function mergeCandidatesPreferringPrimary(
   return merged;
 }
 
+// Takes the already-built Lucene query rather than re-deriving it from
+// fields. buildRecordingQuery is invoked once per logical query in
+// enrichTrack (primary + alt) and the result threaded through here — the
+// old shape rebuilt the primary query inside fetchAndScore on top of the
+// build(s) the alt-differs check already did, constructing the same
+// string up to 3x per enrich for no behavioral gain.
 async function fetchAndScore(
-  queryFields: { title?: string; artist?: string; album?: string },
+  query: string,
   track: Track,
   contactEmail: string,
   guard: (() => boolean) | undefined,
 ): Promise<MBCandidate[]> {
-  const query = buildRecordingQuery(queryFields);
   if (!query) return [];
   const fetched = await searchRecordings(query, contactEmail, {
     tag: track.id,
@@ -143,6 +135,13 @@ export async function enrichTrack(
     artist: track.artist,
     album: track.album,
   };
+  // Build the primary Lucene query ONCE and reuse it for both the fetch
+  // and the alt-differs comparison below. The old code rebuilt it inside
+  // fetchAndScore AND twice inside altQueryDiffers — up to 3 identical
+  // constructions per enrich. buildRecordingQuery normalizes (strips
+  // parentheticals, `feat.`, diacritics, &→and), so the query string is
+  // the canonical form to compare the alt query against.
+  const primaryQuery = buildRecordingQuery(primaryFields);
 
   // Cache hit substitutes for the primary FETCH only — it does NOT
   // short-circuit the rest of the function. A track first enriched
@@ -165,7 +164,7 @@ export async function enrichTrack(
   }
   if (primaryScored === null) {
     primaryScored = await fetchAndScore(
-      primaryFields,
+      primaryQuery,
       track,
       contactEmail,
       options.guard,
@@ -178,10 +177,22 @@ export async function enrichTrack(
     artist: track.artist,
   };
 
+  // Build the alt query once too, then decide whether to run it by
+  // comparing the two canonical query strings. An alt that differs from
+  // the primary only by, say, a "(Live)" suffix collapses to the SAME
+  // query — issuing it would burn a 1 req/sec MB slot on a byte-identical
+  // request. `altQuery === undefined` ⇒ no alt query string to build.
+  const altQuery =
+    track.altQuery !== undefined
+      ? buildRecordingQuery({
+          title: track.altQuery.title,
+          artist: track.altQuery.artist,
+        })
+      : "";
   const shouldTryAlt =
     outcome.status !== "matched" &&
     track.altQuery !== undefined &&
-    altQueryDiffers(primaryFields, track.altQuery);
+    altQuery !== primaryQuery;
 
   if (shouldTryAlt && track.altQuery) {
     const altScoringTrack: Track = {
@@ -190,10 +201,7 @@ export async function enrichTrack(
       artist: track.altQuery.artist ?? track.artist,
     };
     const altScored = await fetchAndScore(
-      {
-        title: track.altQuery.title,
-        artist: track.altQuery.artist,
-      },
+      altQuery,
       altScoringTrack,
       contactEmail,
       options.guard,

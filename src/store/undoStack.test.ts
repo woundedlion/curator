@@ -125,6 +125,44 @@ describe("snapshot helpers", () => {
     expect(entry.deletedTracks[0]).toBe(track);
   });
 
+  it("strips localFile from delete snapshots so undo entries don't pin File blobs", () => {
+    const file = new File(["audio"], "song.mp3", { type: "audio/mpeg" });
+    const track: Track = {
+      id: "a",
+      source: { kind: "text", rawLine: "a" },
+      title: "Karma Police",
+      localFile: file,
+      enrichment: { status: "idle" },
+      spotify: { status: "idle" },
+    };
+    const entry = snapshotDeleteEntry(["a"], [track], NO_SELECTION);
+    if (entry.kind !== "delete") throw new Error("expected delete");
+    // The row's identity/state survive...
+    expect(entry.deletedTracks[0]).toMatchObject({ id: "a", title: "Karma Police" });
+    // ...but the File blob is gone, so it can't keep the blob un-GC-able.
+    expect(entry.deletedTracks[0]!.localFile).toBeUndefined();
+    // The live track is untouched — only the snapshot is stripped.
+    expect(track.localFile).toBe(file);
+  });
+
+  it("strips localFile from replace snapshots so undo entries don't pin File blobs", () => {
+    const file = new File(["audio"], "song.mp3", { type: "audio/mpeg" });
+    const map: Record<string, Track> = {
+      a: {
+        id: "a",
+        source: { kind: "text", rawLine: "a" },
+        localFile: file,
+        enrichment: { status: "idle" },
+        spotify: { status: "idle" },
+      },
+    };
+    const entry = snapshotReplaceEntry(["a"], map, null, NO_SELECTION);
+    if (entry.kind !== "replace") throw new Error("expected replace");
+    expect(entry.priorTracksById.a!.localFile).toBeUndefined();
+    // Live map untouched.
+    expect(map.a!.localFile).toBe(file);
+  });
+
   it("embeds the selection snapshot in every entry kind", () => {
     const sel = captureSelection(new Set(["a", "b"]), "a");
     expect(snapshotAddEntry(["x"], sel)).toMatchObject(sel);

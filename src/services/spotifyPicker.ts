@@ -31,7 +31,18 @@ function applyCandidateToTrack(
   if (!track) return;
   store.updateTrack(trackId, {
     ...spotifyDisplayFieldsFromCandidate(candidate),
-    enrichment: { status: "idle" },
+    // userOverride marks the chosen Spotify URI as the row's
+    // user-decided identity, mirroring the manual MB pick in
+    // AmbiguousEnrichmentDialog. Without it the no-reclobber guarantee
+    // would rest only on the happy path (a freshly-picked row not being
+    // "pending"); a later nuke/reset back to enrichment.idle would make
+    // isTrackPendingLookup re-queue the row, and reenrichAll's scoped
+    // matchAllOnSpotify could silently re-search and overwrite the pick.
+    // This bit only blocks RE-RESOLUTION; the follow-up MB pass below
+    // still runs (enrichOneTrackMb bypasses the eligibility gate) and
+    // buildEnrichmentFromOutcome preserves userOverride, so MB's
+    // supplementary fill-missing-fields behavior is unaffected.
+    enrichment: { status: "idle", userOverride: true },
     spotify: {
       status: "matched",
       uri: candidate.uri,

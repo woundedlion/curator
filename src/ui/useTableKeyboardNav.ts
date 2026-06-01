@@ -1,4 +1,4 @@
-import { useEffect, useRef, type RefObject } from "react";
+import { useEffect, useLayoutEffect, useRef, type RefObject } from "react";
 import { usePlaylistStore } from "../store/playlistStore";
 import {
   computeKeyboardNavStep,
@@ -71,20 +71,24 @@ export function useTableKeyboardNav(options: TableKeyboardNavOptions): void {
   const { visibleTrackIds, getPageSize, scrollToIndex, onDeleteSelection, gridRef } =
     options;
 
-  // Mirror the live arguments into refs synced via a commit-phase
+  // Mirror the live arguments into refs synced via a layout-phase
   // effect. The window keydown effect attaches ONCE (empty deps) and
   // reads via the refs; without this, every change to visibleTrackIds
   // (firing on every status flip when hideUnmatched is on) would
-  // re-attach the window listener and rerun the cleanup. Keyboard
-  // events fire after commit, so the brief render→commit window where
-  // the ref still points at the prior value is unobservable in
-  // practice.
+  // re-attach the window listener and rerun the cleanup. We use
+  // useLayoutEffect (synchronous, runs in the commit phase before the
+  // browser yields) rather than useEffect (passive, flushed after
+  // paint): a keystroke dispatched synchronously in the window between
+  // React's commit and a passive-effect flush would otherwise read a
+  // stale visibleTrackIds. The layout effect closes that window — the
+  // refs are current by the time control returns to the event loop, so
+  // no keydown can observe a prior value.
   const visibleIdsRef = useRef(visibleTrackIds);
   const getPageSizeRef = useRef(getPageSize);
   const scrollToIndexRef = useRef(scrollToIndex);
   const onDeleteSelectionRef = useRef(onDeleteSelection);
   const gridRefRef = useRef(gridRef);
-  useEffect(() => {
+  useLayoutEffect(() => {
     visibleIdsRef.current = visibleTrackIds;
     getPageSizeRef.current = getPageSize;
     scrollToIndexRef.current = scrollToIndex;

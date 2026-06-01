@@ -81,6 +81,11 @@ export function Sidebar() {
               <li
                 key={playlist.id}
                 draggable
+                // The whole row is a native HTML5 drag source (the visible
+                // grab cursor sits on an inner div), which isn't otherwise
+                // exposed to assistive tech. Announce it as draggable so
+                // screen-reader users know the interaction exists.
+                aria-roledescription="draggable playlist"
                 onDragStart={buildDragHandler(playlist.id)}
                 className="flex items-center gap-2 border-b border-neutral-900 px-3 py-2 hover:bg-neutral-900"
               >

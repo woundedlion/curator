@@ -267,6 +267,11 @@ function applyUndo(
   if (entry.kind === "delete") {
     // Restore only the deleted tracks; other tracks may have been mutated
     // (e.g. enrichment updates) since the delete and shouldn't be reverted.
+    // Note the asymmetry with reorder/replace entries: delete does NOT
+    // restore `sort` (the entry doesn't snapshot it) because removeTracks
+    // never changes sort — deleting rows leaves the active sort spec intact.
+    // If a future edit ever lets a delete touch sort, add priorSort to the
+    // delete entry (undoStack.ts) and restore it here.
     const nextById = { ...state.tracksById };
     for (const track of entry.deletedTracks) nextById[track.id] = track;
     return {
@@ -411,26 +416,41 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => {
 
   removeTracks(ids) {
     if (ids.length === 0) return;
-    // Collect the ids that actually existed at delete time so we
-    // only cancel for them. (Calling cancel for ids that were never
-    // queued is harmless but logging the count would be misleading.)
+    // Collect the ids that actually existed at delete time so we only
+    // cancel for them. (Calling cancel for ids that were never queued is
+    // harmless but logging the count would be misleading.) Computed from
+    // the live store via get() OUTSIDE the set() updater so the updater
+    // stays pure — never smuggling values out via closure mutation. The
+    // updater below recomputes the same existence check on `state`, so a
+    // concurrent write between this read and the commit can only narrow
+    // (never widen) what's deleted; cancellation only ever targets ids the
+    // updater actually removed.
+    const before = get().tracksById;
+    const removeSet = new Set(ids);
     const actuallyRemoved: string[] = [];
+    for (const id of removeSet) {
+      if (before[id] !== undefined) actuallyRemoved.push(id);
+    }
+    if (actuallyRemoved.length === 0) return;
     set((state) => {
-      const removeSet = new Set(ids);
       // Detect which ids actually exist BEFORE cloning tracksById, so a
       // no-op delete (e.g. removeTrack on an already-gone id) returns
       // `state` without an O(n) full-map copy.
       const deletedTracks: Track[] = [];
+      // Snapshot order here is the remove-set iteration order (caller
+      // order), NOT playlist order — it is non-canonical. Undo reconstructs
+      // row positions from `priorTrackIds`, never from this array's order,
+      // so the ordering is intentionally not preserved here. A future edit
+      // that relies on deletedTracks being in playlist order must sort it.
       for (const id of removeSet) {
         const existing = state.tracksById[id];
         if (existing !== undefined) {
           deletedTracks.push(existing);
-          actuallyRemoved.push(id);
         }
       }
       if (deletedTracks.length === 0) return state;
       const nextById = { ...state.tracksById };
-      for (const id of actuallyRemoved) delete nextById[id];
+      for (const track of deletedTracks) delete nextById[track.id];
       const nextSelection = pruneSelection(state.selectedTrackIds, removeSet);
       const nextAnchor =
         state.selectionAnchorId && removeSet.has(state.selectionAnchorId)
@@ -460,10 +480,10 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => {
     // the guard predicates (which check tracksById) see the post-
     // delete state. Calling it before set() would race with any
     // already-popped task that re-checks the store at run time.
-    if (actuallyRemoved.length > 0) {
-      cancelTrackRequests(actuallyRemoved);
-      schedulePersist();
-    }
+    // (actuallyRemoved is non-empty here: the early return above bailed
+    // when nothing existed to delete.)
+    cancelTrackRequests(actuallyRemoved);
+    schedulePersist();
   },
 
   reorderTracks(orderedIds) {
@@ -635,38 +655,39 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => {
     // (A non-empty → empty replace IS meaningful: it's the destructive
     // Spotify "replace import" path and must remain undoable.)
     if (tracks.length === 0 && get().playlist.trackIds.length === 0) return;
-    // Capture the ids being displaced so we can cancel their queued
-    // requests after the swap. The keep-set is anything also present
-    // in the incoming tracks — those tracks survive the swap (their
-    // payload is overwritten but the id continues to exist).
-    let removedIds: string[] = [];
-    set((state) => {
-      const incoming = new Set(tracks.map((t) => t.id));
-      removedIds = state.playlist.trackIds.filter((id) => !incoming.has(id));
-      return {
-        tracksById: buildTracksById(tracks),
-        playlist: {
-          ...state.playlist,
-          trackIds: tracks.map((t) => t.id),
-          sort: null,
-        },
-        undoStack: pushBounded(
-          state.undoStack,
-          snapshotReplaceEntry(
-            state.playlist.trackIds,
-            state.tracksById,
-            state.playlist.sort,
-            captureSelection(state.selectedTrackIds, state.selectionAnchorId),
-          ),
+    // Capture the ids being displaced so we can cancel their queued requests
+    // after the swap. The keep-set is anything also present in the incoming
+    // tracks — those tracks survive the swap (their payload is overwritten
+    // but the id continues to exist). Computed from the live store via get()
+    // OUTSIDE the updater so the updater stays pure (no closure mutation);
+    // the early-return guard above already proved this call mutates state.
+    const incoming = new Set(tracks.map((t) => t.id));
+    const removedIds = get().playlist.trackIds.filter(
+      (id) => !incoming.has(id),
+    );
+    const changed = mutate((state) => ({
+      tracksById: buildTracksById(tracks),
+      playlist: {
+        ...state.playlist,
+        trackIds: tracks.map((t) => t.id),
+        sort: null,
+      },
+      undoStack: pushBounded(
+        state.undoStack,
+        snapshotReplaceEntry(
+          state.playlist.trackIds,
+          state.tracksById,
+          state.playlist.sort,
+          captureSelection(state.selectedTrackIds, state.selectionAnchorId),
         ),
-        selectedTrackIds: new Set<string>(),
-        selectionAnchorId: null,
-        // A wholesale replace establishes a brand-new manual order.
-        preSortManualOrder: null,
-      };
-    });
+      ),
+      selectedTrackIds: new Set<string>(),
+      selectionAnchorId: null,
+      // A wholesale replace establishes a brand-new manual order.
+      preSortManualOrder: null,
+    }));
     if (removedIds.length > 0) cancelTrackRequests(removedIds);
-    schedulePersist();
+    if (changed) schedulePersist();
   },
 
   clearPlaylist() {
@@ -701,7 +722,7 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => {
     // some rows back to matched/missing mid-undo-window.
     cancelTrackRequests(allIds);
 
-    set((s) => {
+    const changed = mutate((s) => {
       const nextById: Record<string, Track> = {};
       for (const [id, t] of Object.entries(s.tracksById)) {
         nextById[id] = {
@@ -725,7 +746,7 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => {
         ),
       };
     });
-    schedulePersist();
+    if (changed) schedulePersist();
   },
 
   undo() {

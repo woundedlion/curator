@@ -155,6 +155,65 @@ describe("AmbiguousMatchDialog", () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
+  it("after unmatch, the candidate list stays pinned (rapid reopen still shows candidates)", () => {
+    // Toggling off a match flips the row to "missing" (no candidates of its
+    // own). The dialog pins a SNAPSHOT of the candidate list so it survives
+    // that store transition — the user can still see and re-pick versions.
+    const cands = [
+      candidate(),
+      candidate({ uri: "spotify:track:bbb", id: "bbb", album: "OKNOTOK" }),
+    ];
+    const matched: Track = {
+      id: "t1",
+      source: { kind: "text", rawLine: "Radiohead - Karma Police" },
+      title: "Karma Police",
+      artist: "Radiohead",
+      enrichment: { status: "idle" },
+      spotify: {
+        status: "matched",
+        uri: "spotify:track:aaa",
+        candidates: cands,
+        score: 0.9,
+      },
+    } as unknown as Track;
+    seedTrack(matched);
+    // unpickSpotifyMatch is mocked, so simulate its store effect: flip the
+    // row to "missing" (which carries no candidates), as the real one does.
+    vi.mocked(unpickSpotifyMatch).mockImplementationOnce((id: string) => {
+      usePlaylistStore.setState({
+        tracksById: {
+          ...usePlaylistStore.getState().tracksById,
+          [id]: { ...matched, spotify: { status: "missing" } } as Track,
+        },
+      });
+    });
+    render(<AmbiguousMatchDialog trackId="t1" onClose={() => {}} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /OK Computer/ }));
+    expect(unpickSpotifyMatch).toHaveBeenCalledTimes(1);
+    // Both versions are still listed even though the track is now "missing".
+    expect(screen.getByRole("button", { name: /OK Computer/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /OKNOTOK/ })).toBeTruthy();
+  });
+
+  it("dedupes candidates that share a uri (no duplicate React keys)", () => {
+    // A re-search merge can occasionally surface the same Spotify track
+    // twice; the render must collapse them to a single row.
+    seedTrack(
+      ambiguousTrack([
+        candidate(),
+        candidate(), // same uri as the first
+        candidate({ uri: "spotify:track:bbb", id: "bbb", album: "OKNOTOK" }),
+      ]),
+    );
+    render(<AmbiguousMatchDialog trackId="t1" onClose={() => {}} />);
+    // The duplicate "OK Computer" row collapses to one selectable button.
+    expect(screen.getAllByRole("button", { name: /OK Computer/ })).toHaveLength(
+      1,
+    );
+    expect(screen.getByRole("button", { name: /OKNOTOK/ })).toBeTruthy();
+  });
+
   it("Search again fetches with the edited fields and renders the results", async () => {
     seedTrack(ambiguousTrack([candidate()]));
     vi.mocked(searchSpotifyCandidatesByFields).mockResolvedValueOnce([

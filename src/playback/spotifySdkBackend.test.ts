@@ -112,7 +112,7 @@ describe("SpotifySdkBackend — load()", () => {
     // Spotify API or attaching any listeners.
     const ok = await backend.load({
       kind: "local",
-      objectUrl: "blob://x",
+      file: new File(["x"], "x.mp3", { type: "audio/mpeg" }),
       label: "Local file",
     });
     expect(ok).toBe(false);

@@ -121,7 +121,7 @@ describe("searchSpotifyForTrack — query construction & dual-query strategy", (
   });
 
   it("strips embedded double quotes from the q parameter so the search string stays well-formed", async () => {
-    // escapeQuoted's contract: `"` inside title/artist would otherwise
+    // stripQuotes' contract: `"` inside title/artist would otherwise
     // terminate the quoted field and corrupt the search; it's deleted.
     callSpotifyMock.mockResolvedValueOnce(searchResponseOf([]));
     const track = trackOf({ title: 'She said "hi"', artist: "Someone" });

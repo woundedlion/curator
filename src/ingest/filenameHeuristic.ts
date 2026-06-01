@@ -38,6 +38,11 @@ function parseLeadingTrackNumber(segment: string): {
   trackNo?: number;
   remainder: string;
 } {
+  // A separator (dash, dot, or whitespace) between the digits and the rest
+  // is REQUIRED. "03.Title" / "03 Title" / "03-Title" split into track 3 +
+  // remainder, but "03Title" does NOT — without a delimiter the leading
+  // digits are ambiguous (e.g. "2pac", "1975") and far more likely part of
+  // the title than a track position, so we keep the whole segment as-is.
   const match = segment.match(/^\s*(\d{1,3})\s*[-.\s]\s*(.*)$/);
   if (!match) return { remainder: segment };
   const value = parseInt(match[1]!, 10);

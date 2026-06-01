@@ -41,14 +41,14 @@ const sharedFuse = new Fuse<SpotifyScorable>([], {
   ignoreLocation: true,
 });
 
-function escapeQuoted(value: string): string {
+function stripQuotes(value: string): string {
   return value.replace(/"/g, "");
 }
 
 function buildQueryString(fields: IdentifyingFields): string {
   const parts: string[] = [];
-  if (fields.title) parts.push(`track:"${escapeQuoted(fields.title)}"`);
-  if (fields.artist) parts.push(`artist:"${escapeQuoted(fields.artist)}"`);
+  if (fields.title) parts.push(`track:"${stripQuotes(fields.title)}"`);
+  if (fields.artist) parts.push(`artist:"${stripQuotes(fields.artist)}"`);
   return parts.join(" ");
 }
 

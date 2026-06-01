@@ -256,6 +256,60 @@ describe("useDialogFocus — restoration on unmount", () => {
   });
 });
 
+// ─── 4b. Fallback when the originating element unmounted ──────────────
+
+describe("useDialogFocus — fallback restoration", () => {
+  // Mirrors the real bug: a per-row glyph button in a virtualized grid
+  // opens a dialog, then the row scrolls out and unmounts while the dialog
+  // is open. On close the previously-focused element is detached, so focus
+  // must NOT silently fall to <body> — it should land on the grid.
+  function FallbackPage({
+    dialogOpen,
+    triggerMounted,
+  }: {
+    dialogOpen: boolean;
+    triggerMounted: boolean;
+  }) {
+    const triggerRef = useRef<HTMLButtonElement>(null);
+    useEffect(() => {
+      triggerRef.current?.focus();
+    }, []);
+    return (
+      <>
+        <div role="grid" data-testid="grid">
+          {triggerMounted && (
+            <button ref={triggerRef} data-testid="row-trigger">
+              Glyph
+            </button>
+          )}
+        </div>
+        <Dialog open={dialogOpen} onClose={() => undefined} buttons={["D1"]} />
+      </>
+    );
+  }
+
+  it("falls back to the role=grid container when the opener has unmounted", () => {
+    const { getByTestId, rerender } = render(
+      <FallbackPage dialogOpen={false} triggerMounted />,
+    );
+    expect(document.activeElement).toBe(getByTestId("row-trigger"));
+
+    // Open the dialog: focus moves inside.
+    rerender(<FallbackPage dialogOpen triggerMounted />);
+    expect(document.activeElement).toBe(getByTestId("btn-D1"));
+
+    // The originating row unmounts (virtualized scroll-out) AND the dialog
+    // closes in the same commit.
+    rerender(<FallbackPage dialogOpen={false} triggerMounted={false} />);
+
+    const grid = getByTestId("grid");
+    expect(document.activeElement).toBe(grid);
+    expect(document.activeElement).not.toBe(document.body);
+    // The grid was made programmatically focusable.
+    expect(grid.getAttribute("tabindex")).toBe("-1");
+  });
+});
+
 // ─── 5. open=false ───────────────────────────────────────────────────
 
 describe("useDialogFocus — open=false", () => {

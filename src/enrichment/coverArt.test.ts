@@ -328,6 +328,41 @@ describe("negative cache short-circuit", () => {
     expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 
+  it("REGRESSION: the in-memory set respects the cap after a large hydration", async () => {
+    // The bug: ensureHydrated unioned up to 10k persisted ids on top of
+    // in-session ids WITHOUT re-applying the in-memory cap, and
+    // recordNegative only evicted one entry per add (assuming a
+    // single-entry overshoot). So right after hydrating a full persisted
+    // set the in-memory Set could sit ABOVE the cap and only drain one id
+    // per subsequent 404. The fix trims to the cap after the union. We
+    // verify the invariant via its observable effect: hydrate with
+    // CAP+1 ids; the oldest (mbids[0], inserted first) must have been
+    // evicted, so re-probing it hits the network again, while a recent id
+    // still short-circuits without fetching.
+    const CAP = 10_000;
+    const overflow = Array.from(
+      { length: CAP + 1 },
+      // Valid-shaped 36-char-ish ids; exact format doesn't matter to the
+      // Set, only insertion order does.
+      (_, i) => `cap-${String(i).padStart(8, "0")}`,
+    );
+    dbMocks.loadCoverArtNegativeCache.mockResolvedValueOnce(overflow);
+    const mod = await loadFreshCoverArt();
+    const fetchSpy = vi.spyOn(global, "fetch").mockResolvedValue(head200());
+
+    // The newest id is within the cap window → short-circuits (missing),
+    // no network call.
+    const newest = await mod.probeCoverArtUrl(overflow[CAP]);
+    expect(newest).toEqual({ kind: "missing" });
+    expect(fetchSpy).not.toHaveBeenCalled();
+
+    // The oldest id was trimmed by the post-hydration cap enforcement →
+    // it is no longer resident, so the probe falls through to the network.
+    const oldest = await mod.probeCoverArtUrl(overflow[0]);
+    expect(oldest).toEqual({ kind: "ok", url: frontUrl(overflow[0]!) });
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
   it("a transient failure does NOT poison the cache — a retry can still succeed", async () => {
     // Mirror of the previous test: 5xx is retryable, so the second
     // probe must actually hit the network again and (in this case)

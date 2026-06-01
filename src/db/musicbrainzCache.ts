@@ -144,20 +144,29 @@ export async function getCacheSize(): Promise<number> {
 export async function pruneStaleCacheEntries(): Promise<number> {
   const db = await getDatabase();
   const tx = db.transaction(STORE_MB_CACHE, "readwrite");
+  // Walk the cursor read-only to COLLECT stale keys, then issue the
+  // deletes after the walk. `await cursor.delete()` inside the loop
+  // serializes each delete against the cursor advance, so a large stale
+  // set (after a MB_CACHE_VERSION bump) pays one full round-trip per
+  // row. Collecting keys first lets us fire the deletes back-to-back on
+  // the same transaction's store without interleaving cursor advances.
+  // Deletes stay inside the same readwrite tx, so atomicity is unchanged.
   let cursor = await tx.store.openCursor();
-  let removed = 0;
+  const staleKeys: string[] = [];
   while (cursor) {
     const entry = cursor.value;
     // Skip the CAA negative-cache row (no `version` field — separate
     // schema); delete only stale-version content rows.
     if (isContentEntry(entry) && entry.version !== MB_CACHE_VERSION) {
-      await cursor.delete();
-      removed++;
+      staleKeys.push(entry.key);
     }
     cursor = await cursor.continue();
   }
+  for (const key of staleKeys) {
+    await tx.store.delete(key);
+  }
   await tx.done;
-  return removed;
+  return staleKeys.length;
 }
 
 export async function loadCoverArtNegativeCache(): Promise<string[]> {

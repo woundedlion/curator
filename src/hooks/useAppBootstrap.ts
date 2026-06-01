@@ -48,35 +48,39 @@ function handleOnline(): void {
 export function useAppBootstrap(): void {
   useEffect(() => {
     usePlaybackStore.getState().initialize();
+    // Hydrate the draft FIRST, then run the store-content-dependent steps.
+    // Both promoteSingleCandidateMatches (which reads tracks to promote
+    // single-candidate matches) and bootstrapSpotify's follow-on side
+    // effects (loadPlaylists / SDK warmup, which act against the connected
+    // session and the hydrated playlist) must observe a populated store —
+    // kicking them off as independent chains let them race the hydration.
+    // Sequencing them after the awaited hydrate makes that dependency
+    // explicit. Each downstream step still guards its own errors; the
+    // outer .catch is the belt-and-suspenders for an unexpected throw so
+    // nothing surfaces as an unhandled rejection.
     void (async () => {
       await usePlaylistStore.getState().hydrateFromStorage();
       promoteSingleCandidateMatches();
-    })();
-    bootstrapSpotify()
-      .then(() => {
-        // Once Spotify is connected, eagerly warm up the Web Playback SDK
-        // when the user has opted into full-track playback — so the first
-        // play of a matched track plays the full Spotify track instead of
-        // falling back while init runs. Gated on `connected` because
-        // connecting the SDK before auth completes would mark it
-        // permanently unavailable for the session (the OAuth token
-        // callback would return empty). connectSdk() re-checks the opt-in.
-        const { preferFullPlayback, spotifyClientId } =
-          useSettingsStore.getState().settings;
-        if (
-          preferFullPlayback &&
-          spotifyClientId &&
-          useSpotifyStore.getState().connected
-        ) {
-          usePlaybackStore.getState().connectSdk();
-        }
-      })
-      .catch((error) => {
-        // doBootstrap handles its own user-facing errors; this is a
-        // belt-and-suspenders guard so an unexpected throw can't surface as
-        // an unhandled rejection.
-        console.error("bootstrapSpotify crashed", error);
-      });
+      await bootstrapSpotify();
+      // Once Spotify is connected, eagerly warm up the Web Playback SDK
+      // when the user has opted into full-track playback — so the first
+      // play of a matched track plays the full Spotify track instead of
+      // falling back while init runs. Gated on `connected` because
+      // connecting the SDK before auth completes would mark it
+      // permanently unavailable for the session (the OAuth token
+      // callback would return empty). connectSdk() re-checks the opt-in.
+      const { preferFullPlayback, spotifyClientId } =
+        useSettingsStore.getState().settings;
+      if (
+        preferFullPlayback &&
+        spotifyClientId &&
+        useSpotifyStore.getState().connected
+      ) {
+        usePlaybackStore.getState().connectSdk();
+      }
+    })().catch((error) => {
+      console.error("app bootstrap chain crashed", error);
+    });
     // Eagerly drop MB cache rows from prior `MB_CACHE_VERSION`s. Reads
     // already skip them (see `isCurrentVersion`), so this is a quota
     // reclaim, not a correctness fix — but a long-lived profile that

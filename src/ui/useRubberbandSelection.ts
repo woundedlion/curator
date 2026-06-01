@@ -49,6 +49,16 @@ type PendingPointerState = {
   pointerId: number;
 };
 
+// Value-equality for two id sets (order-independent). Used to skip
+// redundant store writes when a pointermove / auto-scroll frame computes
+// the exact same selection as the last one we committed — mirrors the
+// `sameOrder` short-circuit in usePlaylistDragAndDrop.
+function sameSelection(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
+  if (a.size !== b.size) return false;
+  for (const id of a) if (!b.has(id)) return false;
+  return true;
+}
+
 function isInteractiveTarget(target: EventTarget | null): boolean {
   if (!(target instanceof Element)) return false;
   // Anything inside an actionable control or marked as no-rubberband bails.
@@ -115,6 +125,18 @@ export function useRubberbandSelection(
   // Handle for the edge auto-scroll animation frame; null when idle.
   const autoScrollRafRef = useRef<number | null>(null);
 
+  // Last selection set committed to the store during the active drag.
+  // Every pointermove / auto-scroll frame recomputes the marquee set, but
+  // most frames land on the same rows — we skip the store write (and the
+  // store-wide re-render it triggers) when the computed set is unchanged.
+  // Reset to null at press-down so the first frame of a new drag always
+  // writes.
+  const lastWrittenSelectionRef = useRef<ReadonlySet<string> | null>(null);
+  // Fallback timer that clears suppressClickRef if no synthetic click
+  // arrives to consume it (see pointerUp). Tracked so we can cancel it
+  // when a click DOES consume the flag, and so unmount can clear it.
+  const suppressClearTimerRef = useRef<number | null>(null);
+
   const onContainerPointerDown = useCallback(
     (e: ReactPointerEvent<HTMLDivElement>) => {
       // Only respond to primary mouse button / touch / pen.
@@ -135,6 +157,9 @@ export function useRubberbandSelection(
         pointerId: e.pointerId,
       };
       visibleAtPressRef.current = visibleIdsRef.current.slice();
+      // New gesture: forget the prior drag's last-written set so the first
+      // frame of this drag always commits (the dedup is per-drag).
+      lastWrittenSelectionRef.current = null;
       // Don't preventDefault — we still want the row's onClick to fire if
       // the user releases without moving.
     },
@@ -176,10 +201,18 @@ export function useRubberbandSelection(
           if (id) ids.add(id);
         }
       }
-      // Apply selection, preserving the pre-drag anchor. Passing it through
-      // explicitly is required: `setSelection(ids)` would default the anchor
-      // to null, silently destroying the shift-extend pivot.
-      setSelection(ids, pending.baselineAnchorId);
+      // Skip the store write when this frame's set matches the last one we
+      // committed — pointermove fires per frame and auto-scroll replays the
+      // same pointer, so most frames recompute an identical selection;
+      // writing it again would re-render the whole table for no change.
+      const prev = lastWrittenSelectionRef.current;
+      if (!prev || !sameSelection(prev, ids)) {
+        // Apply selection, preserving the pre-drag anchor. Passing it through
+        // explicitly is required: `setSelection(ids)` would default the anchor
+        // to null, silently destroying the shift-extend pivot.
+        setSelection(ids, pending.baselineAnchorId);
+        lastWrittenSelectionRef.current = ids;
+      }
 
       // Render rectangle in viewport coords (fixed-positioned overlay).
       const left = Math.min(pending.startClientX, clientX);
@@ -283,8 +316,19 @@ export function useRubberbandSelection(
         // We treated this as a drag; suppress the synthetic click that
         // the browser is about to fire on the press-down target.
         suppressClickRef.current = true;
-        // Reset suppression on the next macrotask in case no click fires.
-        window.setTimeout(() => {
+        // Primary clear path: the next real click consumes the flag (see
+        // the window click-capture listener below). The 0ms timer is only
+        // a FALLBACK in case no click ever fires (e.g. the press-down
+        // target was unmounted mid-drag) so the flag can't get stuck on.
+        // We intentionally don't rely on the timer alone: if the synthetic
+        // click is dispatched a macrotask late, a bare setTimeout(0) would
+        // clear suppression first and the drag-end click would leak through
+        // as a selection.
+        if (suppressClearTimerRef.current !== null) {
+          window.clearTimeout(suppressClearTimerRef.current);
+        }
+        suppressClearTimerRef.current = window.setTimeout(() => {
+          suppressClearTimerRef.current = null;
           suppressClickRef.current = false;
         }, 0);
       }
@@ -299,16 +343,44 @@ export function useRubberbandSelection(
       setRubberbandRect(null);
     }
 
+    // Clear the suppression flag once the drag-end synthetic click has been
+    // dispatched and (in the bubble phase) the row's onClick has already
+    // had its chance to read it. Registered on the BUBBLE phase so we run
+    // AFTER the row handler — we must not pre-empt the consumer that reads
+    // the flag to swallow the click. This is the robust primary clear path:
+    // it fires whenever the click actually lands, no matter how many
+    // macrotasks late, so a delayed synthetic click can't leak through as a
+    // selection. The setTimeout in pointerUp is now only a safety net for
+    // the no-click case (press-down target unmounted mid-drag); cancelling
+    // it here avoids a redundant late clear. No-op when the flag is unset,
+    // so unrelated clicks are untouched.
+    function clickClear() {
+      if (!suppressClickRef.current) return;
+      suppressClickRef.current = false;
+      if (suppressClearTimerRef.current !== null) {
+        window.clearTimeout(suppressClearTimerRef.current);
+        suppressClearTimerRef.current = null;
+      }
+    }
+
     window.addEventListener("pointermove", pointerMove);
     window.addEventListener("pointerup", pointerUp);
     window.addEventListener("pointercancel", pointerCancel);
+    window.addEventListener("click", clickClear);
     return () => {
       window.removeEventListener("pointermove", pointerMove);
       window.removeEventListener("pointerup", pointerUp);
       window.removeEventListener("pointercancel", pointerCancel);
+      window.removeEventListener("click", clickClear);
       // Cancel any in-flight auto-scroll frame on unmount so we don't
       // touch a detached container a frame later.
       stopAutoScroll();
+      // Clear the suppression fallback timer too, so it can't fire against
+      // a stale ref after unmount.
+      if (suppressClearTimerRef.current !== null) {
+        window.clearTimeout(suppressClearTimerRef.current);
+        suppressClearTimerRef.current = null;
+      }
     };
   }, [parentRef, setSelection]);
 

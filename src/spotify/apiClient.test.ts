@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseRetryAfter, tryParseRetryAfterMs } from "./apiClient";
+import { appendQuery, parseRetryAfter, tryParseRetryAfterMs } from "./apiClient";
 
 describe("parseRetryAfter", () => {
   it("parses integer seconds", () => {
@@ -78,6 +78,14 @@ describe("tryParseRetryAfterMs", () => {
     expect(tryParseRetryAfterMs(null)).toBeNull();
   });
 
+  it("passes a legitimate Retry-After: 0 through as 0 (no >=1 floor)", () => {
+    // The helper documents "no clamping or defaulting" — a `0` delta-
+    // seconds means "retry now" and must not be inflated to 1000ms.
+    // Downstream (parseRetryAfter's clampRetryAfterMs / breaker minOpenMs)
+    // applies the actual floor.
+    expect(tryParseRetryAfterMs("0")).toBe(0);
+  });
+
   it("returns null for an unparseable header", () => {
     expect(tryParseRetryAfterMs("soon")).toBeNull();
     expect(tryParseRetryAfterMs("5xx")).toBeNull();
@@ -93,5 +101,35 @@ describe("tryParseRetryAfterMs", () => {
     // 24h, well past parseRetryAfter's 12h clamp — proves callers can
     // apply their own (e.g. MusicBrainz's 60s) cap instead.
     expect(tryParseRetryAfterMs("86400")).toBe(86_400_000);
+  });
+});
+
+describe("appendQuery", () => {
+  it("returns the path unchanged when there is no query", () => {
+    expect(appendQuery("/search")).toBe("/search");
+  });
+
+  it("returns the path unchanged when every query value is undefined", () => {
+    expect(appendQuery("/search", { market: undefined })).toBe("/search");
+  });
+
+  it("appends with `?` when the path has no existing query string", () => {
+    expect(appendQuery("/search", { q: "abba", type: "track" })).toBe(
+      "/search?q=abba&type=track",
+    );
+  });
+
+  it("appends with `&` when the path already carries a query string", () => {
+    // A Spotify `next` pagination fragment can already contain `?offset=…`;
+    // appending a second `?` would produce a malformed `path?a=b?c=d`.
+    expect(
+      appendQuery("/playlists/x/tracks?offset=100", { limit: 50 }),
+    ).toBe("/playlists/x/tracks?offset=100&limit=50");
+  });
+
+  it("url-encodes values", () => {
+    expect(appendQuery("/search", { q: 'a "b" c' })).toBe(
+      "/search?q=a+%22b%22+c",
+    );
   });
 });

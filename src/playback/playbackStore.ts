@@ -27,7 +27,11 @@ import {
   type PlayerSnapshot,
   type PlayerTarget,
 } from "./player";
-import { createPlaybackSource, type PlaybackSource } from "./playbackSource";
+import {
+  createPlaybackSource,
+  resolveSdkAvailability,
+  type PlaybackSource,
+} from "./playbackSource";
 import { SpotifySdkBackend } from "./spotifySdkBackend";
 import { getSpotifyUri } from "../util/trackAccessors";
 
@@ -199,31 +203,22 @@ export const usePlaybackStore = create<PlaybackState>((set, get) => {
     return typeof value === "number" && Number.isFinite(value) ? value : 0;
   }
 
-  // Whether an SDK (full-track) source is worth constructing. "ready" is
-  // the obvious case; the optimistic arm ("opted-in, not yet failed") lets
-  // the FIRST play of an SDK-required track lazily kick off SDK init via
-  // Player.resolveBackend instead of dead-ending. Once init has failed
-  // ("unavailable"), the SDK is closed for the session and we fall through
-  // to other sources. Mirrors buildCandidateTarget so the main-view play
-  // button and the picker preview agree on when the SDK is an option.
-  function isSdkUsable(): boolean {
-    const status = get().sdk.status;
-    return (
-      status === "ready" || (status !== "unavailable" && shouldTryEnableSdk())
-    );
+  // The SDK-priority decision (both signals) is derived in ONE place —
+  // resolveSdkAvailability — so the main-view track builder and the picker
+  // candidate builder can't drift apart. `sdkReady` gates the issue-1
+  // "prefer full track over local" jump; `sdkInitable` is the optimistic
+  // last-resort signal that lets a preview-less Spotify-only track kick off
+  // lazy SDK init (issue 3). Once init has failed ("unavailable") the SDK
+  // is closed for the session and both signals go false.
+  function sdkAvailability() {
+    return resolveSdkAvailability(get().sdk.status, shouldTryEnableSdk());
   }
 
   function buildTrackTarget(trackId: string): PlayerTarget | null {
     const track = usePlaylistStore.getState().tracksById[trackId];
     if (!track) return null;
-    // sdkReady gates the issue-1 "prefer full track over local" jump;
-    // isSdkUsable() is the optimistic last-resort signal that lets a
-    // preview-less Spotify-only track kick off lazy SDK init (issue 3).
-    const source = createPlaybackSource(
-      track,
-      get().sdk.status === "ready",
-      isSdkUsable(),
-    );
+    const { sdkReady, sdkInitable } = sdkAvailability();
+    const source = createPlaybackSource(track, sdkReady, sdkInitable);
     if (source.kind === "none") return null;
     return {
       kind: "track",
@@ -246,7 +241,7 @@ export const usePlaybackStore = create<PlaybackState>((set, get) => {
     // would produce a silent dead-end (no playback, no toast). Treat
     // "unavailable" as "SDK is closed for the rest of this session"
     // and fall through to the no-source toast in playCandidate.
-    const sdkUsable = isSdkUsable();
+    const sdkUsable = sdkAvailability().sdkInitable;
     const source: PlaybackSource = candidate.previewUrl
       ? {
           kind: "spotify-preview",

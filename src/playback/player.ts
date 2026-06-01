@@ -27,7 +27,7 @@
 // The Player is decoupled from React, IndexedDB, and HTTP. Tests drive
 // it directly with fake backends to assert the state machine.
 
-import { releasePlaybackSource, type PlaybackSource } from "./playbackSource";
+import { type PlaybackSource } from "./playbackSource";
 
 export type PlaybackDisplay = { title: string; artist: string };
 
@@ -164,11 +164,10 @@ export class Player {
         this.snapshot.phase !== "ended"
       ) {
         // Same track, still live: we toggle the already-installed target
-        // and never install this one, so its freshly-built source is
-        // thrown away. Release it now or a new object URL leaks on every
-        // pause/resume of a local file (the caller allocates one per
-        // `play` call).
-        releasePlaybackSource(target.source);
+        // and never install this incoming one. No cleanup needed — the
+        // incoming source carries only a File reference, not an allocated
+        // blob URL (HtmlAudioBackend mints + owns the URL inside load()),
+        // so discarding the unused target leaks nothing.
         await this.togglePauseInternal();
         return;
       }
@@ -226,8 +225,23 @@ export class Player {
           : Math.max(0, positionMs);
       // Optimistically reflect the new playhead so the UI doesn't snap
       // back to the old position while the backend acks the seek.
+      const priorPositionMs = this.snapshot.positionMs;
       this.patch({ positionMs: clamped });
-      await this.activeBackend.seek(clamped);
+      try {
+        await this.activeBackend.seek(clamped);
+      } catch (error) {
+        // Today's backends swallow their own seek failures, so this can't
+        // reject in practice — but if a future backend lets one through,
+        // roll the optimistic patch back to the pre-seek position so the
+        // UI doesn't lie about where the playhead is. The next backend
+        // `position` event re-syncs us to ground truth regardless.
+        this.patch({ positionMs: priorPositionMs });
+        this.onError(
+          error instanceof Error
+            ? `Seek failed: ${error.message}`
+            : "Seek failed",
+        );
+      }
     });
   }
 
@@ -290,22 +304,20 @@ export class Player {
    * or the SDK's play command).
    */
   private async install(target: PlayerTarget): Promise<void> {
-    const priorSource = this.snapshot.target?.source;
     const newBackend = await this.resolveBackend(target.source);
     if (!newBackend) {
       // No backend available — leave idle so the UI doesn't paint a
       // now-playing row for silent audio.
       await this.stopAll();
       this.transitionToIdle();
-      if (priorSource) releasePlaybackSource(priorSource);
       return;
     }
 
+    // The prior backend's blob URL (if any) is owned by that backend and
+    // gets revoked when it's stopped here (cross-backend) or when the
+    // same backend's load() replaces its src (same-backend). The Player
+    // no longer tracks/revokes object URLs — see HtmlAudioBackend.
     await this.stopAllExcept(newBackend);
-    // Prior backend has unloaded, so the prior source's object URL (if
-    // it has one) is no longer in use by anyone. Release before patching
-    // in the new target.
-    if (priorSource) releasePlaybackSource(priorSource);
 
     this.activeBackend = newBackend;
     this.patch({
@@ -319,7 +331,6 @@ export class Player {
     if (!ok) {
       await this.stopAll();
       this.transitionToIdle();
-      releasePlaybackSource(target.source);
       return;
     }
     // Defensive: promote to "playing" as soon as the backend commits.
@@ -345,10 +356,11 @@ export class Player {
   }
 
   private async doStop(): Promise<void> {
-    const priorSource = this.snapshot.target?.source;
+    // No source-URL cleanup here: stopAll() stops every backend, and each
+    // backend revokes the blob URL it owns inside its own stop(). The
+    // Player no longer mints or revokes object URLs.
     await this.stopAll();
     this.transitionToIdle();
-    if (priorSource) releasePlaybackSource(priorSource);
   }
 
   /**
@@ -368,10 +380,10 @@ export class Player {
 
   /**
    * Stop one backend without letting its rejection propagate. A backend
-   * stop() that throws must NOT abort the caller (install / doStop)
-   * before it reaches `releasePlaybackSource(priorSource)` — that would
-   * leak the prior local file's object URL on every failed transition.
-   * The stop failure is logged; the transition continues.
+   * stop() that throws must NOT abort the caller (install / doStop): the
+   * stop() is also where a backend revokes the blob URL it owns, so a
+   * throw escaping here would both halt the transition and risk leaking
+   * that URL. The stop failure is logged; the transition continues.
    */
   private async safeStop(backend: Backend): Promise<void> {
     try {
@@ -394,8 +406,8 @@ export class Player {
     if (this.sdkBackend && this.sdkBackend !== keep) {
       others.push(this.sdkBackend);
     }
-    // safeStop so a rejecting stop() can't abort install() before it
-    // releases the prior source's object URL (see safeStop / stopAll).
+    // safeStop so a rejecting stop() can't abort install() (the stop() is
+    // also where a backend revokes its owned blob URL — see safeStop).
     await Promise.all(others.map((b) => this.safeStop(b)));
   }
 
@@ -503,9 +515,22 @@ export class Player {
         return;
       case "error":
         this.onError(event.message);
-        // Roll back to idle so the UI doesn't claim audio is playing
-        // when the backend has already failed.
-        void this.enqueue(() => this.doStop());
+        // Roll back to idle so the UI doesn't claim audio is playing when
+        // a backend fails MID-PLAYBACK — but only then. During "loading"
+        // install() is the sole authority on the transition: its load()
+        // returns false right after a backend emits this error and it
+        // already drives the player to idle (stopAll + transitionToIdle).
+        // Enqueuing a stop here in that window just piles a redundant op
+        // onto the queue. "idle"/"ended" likewise have nothing live to
+        // tear down. So only enqueue when we're actually producing audio
+        // (playing/paused) with an active backend. doStop stays idempotent.
+        if (
+          this.activeBackend &&
+          (this.snapshot.phase === "playing" ||
+            this.snapshot.phase === "paused")
+        ) {
+          void this.enqueue(() => this.doStop());
+        }
         return;
     }
   }

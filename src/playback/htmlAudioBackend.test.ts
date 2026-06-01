@@ -5,9 +5,14 @@
 // that's broken at the audio.play()/event-listener seam looks fine to
 // the state-machine tests but ships broken in production.
 
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { HtmlAudioBackend } from "./htmlAudioBackend";
 import type { BackendEvent } from "./player";
+import type { PlaybackSource } from "./playbackSource";
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 function makeBackend(): {
   backend: HtmlAudioBackend;
@@ -19,6 +24,25 @@ function makeBackend(): {
   const events: BackendEvent[] = [];
   backend.setObserver((e) => events.push(e));
   return { backend, audio, events };
+}
+
+// The backend now mints its own blob URL from the source's File inside
+// load(). Stub createObjectURL so tests get a deterministic, assertable
+// URL string, and spy revokeObjectURL so lifecycle tests can prove the
+// backend revokes exactly the URL it minted. Pair the two so the stubbed
+// URL is what flows through audio.src and back into revoke.
+function stubObjectUrl(label = "blob:stub") {
+  const create = vi.spyOn(URL, "createObjectURL").mockReturnValue(label);
+  const revoke = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+  return { create, revoke };
+}
+
+function localSource(): PlaybackSource {
+  return {
+    kind: "local",
+    file: new File(["bytes"], "song.mp3", { type: "audio/mpeg" }),
+    label: "Local file",
+  };
 }
 
 describe("HtmlAudioBackend — event wiring", () => {
@@ -42,56 +66,80 @@ describe("HtmlAudioBackend — event wiring", () => {
 });
 
 describe("HtmlAudioBackend — load()", () => {
-  it("sets src and returns true when audio.play() resolves", async () => {
+  it("mints a blob URL from the File, sets src, and returns true when audio.play() resolves", async () => {
     const { backend, audio } = makeBackend();
+    const { create } = stubObjectUrl("blob:test");
     // happy-dom's audio.play() returns a resolved promise.
     vi.spyOn(audio, "play").mockResolvedValue(undefined);
-    const ok = await backend.load({
-      kind: "local",
-      objectUrl: "blob:test",
-      label: "Local file",
-    });
+    const ok = await backend.load(localSource());
     expect(ok).toBe(true);
+    // The backend created the URL itself from the source File.
+    expect(create).toHaveBeenCalledTimes(1);
     expect(audio.src).toContain("blob:test");
   });
 
   it("returns false when audio.play() rejects with AbortError (interrupted)", async () => {
     const { backend, audio } = makeBackend();
+    stubObjectUrl("blob:x");
     vi.spyOn(audio, "play").mockRejectedValue(
       new DOMException("Aborted", "AbortError"),
     );
-    const ok = await backend.load({
-      kind: "local",
-      objectUrl: "blob:x",
-      label: "Local file",
-    });
+    const ok = await backend.load(localSource());
     expect(ok).toBe(false);
   });
 
   it("emits a NotAllowedError as a clear toast message and returns false", async () => {
     const { backend, audio, events } = makeBackend();
+    stubObjectUrl("blob:x");
     vi.spyOn(audio, "play").mockRejectedValue(
       new DOMException("blocked", "NotAllowedError"),
     );
-    const ok = await backend.load({
-      kind: "local",
-      objectUrl: "blob:x",
-      label: "Local file",
-    });
+    const ok = await backend.load(localSource());
     expect(ok).toBe(false);
     expect(events.some((e) => e.kind === "error")).toBe(true);
+  });
+
+  it("does NOT mint a blob URL for a spotify-preview source (uses the URL as-is)", async () => {
+    const { backend, audio } = makeBackend();
+    const { create } = stubObjectUrl();
+    vi.spyOn(audio, "play").mockResolvedValue(undefined);
+    const ok = await backend.load({
+      kind: "spotify-preview",
+      url: "https://p.scdn.co/x.mp3",
+      label: "Spotify preview (30s)",
+    });
+    expect(ok).toBe(true);
+    expect(create).not.toHaveBeenCalled();
+    expect(audio.src).toContain("https://p.scdn.co/x.mp3");
+  });
+
+  it("revokes the prior blob URL before minting a new one on a same-backend local replacement", async () => {
+    // local → local in place: the old blob URL must be revoked when the
+    // new src replaces it, or it leaks (the allocate-before-decision leak
+    // this refactor exists to kill).
+    const { backend, audio } = makeBackend();
+    vi.spyOn(audio, "play").mockResolvedValue(undefined);
+    const create = vi
+      .spyOn(URL, "createObjectURL")
+      .mockReturnValueOnce("blob:first")
+      .mockReturnValueOnce("blob:second");
+    const revoke = vi
+      .spyOn(URL, "revokeObjectURL")
+      .mockImplementation(() => {});
+    await backend.load(localSource());
+    await backend.load(localSource());
+    expect(create).toHaveBeenCalledTimes(2);
+    // The first URL was revoked when the second load replaced it.
+    expect(revoke).toHaveBeenCalledWith("blob:first");
   });
 });
 
 describe("HtmlAudioBackend — stop()", () => {
   it("pauses the audio without clearing src — next load() supersedes by setting a fresh src", async () => {
     const { backend, audio } = makeBackend();
+    stubObjectUrl("blob:abc");
     vi.spyOn(audio, "play").mockResolvedValue(undefined);
-    await backend.load({
-      kind: "local",
-      objectUrl: "blob:abc",
-      label: "Local file",
-    });
+    await backend.load(localSource());
     expect(audio.src).toContain("blob:abc");
     await backend.stop();
     expect(audio.paused).toBe(true);
@@ -100,6 +148,34 @@ describe("HtmlAudioBackend — stop()", () => {
     // audio.play() and causes the next play to reject with AbortError.
     // The next load() will set a fresh src; that supersedes.
     expect(audio.src).toContain("blob:abc");
+  });
+
+  it("revokes the blob URL it minted for a local file", async () => {
+    // The backend owns the blob URL's lifecycle: stop() ends its use of
+    // the current source, so it must revoke the URL it created in load().
+    const { backend, audio } = makeBackend();
+    const { revoke } = stubObjectUrl("blob:owned");
+    vi.spyOn(audio, "play").mockResolvedValue(undefined);
+    await backend.load(localSource());
+    await backend.stop();
+    expect(revoke).toHaveBeenCalledWith("blob:owned");
+    // A second stop() finds nothing to revoke — no double-revoke.
+    revoke.mockClear();
+    await backend.stop();
+    expect(revoke).not.toHaveBeenCalled();
+  });
+
+  it("does not revoke anything for a preview source (no owned blob URL)", async () => {
+    const { backend, audio } = makeBackend();
+    const { revoke } = stubObjectUrl();
+    vi.spyOn(audio, "play").mockResolvedValue(undefined);
+    await backend.load({
+      kind: "spotify-preview",
+      url: "https://p.scdn.co/x.mp3",
+      label: "Spotify preview (30s)",
+    });
+    await backend.stop();
+    expect(revoke).not.toHaveBeenCalled();
   });
 
   it("can be safely called when the audio has never been loaded", async () => {
@@ -115,12 +191,9 @@ describe("HtmlAudioBackend — stop()", () => {
     // on line 103 of htmlAudioBackend.ts treats `code === undefined`
     // (the null-element case) the same as MEDIA_ERR_ABORTED: drop it.
     const { backend, audio, events } = makeBackend();
+    stubObjectUrl("blob:x");
     vi.spyOn(audio, "play").mockResolvedValue(undefined);
-    await backend.load({
-      kind: "local",
-      objectUrl: "blob:x",
-      label: "Local file",
-    });
+    await backend.load(localSource());
     events.length = 0;
     await backend.stop();
     audio.dispatchEvent(new Event("error"));
@@ -155,6 +228,15 @@ describe("HtmlAudioBackend — dispose() teardown (finding #4)", () => {
     expect(() => backend.dispose()).not.toThrow();
   });
 
+  it("revokes the owned blob URL on dispose so an unmount mid-playback doesn't leak", async () => {
+    const { backend, audio } = makeBackend();
+    const { revoke } = stubObjectUrl("blob:live");
+    vi.spyOn(audio, "play").mockResolvedValue(undefined);
+    await backend.load(localSource());
+    backend.dispose();
+    expect(revoke).toHaveBeenCalledWith("blob:live");
+  });
+
   it("surfaces a real (non-aborted) media error via describeMediaError, drops null-error events", () => {
     // Guards finding #3's rewrite: a null audio.error early-returns; a
     // non-aborted MediaError surfaces. happy-dom has no global MediaError
@@ -184,22 +266,18 @@ describe("HtmlAudioBackend — dispose() teardown (finding #4)", () => {
 describe("HtmlAudioBackend — load after stop is the critical real-world path", () => {
   it("load → stop → load works without the second load's play promise being aborted", async () => {
     const { backend, audio } = makeBackend();
+    vi.spyOn(URL, "createObjectURL")
+      .mockReturnValueOnce("blob:A")
+      .mockReturnValueOnce("blob:B");
+    vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
     const playSpy = vi.spyOn(audio, "play").mockResolvedValue(undefined);
 
-    const okA = await backend.load({
-      kind: "local",
-      objectUrl: "blob:A",
-      label: "Local file",
-    });
+    const okA = await backend.load(localSource());
     expect(okA).toBe(true);
 
     await backend.stop();
 
-    const okB = await backend.load({
-      kind: "local",
-      objectUrl: "blob:B",
-      label: "Local file",
-    });
+    const okB = await backend.load(localSource());
     expect(okB).toBe(true);
     expect(audio.src).toContain("blob:B");
     expect(playSpy).toHaveBeenCalledTimes(2);
@@ -218,23 +296,19 @@ describe("HtmlAudioBackend — load after stop is the critical real-world path",
     const abortPromise = new Promise<undefined>((_, reject) => {
       resolveAbort = reject;
     });
+    vi.spyOn(URL, "createObjectURL")
+      .mockReturnValueOnce("blob:A")
+      .mockReturnValueOnce("blob:B");
+    vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
     const playSpy = vi
       .spyOn(audio, "play")
       .mockReturnValueOnce(abortPromise)
       .mockResolvedValue(undefined);
 
-    const firstLoad = backend.load({
-      kind: "local",
-      objectUrl: "blob:A",
-      label: "Local file",
-    });
+    const firstLoad = backend.load(localSource());
     // Immediately stop + start a new load.
     await backend.stop();
-    const secondLoad = backend.load({
-      kind: "local",
-      objectUrl: "blob:B",
-      label: "Local file",
-    });
+    const secondLoad = backend.load(localSource());
     // NOW reject the first load with AbortError. The backend must
     // recognize this as a stale rejection and not propagate it as
     // the second load's outcome.

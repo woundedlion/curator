@@ -8,6 +8,7 @@ type ParsedFields = {
   albumartist?: string;
   album?: string;
   year?: number;
+  originalYear?: number;
   trackNo?: number;
   trackOf?: number;
   discNo?: number;
@@ -55,8 +56,30 @@ export function saneYear(value: unknown): number | undefined {
   return value;
 }
 
+// music-metadata exposes the original release year via `common.originalyear`
+// and, on some tag dialects, only as the leading year of `common.originaldate`
+// ("1997-06-16"). Prefer the dedicated numeric field; otherwise fall back to
+// parsing the leading 4-digit year out of originaldate. Both are run through
+// saneYear so a corrupt frame can't poison Track.originalYear.
+export function saneOriginalYear(
+  originalyear: unknown,
+  originaldate: unknown,
+): number | undefined {
+  const fromYear = saneYear(originalyear);
+  if (fromYear !== undefined) return fromYear;
+  if (typeof originaldate === "string") {
+    const match = originaldate.match(/^\s*(\d{4})/);
+    if (match) return saneYear(parseInt(match[1]!, 10));
+  }
+  return undefined;
+}
+
 async function parseOne(file: File): Promise<ParsedFields> {
-  const result = await parseBlob(file, { duration: true });
+  // skipCovers: music-metadata otherwise decodes embedded cover-art frames
+  // (frequently multi-MB JPEGs) into common.picture, which this parser never
+  // reads. Skipping the decode avoids wasting memory/CPU across the worker
+  // pool when a large library is dropped in.
+  const result = await parseBlob(file, { duration: true, skipCovers: true });
   const { common, format } = result;
   return {
     title: common.title,
@@ -64,6 +87,7 @@ async function parseOne(file: File): Promise<ParsedFields> {
     albumartist: common.albumartist,
     album: common.album,
     year: saneYear(common.year),
+    originalYear: saneOriginalYear(common.originalyear, common.originaldate),
     trackNo: sanePosition(common.track?.no),
     trackOf: sanePosition(common.track?.of),
     discNo: sanePosition(common.disk?.no),

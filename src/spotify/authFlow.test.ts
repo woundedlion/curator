@@ -14,7 +14,7 @@
 // against happy-dom's sessionStorage.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { PKCE_STATE_KEY, PKCE_VERIFIER_KEY } from "../constants";
+import { PKCE_STATE_KEY, PKCE_VERIFIER_KEY, SPOTIFY_SCOPES } from "../constants";
 import type * as ApiClientModule from "./apiClient";
 
 vi.mock("./apiClient", async () => {
@@ -31,6 +31,7 @@ vi.mock("./apiClient", async () => {
 
 import {
   beginAuthFlow,
+  clearCallbackParams,
   completeAuthFlow,
   getValidAccessToken,
   InvalidRedirectUriError,
@@ -188,6 +189,32 @@ describe("redirect-URI validation at the auth boundary", () => {
   });
 });
 
+describe("clearCallbackParams", () => {
+  it("strips code/state/error AND error_description/error_uri after an OAuth denial", () => {
+    // A denial redirect carries error + error_description (+ optionally
+    // error_uri). All must be scrubbed so provider error text doesn't
+    // linger in the address bar / history once we've handled it.
+    // Same-origin path only — happy-dom's History rejects a cross-origin
+    // pushState/replaceState (document origin is http://localhost).
+    window.history.replaceState(
+      {},
+      "",
+      "/redirect?error=access_denied" +
+        "&error_description=User+denied&error_uri=https%3A%2F%2Fhelp" +
+        "&code=should-go&state=should-go&keep=yes",
+    );
+    clearCallbackParams();
+    const url = new URL(window.location.href);
+    expect(url.searchParams.get("error")).toBeNull();
+    expect(url.searchParams.get("error_description")).toBeNull();
+    expect(url.searchParams.get("error_uri")).toBeNull();
+    expect(url.searchParams.get("code")).toBeNull();
+    expect(url.searchParams.get("state")).toBeNull();
+    // Unrelated params are preserved.
+    expect(url.searchParams.get("keep")).toBe("yes");
+  });
+});
+
 describe("getValidAccessToken — refresh branching", () => {
   it("returns the cached access token without refreshing when it is still fresh", async () => {
     const fetchMock = vi.fn();
@@ -209,7 +236,9 @@ describe("getValidAccessToken — refresh branching", () => {
         access_token: "new-access",
         refresh_token: "refresh-2",
         expires_in: 3600,
-        scope: "playlist-modify-public",
+        // Full scope set — a refreshed token must still carry every
+        // required scope to be accepted (see the missing-scope test below).
+        scope: SPOTIFY_SCOPES,
         token_type: "Bearer",
       }),
     );
@@ -243,6 +272,31 @@ describe("getValidAccessToken — refresh branching", () => {
     expect(readTokens()).toBeNull();
   });
 
+  it("on a 200 refresh whose token is missing a required scope: throws SpotifyAuthExpiredError and clears tokens", async () => {
+    // A refreshed token can come back with a narrower scope set than was
+    // originally granted. Re-validating here (mirroring
+    // readTokensIfScopesValid for the cached path) treats it like the
+    // initial missing-scope case rather than persisting a token that would
+    // 403 on a scoped endpoint later.
+    writeTokens(expiredTokens());
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        tokenResponse({
+          access_token: "narrow-access",
+          refresh_token: "refresh-2",
+          expires_in: 3600,
+          // Only one of the required scopes — the rest are missing.
+          scope: "playlist-modify-public",
+          token_type: "Bearer",
+        }),
+      ),
+    );
+    const error = await getValidAccessToken("client-1").catch((e) => e);
+    expect(error).toBeInstanceOf(SpotifyAuthExpiredError);
+    expect(readTokens()).toBeNull();
+  });
+
   it("throws SpotifyAuthExpiredError immediately when there are no tokens at all", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
@@ -259,7 +313,7 @@ describe("getValidAccessToken — refresh branching", () => {
         access_token: "shared-access",
         refresh_token: "refresh-2",
         expires_in: 3600,
-        scope: "playlist-modify-public",
+        scope: SPOTIFY_SCOPES,
         token_type: "Bearer",
       }),
     );

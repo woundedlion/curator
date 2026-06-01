@@ -33,6 +33,15 @@ export const SPOTIFY_SCOPES = [
 
 export const SPOTIFY_PLAYBACK_SDK_URL = "https://sdk.scdn.co/spotify-player.js";
 
+// How often SpotifySdkBackend polls getCurrentState() to derive position
+// and phase. The SDK pushes state on transitions but NOT continuously, so
+// a poll fills the gap for a moving playhead. 500ms (2 Hz) is the smallest
+// interval that keeps the scrubber smooth without flooding the Player →
+// Zustand → PlayButton reconciliation fan-out (the backend dedupes phase
+// emissions per tick to blunt the rest). Lives here so all timing knobs
+// stay in one place rather than buried as a backend-local literal.
+export const SPOTIFY_SDK_POLL_INTERVAL_MS = 500;
+
 export const SPOTIFY_AUTHORIZE_URL = "https://accounts.spotify.com/authorize";
 export const SPOTIFY_TOKEN_URL = "https://accounts.spotify.com/api/token";
 export const SPOTIFY_API_BASE = "https://api.spotify.com/v1";

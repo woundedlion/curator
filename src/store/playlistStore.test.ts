@@ -807,6 +807,41 @@ describe("removeTracks cancellation ordering", () => {
   });
 });
 
+describe("undo does not pin File blobs", () => {
+  it("delete + undo restores the row but the undo entry holds no File reference", () => {
+    const file = new File(["audio"], "song.mp3", { type: "audio/mpeg" });
+    const a = makeTrack({ id: "a", title: "Karma Police", localFile: file });
+    usePlaylistStore.getState().addTracks([a]);
+    // Live store keeps the blob (local playback works until deleted).
+    expect(usePlaylistStore.getState().tracksById["a"]!.localFile).toBe(file);
+
+    usePlaylistStore.getState().removeTracks(["a"]);
+    const entry = usePlaylistStore.getState().undoStack.at(-1)!;
+    if (entry.kind !== "delete") throw new Error("expected delete entry");
+    // The undo snapshot must not retain the File — otherwise the blob is
+    // pinned un-GC-able for the life of the (depth-10) undo stack.
+    expect(entry.deletedTracks[0]!.localFile).toBeUndefined();
+
+    usePlaylistStore.getState().undo();
+    const restored = usePlaylistStore.getState().tracksById["a"]!;
+    // Row reappears with its identity/state intact, just without the blob.
+    expect(restored.title).toBe("Karma Police");
+    expect(restored.localFile).toBeUndefined();
+    expect(usePlaylistStore.getState().playlist.trackIds).toEqual(["a"]);
+  });
+
+  it("replaceAll snapshot strips localFile from the displaced tracks", () => {
+    const file = new File(["audio"], "song.mp3", { type: "audio/mpeg" });
+    const a = makeTrack({ id: "a", localFile: file });
+    usePlaylistStore.getState().addTracks([a]);
+
+    usePlaylistStore.getState().replaceAll([makeTrack({ id: "b" })]);
+    const entry = usePlaylistStore.getState().undoStack.at(-1)!;
+    if (entry.kind !== "replace") throw new Error("expected replace entry");
+    expect(entry.priorTracksById["a"]!.localFile).toBeUndefined();
+  });
+});
+
 describe("reorderTracks permutation guard", () => {
   it("applies a valid permutation of the current trackIds", () => {
     usePlaylistStore

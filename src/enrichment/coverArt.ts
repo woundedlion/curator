@@ -50,6 +50,19 @@ async function ensureHydrated(): Promise<Set<string>> {
         // hydration window are already in `negativeCache` and must
         // survive. Adding the loaded ids on top preserves both.
         for (const mbid of mbids) negativeCache.add(mbid);
+        // Enforce the in-memory cap AFTER the union. The persisted set can
+        // hold up to MAX_NEGATIVE_CACHE_SIZE ids, and unioning it on top
+        // of in-session ids can push the in-memory Set past
+        // MAX_IN_MEMORY_NEGATIVE_CACHE in one shot. `recordNegative`'s
+        // per-add eviction only assumes a single-entry overshoot, so
+        // without trimming here the set would stay over the cap and only
+        // drain one entry per subsequent 404. Trim now so the cap
+        // invariant holds immediately after hydration. FIFO (oldest
+        // first) matches the on-disk slice policy; the in-session 404s
+        // were inserted before the union loop, so they're the oldest and
+        // are evicted first — acceptable, they're already persisted and
+        // re-probing a few is cheap.
+        trimToInMemoryCap();
         hydrated = true;
       })
       .catch((error) => {
@@ -85,18 +98,27 @@ function flushNegativePersist(): void {
   });
 }
 
+// FIFO-trim the in-memory negative cache down to the cap. Set iteration
+// order is insertion order, so the first value seen by the iterator is
+// the oldest. Loops rather than removing exactly one entry because the
+// set can overshoot by more than one (the hydration union adds many ids
+// at once), so a single delete wouldn't restore the invariant.
+function trimToInMemoryCap(): void {
+  while (negativeCache.size > MAX_IN_MEMORY_NEGATIVE_CACHE) {
+    const oldest = negativeCache.values().next().value;
+    if (oldest === undefined) break;
+    negativeCache.delete(oldest);
+  }
+}
+
 function recordNegative(mbid: string): void {
   // `negativeCache` is always a live Set (initialized eagerly), so an
   // in-session 404 updates memory immediately — even mid-hydration.
   negativeCache.add(mbid);
-  // FIFO evict: Set iteration order is insertion order, so the first
-  // value seen by the iterator is the oldest. We only evict one per
-  // add because we only added one — the set never overshoots by more
-  // than one entry between record calls.
-  if (negativeCache.size > MAX_IN_MEMORY_NEGATIVE_CACHE) {
-    const oldest = negativeCache.values().next().value;
-    if (oldest !== undefined) negativeCache.delete(oldest);
-  }
+  // Trim back to the cap. A single add only overshoots by one in the
+  // steady state, but the hydration union can leave the set well over
+  // the cap, so trim in a loop rather than assuming a one-entry overshoot.
+  trimToInMemoryCap();
   pendingNegativePersist.add(mbid);
   if (!persistFlushScheduled) {
     persistFlushScheduled = true;
