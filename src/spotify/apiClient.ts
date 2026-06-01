@@ -578,15 +578,28 @@ export const runWithRateLimitPolicy = submitTokenRequest;
  *
  * What we deliberately do NOT do:
  *   - Take a dedicated 334ms spacing slot. The refresh is causally
- *     nested inside an API call that already paced its slot, and the
- *     180/min pacer is sized with headroom for exactly this out-of-band
- *     token traffic (see MIN_REQUEST_SPACING_MS).
+ *     nested inside an API call that already paced its slot. A refresh
+ *     therefore fires out-of-band, on top of the 180/min the queue may
+ *     already be dispatching — so a sustained-max burst could realize a
+ *     momentary 181-in-a-window peak. This is tolerated because the
+ *     180/min cap is itself set below Spotify's true rolling-30s quota,
+ *     so there is SLACK to absorb the occasional refresh — it is not a
+ *     reserved budget (see MIN_REQUEST_SPACING_MS).
  *   - Acquire a half-open probe. The refresh is subordinate to the API
  *     request that already passed the breaker, so during half-open it
  *     must be allowed through — otherwise a probe API call that needs a
  *     token refresh could never recover the breaker (its refresh would
  *     fail-fast against the probe-in-flight guard, reopening the circuit
  *     forever while the token stays expired).
+ *
+ * PRECONDITION (load-bearing): this MUST only be called from inside an
+ * in-flight API submission (sendOnce → getValidAccessToken). The
+ * half-open logic above relies on it: a refresh does NOT close the
+ * breaker itself — it leans on the enclosing API probe to close it once
+ * the refresh returns. If a future caller ever refreshes OUTSIDE an API
+ * submission (e.g. a proactive "warm the token on focus" path), a
+ * half-open refresh would succeed but leave the breaker half-open with
+ * no probe to close it. Keep token refreshes subordinate to an API call.
  */
 export async function submitTokenRefresh(
   send: () => Promise<Response>,

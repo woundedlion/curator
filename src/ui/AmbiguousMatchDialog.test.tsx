@@ -28,13 +28,17 @@ vi.mock("../services/cancelTrackRequests", () => ({
 }));
 vi.mock("../services/spotifyPicker", () => ({
   pickSpotifyCandidate: vi.fn(async () => undefined),
+  unpickSpotifyMatch: vi.fn(() => undefined),
 }));
 vi.mock("../spotify/spotifySearch", () => ({
   searchSpotifyCandidatesByFields: vi.fn(async () => []),
 }));
 
 import { AmbiguousMatchDialog } from "./AmbiguousMatchDialog";
-import { pickSpotifyCandidate } from "../services/spotifyPicker";
+import {
+  pickSpotifyCandidate,
+  unpickSpotifyMatch,
+} from "../services/spotifyPicker";
 import { searchSpotifyCandidatesByFields } from "../spotify/spotifySearch";
 import { usePlaylistStore } from "../store/playlistStore";
 import { useSettingsStore } from "../store/settingsStore";
@@ -114,6 +118,41 @@ describe("AmbiguousMatchDialog", () => {
     expect(trackId).toBe("t1");
     expect(picked.uri).toBe("spotify:track:aaa");
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("clicking the already-selected match toggles it off (unmatch) and keeps the dialog open", () => {
+    // A matched track whose URI points at candidate `aaa` → that row is
+    // the "current" match. Clicking it should unmatch (not re-pick) and
+    // NOT close the dialog, so the user can pick another version.
+    const cands = [
+      candidate(),
+      candidate({ uri: "spotify:track:bbb", id: "bbb", album: "OKNOTOK" }),
+    ];
+    const matched: Track = {
+      id: "t1",
+      source: { kind: "text", rawLine: "Radiohead - Karma Police" },
+      title: "Karma Police",
+      artist: "Radiohead",
+      enrichment: { status: "idle" },
+      spotify: {
+        status: "matched",
+        uri: "spotify:track:aaa",
+        candidates: cands,
+        score: 0.9,
+      },
+    } as unknown as Track;
+    seedTrack(matched);
+    const onClose = vi.fn();
+    render(<AmbiguousMatchDialog trackId="t1" onClose={onClose} />);
+
+    // The current match row carries the "✓ current" marker.
+    fireEvent.click(screen.getByRole("button", { name: /OK Computer/ }));
+
+    expect(unpickSpotifyMatch).toHaveBeenCalledTimes(1);
+    expect(unpickSpotifyMatch).toHaveBeenCalledWith("t1");
+    expect(pickSpotifyCandidate).not.toHaveBeenCalled();
+    // Toggling off keeps the dialog open (unlike a pick, which closes).
+    expect(onClose).not.toHaveBeenCalled();
   });
 
   it("Search again fetches with the edited fields and renders the results", async () => {

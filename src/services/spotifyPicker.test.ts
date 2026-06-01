@@ -51,7 +51,7 @@ vi.mock("./enrichmentRunner", () => ({
   enrichOneTrackMb: mocks.enrichOneTrackMb,
 }));
 
-import { pickSpotifyCandidate } from "./spotifyPicker";
+import { pickSpotifyCandidate, unpickSpotifyMatch } from "./spotifyPicker";
 import { usePlaylistStore } from "../store/playlistStore";
 import { useSettingsStore } from "../store/settingsStore";
 
@@ -312,5 +312,33 @@ describe("pickSpotifyCandidate — identity-change contract (DESIGN §4.5 item 1
     // The runner gates on hasContact, not on existence, so it still
     // fires. That's an acceptable behavior — enrichOneTrackMb itself
     // is resilient to missing rows. We don't assert about it here.
+  });
+});
+
+describe("unpickSpotifyMatch — toggling a match off", () => {
+  it("reverts a matched row to the unmatched (missing) state", () => {
+    seedTrack(
+      trackOf({
+        id: "t1",
+        spotify: {
+          status: "matched",
+          uri: "spotify:track:chosen",
+          candidates: [candidate()],
+          score: 0.9,
+          previewUrl: "https://example.test/p.mp3",
+        },
+      }),
+    );
+
+    unpickSpotifyMatch("t1");
+
+    const row = usePlaylistStore.getState().tracksById["t1"]!;
+    // "missing" (not "idle") so the row's Spotify glyph stays
+    // interactive and the user can reopen the picker to re-match.
+    expect(row.spotify.status).toBe("missing");
+  });
+
+  it("no-ops when the track was deleted before the unpick fires", () => {
+    expect(() => unpickSpotifyMatch("ghost")).not.toThrow();
   });
 });

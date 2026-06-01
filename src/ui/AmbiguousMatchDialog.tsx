@@ -4,7 +4,10 @@ import {
   candidatePlaybackId,
   usePlaybackStore,
 } from "../playback/playbackStore";
-import { pickSpotifyCandidate } from "../services/spotifyPicker";
+import {
+  pickSpotifyCandidate,
+  unpickSpotifyMatch,
+} from "../services/spotifyPicker";
 import { searchSpotifyCandidatesByFields } from "../spotify/spotifySearch";
 import { usePlaylistStore } from "../store/playlistStore";
 import { useSettingsStore } from "../store/settingsStore";
@@ -374,6 +377,18 @@ export function AmbiguousMatchDialog({ trackId, onClose }: Props) {
                         // don't disturb anything the user had playing
                         // from the main view.
                         usePlaybackStore.getState().stopIfCandidate();
+                        if (candidate.uri === currentUri) {
+                          // Clicking the already-selected match toggles it
+                          // off: revert the row to unmatched. Keep the
+                          // dialog open and pin the candidate list (the
+                          // row's status flips to "missing", which carries
+                          // no candidates of its own) so the click visibly
+                          // de-highlights this row and the user can pick a
+                          // different version or close.
+                          setSearchedCandidates(candidates);
+                          unpickSpotifyMatch(trackId);
+                          return;
+                        }
                         void pickSpotifyCandidate(
                           trackId,
                           candidate,

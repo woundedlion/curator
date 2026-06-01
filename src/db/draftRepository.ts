@@ -139,11 +139,11 @@ export async function loadDraft(
   const playlistReq = tx.objectStore(STORE_PLAYLISTS).get(playlistId);
   const tracksReq = tx.objectStore(STORE_TRACKS).getAll();
   const [playlistRow, tracks] = await Promise.all([playlistReq, tracksReq]);
-  const playlist = ((playlistRow as Playlist | undefined) ?? null) as
-    | Playlist
-    | null;
+  // Typed schema (CuratorDBSchema): `get` yields `Playlist | undefined`
+  // and `getAll` yields `Track[]` — no casts needed.
+  const playlist = playlistRow ?? null;
   await tx.done;
-  return { playlist, tracks: tracks as Track[] };
+  return { playlist, tracks };
 }
 
 export async function clearDraft(playlistId: string): Promise<void> {

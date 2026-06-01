@@ -163,18 +163,36 @@ async function importEnvelope(env: CuratorExportEnvelope): Promise<void> {
 }
 
 export async function ingestDroppedFiles(files: File[]): Promise<void> {
-  const { envelopes, others } = await partitionCuratorExports(files);
-  for (const env of envelopes) await importEnvelope(env);
-  // Audio/text "others" run through addAndEnrich, which queues its own
-  // sweep. Only queue an extra sweep for the envelope batch when there
-  // are no others to piggy-back on — otherwise the addAndEnrich sweep
-  // (serialized after these imports complete) already covers the
-  // unresolved rows the envelopes contributed, and a second queued sweep
-  // would be redundant.
-  if (others.length > 0) {
-    await addAndEnrich(others);
-  } else if (envelopes.length > 0) {
-    queuePostIngestRunners();
+  // The other public entry points (importPlaylistById, pickFolderAndIngest)
+  // each surface a toast on failure; this one parses/builds tracks from a
+  // dropped batch and could throw outside any runner's own error handling
+  // (e.g. buildTracksFromExport on a malformed envelope, or addTracks).
+  // Without this catch the rejection escapes to the fire-and-forget caller
+  // in App.tsx as a silent console-only unhandled rejection. (The busy
+  // counter stays balanced regardless — every withBusy below brackets its
+  // own work with a finally.)
+  try {
+    const { envelopes, others } = await partitionCuratorExports(files);
+    for (const env of envelopes) await importEnvelope(env);
+    // Audio/text "others" run through addAndEnrich, which queues its own
+    // sweep. Only queue an extra sweep for the envelope batch when there
+    // are no others to piggy-back on — otherwise the addAndEnrich sweep
+    // (serialized after these imports complete) already covers the
+    // unresolved rows the envelopes contributed, and a second queued sweep
+    // would be redundant.
+    if (others.length > 0) {
+      await addAndEnrich(others);
+    } else if (envelopes.length > 0) {
+      queuePostIngestRunners();
+    }
+  } catch (error) {
+    console.error("ingestDroppedFiles failed", error);
+    const detail =
+      error instanceof Error ? error.message : "see console for details";
+    useUiStore.getState().pushToast({
+      kind: "error",
+      message: `Couldn't add dropped files: ${detail}`,
+    });
   }
 }
 

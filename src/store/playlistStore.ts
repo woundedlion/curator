@@ -22,6 +22,19 @@ type PlaylistStore = {
   undoStack: UndoEntry[];
   hydrated: boolean;
 
+  // The trackId order captured the moment the playlist first leaves the
+  // unsorted state, so a third (clearing) header click can restore the
+  // user's manual arrangement instead of freezing the sorted order. Lives
+  // in store state (not a module global) so it's mutated only via the pure
+  // set-updaters that produce it — never written from inside a nominally-
+  // pure updater as a side effect. Intentionally NOT persisted: it's
+  // omitted from the IDB draft write (writeCurrentDraft saves `playlist` +
+  // tracks only) and reset to null on hydrate, so a reload while a sort is
+  // active keeps the sorted order — an acceptable corner versus threading
+  // this through IDB and the undo stack. Reset to null whenever a fresh
+  // manual order is established (reorder / move / replace / undo).
+  preSortManualOrder: string[] | null;
+
   // Track records are always replaced (never mutated in place) — every
   // store action that touches a Track writes `{ ...existing, ...patch }`
   // into a new tracksById entry. Other layers can rely on referential
@@ -127,15 +140,6 @@ function cycleSortDirection(
 // in useAppBootstrap flush synchronously if the timer is still pending.
 const PERSIST_DEBOUNCE_MS = 250;
 let pendingPersistTimer: ReturnType<typeof setTimeout> | undefined;
-
-// The trackId order captured the moment the playlist first leaves the
-// unsorted state, so a third (clearing) header click can restore the
-// user's manual arrangement instead of freezing the sorted order.
-// Module-scoped and intentionally NOT persisted: a reload while a sort is
-// active keeps the sorted order, an acceptable corner versus the cost of
-// threading this through IDB and the undo stack. Cleared whenever a fresh
-// manual order is established (reorder / move / replace).
-let preSortManualOrder: string[] | null = null;
 
 function sameIdSet(a: string[], b: string[]): boolean {
   if (a.length !== b.length) return false;
@@ -306,14 +310,15 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => {
   tracksById: {},
   undoStack: [],
   hydrated: false,
+  preSortManualOrder: null,
   selectedTrackIds: new Set<string>(),
   selectionAnchorId: null,
 
   async hydrateFromStorage() {
     // Hydration swaps in a logically-different playlist; any pre-sort
     // manual order captured against the previous session's playlist is
-    // now stale and must not leak into this one's sort-clear restore.
-    preSortManualOrder = null;
+    // now stale and must not leak into this one's sort-clear restore — so
+    // both set() paths below reset preSortManualOrder to null.
     const { playlist, tracks } = await loadDraft(DRAFT_PLAYLIST_ID);
     if (playlist) {
       const tracksById = buildTracksById(tracks);
@@ -328,13 +333,18 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => {
       }
       const recovered =
         dropped === 0 ? playlist : { ...playlist, trackIds: liveTrackIds };
-      set({ playlist: recovered, tracksById, hydrated: true });
+      set({
+        playlist: recovered,
+        tracksById,
+        hydrated: true,
+        preSortManualOrder: null,
+      });
       // Flush the repaired playlist so the orphaned trackIds don't linger
       // on disk until the next user mutation (they'd re-surface as the
       // same `dropped` warning on every reload until then).
       if (dropped > 0) schedulePersist();
     } else {
-      set({ hydrated: true });
+      set({ hydrated: true, preSortManualOrder: null });
     }
   },
 
@@ -407,17 +417,20 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => {
     const actuallyRemoved: string[] = [];
     set((state) => {
       const removeSet = new Set(ids);
-      const nextById = { ...state.tracksById };
+      // Detect which ids actually exist BEFORE cloning tracksById, so a
+      // no-op delete (e.g. removeTrack on an already-gone id) returns
+      // `state` without an O(n) full-map copy.
       const deletedTracks: Track[] = [];
       for (const id of removeSet) {
-        const existing = nextById[id];
+        const existing = state.tracksById[id];
         if (existing !== undefined) {
           deletedTracks.push(existing);
           actuallyRemoved.push(id);
-          delete nextById[id];
         }
       }
       if (deletedTracks.length === 0) return state;
+      const nextById = { ...state.tracksById };
+      for (const id of actuallyRemoved) delete nextById[id];
       const nextSelection = pruneSelection(state.selectedTrackIds, removeSet);
       const nextAnchor =
         state.selectionAnchorId && removeSet.has(state.selectionAnchorId)
@@ -483,20 +496,15 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => {
             captureSelection(state.selectedTrackIds, state.selectionAnchorId),
           ),
         ),
+        // A manual reorder IS the new manual order — any captured pre-sort
+        // order is now stale.
+        preSortManualOrder: null,
       };
     });
-    if (changed) {
-      // A manual reorder IS the new manual order — any captured pre-sort
-      // order is now stale.
-      preSortManualOrder = null;
-      schedulePersist();
-    }
+    if (changed) schedulePersist();
   },
 
   setSort(field) {
-    // The clearing branch mutates preSortManualOrder; capture whether the
-    // updater actually cleared it so we only null it out on a real change.
-    let clearedManualOrder = false;
     const changed = mutate((state) => {
       const current = state.playlist.sort;
       const next = cycleSortDirection(current?.field, current?.dir, field);
@@ -507,18 +515,22 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => {
       );
       // Leaving the unsorted state for the first time: remember the
       // manual order so the clearing (third) click can restore it.
-      if (!current && next.field) {
-        preSortManualOrder = [...state.playlist.trackIds];
-      }
+      // Otherwise carry the existing capture forward unchanged. Computed
+      // as a value here (not a side-effect write) so the updater stays
+      // pure — the returned state object is what commits the capture.
+      const nextManualOrder =
+        !current && next.field
+          ? [...state.playlist.trackIds]
+          : state.preSortManualOrder;
       if (!next.field || !next.dir) {
         // Clearing the sort. Restore the captured manual order when it
         // still covers exactly the current id set (no track was added or
         // removed mid-sort); otherwise keep the current order so nothing
         // is lost.
         const restored =
-          preSortManualOrder &&
-          sameIdSet(preSortManualOrder, state.playlist.trackIds)
-            ? [...preSortManualOrder]
+          state.preSortManualOrder &&
+          sameIdSet(state.preSortManualOrder, state.playlist.trackIds)
+            ? [...state.preSortManualOrder]
             : state.playlist.trackIds;
         // True no-op guard: clearing a sort that's already null AND that
         // wouldn't reorder anything mustn't push an undo entry or persist
@@ -527,16 +539,19 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => {
         if (!current && sameOrder(restored, state.playlist.trackIds)) {
           return state;
         }
-        clearedManualOrder = true;
         return {
           playlist: { ...state.playlist, trackIds: restored, sort: null },
           undoStack: pushBounded(state.undoStack, priorSnapshot),
+          preSortManualOrder: null,
         };
       }
-      const tracksMap = new Map(Object.entries(state.tracksById));
+      // Index by the live Record directly — no full Map materialization.
+      // sortTrackIds only ever reads via `.get`, so a thin adapter over
+      // the existing tracksById avoids an O(n) Object.entries + Map copy
+      // on every header click.
       const orderedIds = sortTrackIds(
         state.playlist.trackIds,
-        tracksMap,
+        { get: (id) => state.tracksById[id] },
         next.field,
         next.dir,
       );
@@ -558,12 +573,10 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => {
           sort: { field: next.field, dir: next.dir },
         },
         undoStack: pushBounded(state.undoStack, priorSnapshot),
+        preSortManualOrder: nextManualOrder,
       };
     });
-    if (changed) {
-      if (clearedManualOrder) preSortManualOrder = null;
-      schedulePersist();
-    }
+    if (changed) schedulePersist();
   },
 
   clearSort() {
@@ -572,9 +585,9 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => {
       // Mirror setSort's clearing branch: put the manual order back if we
       // still have a faithful capture of it.
       const restored =
-        preSortManualOrder &&
-        sameIdSet(preSortManualOrder, state.playlist.trackIds)
-          ? [...preSortManualOrder]
+        state.preSortManualOrder &&
+        sameIdSet(state.preSortManualOrder, state.playlist.trackIds)
+          ? [...state.preSortManualOrder]
           : state.playlist.trackIds;
       return {
         playlist: { ...state.playlist, trackIds: restored, sort: null },
@@ -586,12 +599,10 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => {
             captureSelection(state.selectedTrackIds, state.selectionAnchorId),
           ),
         ),
+        preSortManualOrder: null,
       };
     });
-    if (changed) {
-      preSortManualOrder = null;
-      schedulePersist();
-    }
+    if (changed) schedulePersist();
   },
 
   setHideUnmatched(hide) {
@@ -650,11 +661,11 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => {
         ),
         selectedTrackIds: new Set<string>(),
         selectionAnchorId: null,
+        // A wholesale replace establishes a brand-new manual order.
+        preSortManualOrder: null,
       };
     });
     if (removedIds.length > 0) cancelTrackRequests(removedIds);
-    // A wholesale replace establishes a brand-new manual order.
-    preSortManualOrder = null;
     schedulePersist();
   },
 
@@ -727,14 +738,12 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => {
       return {
         ...applyUndo(state, entry),
         undoStack: remaining,
+        // An undo can restore an arbitrary prior order; any captured
+        // pre-sort order no longer reflects reality.
+        preSortManualOrder: null,
       };
     });
-    if (changed) {
-      // An undo can restore an arbitrary prior order; any captured
-      // pre-sort order no longer reflects reality.
-      preSortManualOrder = null;
-      schedulePersist();
-    }
+    if (changed) schedulePersist();
   },
 
   selectOnly(id) {

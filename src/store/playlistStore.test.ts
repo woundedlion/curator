@@ -430,9 +430,10 @@ describe("setHideUnmatched / setPlaylistMeta change detection", () => {
 
 // ─── preSortManualOrder reset on hydrate ────────────────────────────
 //
-// preSortManualOrder is module-global. If hydrateFromStorage swaps in a
-// new playlist without clearing it, a stale manual order captured against
-// the prior session's playlist could be restored on a later sort-clear.
+// preSortManualOrder lives in store state. If hydrateFromStorage swaps in
+// a new playlist without resetting it, a stale manual order captured
+// against the prior session's playlist could be restored on a later
+// sort-clear.
 
 describe("preSortManualOrder reset across hydrate", () => {
   it("does not leak a stale pre-sort order from a prior playlist into a hydrated one", async () => {

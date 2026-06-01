@@ -1,6 +1,6 @@
 // Unit-separator (U+001F) — bytes that File.name will never contain — so
 // `("a.mp3", 12, 345)` and `("a.mp", 312, 345)` can't share a key.
-const KEY_DELIMITER = "";
+const KEY_DELIMITER = "\u001F";
 
 function buildDuplicateKey(file: File): string {
   // name + size collides surprisingly often for re-rips of the same

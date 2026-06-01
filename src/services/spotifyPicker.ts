@@ -42,6 +42,22 @@ function applyCandidateToTrack(
   });
 }
 
+/**
+ * Reverse a pick: clicking the already-selected match in the picker toggles
+ * it off, reverting the row to an unmatched state. We land on "missing"
+ * rather than "idle" because "missing" is the interactive/re-searchable
+ * resting state (its status glyph stays clickable so the user can reopen
+ * the picker), whereas "idle" renders inert. The display fields the pick
+ * copied from the candidate stay as-is — the pre-pick local tags aren't
+ * retained anywhere to restore, and reopening the picker re-searches from
+ * the current title/artist anyway.
+ */
+export function unpickSpotifyMatch(trackId: string): void {
+  const store = usePlaylistStore.getState();
+  if (!store.tracksById[trackId]) return;
+  store.updateTrack(trackId, { spotify: { status: "missing" } });
+}
+
 export async function pickSpotifyCandidate(
   trackId: string,
   candidate: SpotifyCandidate,

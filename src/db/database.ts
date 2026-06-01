@@ -1,6 +1,26 @@
-import { openDB, type IDBPDatabase } from "idb";
+import { openDB, type DBSchema, type IDBPDatabase } from "idb";
+import type { Playlist, Track } from "../types";
+import type {
+  CoverArtNegativeEntry,
+  MBCacheEntry,
+} from "./musicbrainzCache";
 
 const DB_NAME = "curator";
+
+// Typed schema for the whole database. Threading this generic through
+// `getDatabase` makes every store access in draftRepository /
+// musicbrainzCache return its real value type — no per-call-site casts,
+// and a store-name typo or value-shape drift is a compile error. The
+// mb_cache store holds two row shapes (content rows + the single CAA
+// negative-cache row) keyed by `key`, so its value is their union; the
+// reading code discriminates on the `key` field. (The type-only import
+// from musicbrainzCache is erased at runtime, so it introduces no
+// runtime import cycle — database.ts has no runtime dependency on it.)
+export interface CuratorDBSchema extends DBSchema {
+  playlists: { key: string; value: Playlist };
+  tracks: { key: string; value: Track };
+  mb_cache: { key: string; value: MBCacheEntry | CoverArtNegativeEntry };
+}
 
 // Schema version. Bump this whenever the structure of an object store
 // changes, or a new store is added. Every bump MUST have a corresponding
@@ -14,7 +34,7 @@ export const STORE_PLAYLISTS = "playlists";
 export const STORE_TRACKS = "tracks";
 export const STORE_MB_CACHE = "mb_cache";
 
-let dbPromise: Promise<IDBPDatabase> | null = null;
+let dbPromise: Promise<IDBPDatabase<CuratorDBSchema>> | null = null;
 
 export class IndexedDBUnavailableError extends Error {
   constructor() {
@@ -26,7 +46,7 @@ export class IndexedDBUnavailableError extends Error {
   }
 }
 
-export function getDatabase(): Promise<IDBPDatabase> {
+export function getDatabase(): Promise<IDBPDatabase<CuratorDBSchema>> {
   if (!dbPromise) {
     // Some browsers expose `indexedDB` as `undefined` rather than
     // throwing on access — older Safari Private Browsing, embedded
@@ -37,9 +57,9 @@ export function getDatabase(): Promise<IDBPDatabase> {
     // defined`. We DON'T pre-check `typeof indexedDB` here — that
     // bypasses test setups that mock `openDB` directly without
     // installing a global IDB shim.
-    let opened: Promise<IDBPDatabase>;
+    let opened: Promise<IDBPDatabase<CuratorDBSchema>>;
     try {
-      opened = openDB(DB_NAME, DB_VERSION, {
+      opened = openDB<CuratorDBSchema>(DB_NAME, DB_VERSION, {
         upgrade(db, oldVersion, _newVersion, _tx) {
           // Each `if (oldVersion < N)` block runs when we are migrating FROM
           // a database that pre-dates version N. Cases must be ordered

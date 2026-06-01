@@ -35,10 +35,32 @@ export function externalSpotifyUrl(spotifyUri: string): string | null {
   return `https://open.spotify.com/track/${id}`;
 }
 
+// Source selection policy. Two SDK signals, deliberately distinct:
+//   - `sdkReady`: the SDK device is connected RIGHT NOW. Only then do we
+//     prefer full-track Spotify over the local file for a resolved match
+//     (issue 1) — we never trade working local/preview audio for an SDK
+//     source that might be seconds away or might fail to connect at all.
+//   - `sdkInitable`: the user opted in and init hasn't failed this session,
+//     but it isn't connected yet. This only earns the SDK the LAST-RESORT
+//     slot — used to kick off lazy init for a Spotify-only track that has
+//     no local file and no preview (issue 3: the old "connecting… try
+//     again" dead-end). It must NOT outrank a local file or a preview,
+//     which both play immediately and don't depend on Premium.
 export function createPlaybackSource(
   track: Track,
-  sdkEnabled: boolean,
+  sdkReady: boolean,
+  sdkInitable: boolean,
 ): PlaybackSource {
+  const uri = getSpotifyUri(track.spotify);
+  // Issue 1: a resolved match prefers full-track Spotify over the local
+  // file — but only when the SDK is actually connected.
+  if (track.spotify.status === "matched" && sdkReady && uri) {
+    return {
+      kind: "spotify-sdk",
+      uri,
+      label: "Spotify (full track)",
+    };
+  }
   if (track.localFile) {
     return {
       kind: "local",
@@ -46,20 +68,25 @@ export function createPlaybackSource(
       label: "Local file",
     };
   }
-  const uri = getSpotifyUri(track.spotify);
-  if (sdkEnabled && uri) {
-    return {
-      kind: "spotify-sdk",
-      uri,
-      label: "Spotify (full track)",
-    };
-  }
+  // A 30-second preview plays immediately and without Premium — prefer it
+  // over an un-connected (initable) SDK so a non-Premium user still hears
+  // audio. A connected SDK already won above for matched rows.
   const previewUrl = getSpotifyPreviewUrl(track.spotify);
   if (previewUrl) {
     return {
       kind: "spotify-preview",
       url: previewUrl,
       label: "Spotify preview (30s)",
+    };
+  }
+  // Last resort: full-track SDK for a Spotify-only, preview-less row. When
+  // not yet connected, `sdkInitable` still emits the source so the first
+  // play lazily kicks off SDK init via Player.resolveBackend (issue 3).
+  if ((sdkReady || sdkInitable) && uri) {
+    return {
+      kind: "spotify-sdk",
+      uri,
+      label: "Spotify (full track)",
     };
   }
   return { kind: "none" };

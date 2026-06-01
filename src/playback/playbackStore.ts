@@ -69,6 +69,14 @@ type PlaybackState = {
    */
   teardownPlayback: () => void;
   toggle: (trackId: string) => void;
+  /**
+   * Eagerly connect the Spotify Web Playback SDK without starting playback,
+   * so the first play of a matched track routes straight to full-track
+   * Spotify instead of falling back while init runs. The bootstrap calls
+   * this once Spotify is connected AND full-track playback is enabled.
+   * No-op when the player isn't initialized; idempotent at the Player level.
+   */
+  connectSdk: () => void;
   playCandidate: (candidate: SpotifyCandidate) => void;
   stop: () => void;
   /**
@@ -191,11 +199,31 @@ export const usePlaybackStore = create<PlaybackState>((set, get) => {
     return typeof value === "number" && Number.isFinite(value) ? value : 0;
   }
 
+  // Whether an SDK (full-track) source is worth constructing. "ready" is
+  // the obvious case; the optimistic arm ("opted-in, not yet failed") lets
+  // the FIRST play of an SDK-required track lazily kick off SDK init via
+  // Player.resolveBackend instead of dead-ending. Once init has failed
+  // ("unavailable"), the SDK is closed for the session and we fall through
+  // to other sources. Mirrors buildCandidateTarget so the main-view play
+  // button and the picker preview agree on when the SDK is an option.
+  function isSdkUsable(): boolean {
+    const status = get().sdk.status;
+    return (
+      status === "ready" || (status !== "unavailable" && shouldTryEnableSdk())
+    );
+  }
+
   function buildTrackTarget(trackId: string): PlayerTarget | null {
     const track = usePlaylistStore.getState().tracksById[trackId];
     if (!track) return null;
-    const sdkReady = get().sdk.status === "ready";
-    const source = createPlaybackSource(track, sdkReady);
+    // sdkReady gates the issue-1 "prefer full track over local" jump;
+    // isSdkUsable() is the optimistic last-resort signal that lets a
+    // preview-less Spotify-only track kick off lazy SDK init (issue 3).
+    const source = createPlaybackSource(
+      track,
+      get().sdk.status === "ready",
+      isSdkUsable(),
+    );
     if (source.kind === "none") return null;
     return {
       kind: "track",
@@ -218,10 +246,7 @@ export const usePlaybackStore = create<PlaybackState>((set, get) => {
     // would produce a silent dead-end (no playback, no toast). Treat
     // "unavailable" as "SDK is closed for the rest of this session"
     // and fall through to the no-source toast in playCandidate.
-    const sdkStatus = get().sdk.status;
-    const sdkUsable =
-      sdkStatus === "ready" ||
-      (sdkStatus !== "unavailable" && shouldTryEnableSdk());
+    const sdkUsable = isSdkUsable();
     const source: PlaybackSource = candidate.previewUrl
       ? {
           kind: "spotify-preview",
@@ -300,27 +325,42 @@ export const usePlaybackStore = create<PlaybackState>((set, get) => {
       if (!storeRef.player) return;
       const target = buildTrackTarget(trackId);
       if (!target) {
-        // buildTrackTarget returned null because the only in-app source
-        // would have been SDK full-track playback, but the SDK isn't
-        // ready (status not "ready" → createPlaybackSource skipped the
-        // spotify-sdk branch and fell to "none"). playCandidate already
-        // toasts in the equivalent situation; mirror that here so a play
-        // click on an SDK-only track before SDK init gives the user
-        // feedback instead of silently doing nothing. We only toast when
-        // a Spotify URI actually exists — a genuinely sourceless track
-        // (missing file, no URI) shouldn't surface a misleading message.
+        // buildTrackTarget returned null for an SDK-only track. With the
+        // optimistic isSdkUsable() check, a play click now EAGERLY kicks
+        // off SDK init (createPlaybackSource emits a spotify-sdk source
+        // whenever the user has opted in and init hasn't already failed),
+        // so reaching here means the SDK genuinely isn't an option: either
+        // init failed this session ("unavailable") or the user hasn't
+        // enabled full-track playback. Toast accordingly — no more
+        // "try again in a moment", which never resolved because nothing
+        // was actually connecting. We only toast when a Spotify URI exists;
+        // a genuinely sourceless track (missing file, no URI) shouldn't
+        // surface a misleading message.
         const track = usePlaylistStore.getState().tracksById[trackId];
         if (track && !track.localFile && getSpotifyUri(track.spotify)) {
           useUiStore.getState().pushToast({
             kind: "info",
-            message: shouldTryEnableSdk()
-              ? "Connecting Spotify full-track playback — try again in a moment"
-              : "Enable Full-track playback in Settings to play this track (requires Spotify Premium)",
+            message:
+              get().sdk.status === "unavailable"
+                ? "Spotify full-track playback is unavailable this session (reload to retry)"
+                : "Enable Full-track playback in Settings to play this track (requires Spotify Premium)",
           });
         }
         return;
       }
       void storeRef.player.play(target);
+    },
+
+    connectSdk() {
+      // Guard on opt-in here too (the bootstrap already checks, but this
+      // keeps the action safe to call from anywhere): only warm up the SDK
+      // when the user wants full-track playback and a client id exists.
+      if (!storeRef.player) return;
+      if (!shouldTryEnableSdk()) return;
+      if (get().sdk.status === "ready" || get().sdk.status === "unavailable") {
+        return;
+      }
+      void storeRef.player.preloadSdk();
     },
 
     playCandidate(candidate) {

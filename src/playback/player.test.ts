@@ -636,6 +636,29 @@ describe("Player — backend selection", () => {
     await player.play(sdkTrack("y"));
     expect(sdkLoader).toHaveBeenCalledTimes(1);
   });
+
+  it("preloadSdk warms up the SDK backend without playing, and a later play reuses it", async () => {
+    await player.preloadSdk();
+    // SDK loaded, but nothing is playing — no target installed.
+    expect(sdkLoader).toHaveBeenCalledTimes(1);
+    expect(player.getSnapshot().phase).toBe("idle");
+    expect(player.getSnapshot().currentTrackId).toBeNull();
+    expect(sdk.calls).not.toContainEqual(
+      expect.objectContaining({ kind: "load" }),
+    );
+
+    // A subsequent SDK play reuses the warmed-up backend (no second load).
+    await player.play(sdkTrack("x"));
+    expect(sdkLoader).toHaveBeenCalledTimes(1);
+    expect(player.getSnapshot().currentTrackId).toBe("x");
+  });
+
+  it("preloadSdk is idempotent and doesn't re-attempt after a failed load", async () => {
+    sdkLoader.mockResolvedValueOnce(null);
+    await player.preloadSdk();
+    await player.preloadSdk();
+    expect(sdkLoader).toHaveBeenCalledTimes(1);
+  });
 });
 
 // ─── 8. Position / duration mirror ───────────────────────────────────

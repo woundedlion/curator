@@ -480,3 +480,129 @@ describe("IntervalQueue post-wait guard", () => {
   });
 });
 
+// ─── Persistence (localStorage-backed nextRunAt) ─────────────────────
+//
+// The Spotify queue persists `nextRunAt` so a reload doesn't let a fresh
+// tab replay a burst that just earned a 429. node lacks `localStorage`,
+// so this suite stubs an in-memory one. The `persistedCapMs` clamp is the
+// load-bearing anti-deadlock guard (a corrupt far-future write must not
+// strand the queue), so it gets a dedicated test.
+describe("IntervalQueue persistence", () => {
+  const KEY = "test.queue.nextAllowedAt";
+  const BASE = 1_700_000_000_000;
+  let backing: Map<string, string>;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(BASE);
+    backing = new Map();
+    vi.stubGlobal("localStorage", {
+      getItem: (k: string) => backing.get(k) ?? null,
+      setItem: (k: string, v: string) => {
+        backing.set(k, String(v));
+      },
+      removeItem: (k: string) => {
+        backing.delete(k);
+      },
+      clear: () => backing.clear(),
+      key: (i: number) => Array.from(backing.keys())[i] ?? null,
+      get length() {
+        return backing.size;
+      },
+    });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  it("gates the first task until a persisted future timestamp elapses", async () => {
+    backing.set(KEY, String(BASE + 5_000));
+    const queue = new IntervalQueue({ intervalMs: 100, persistKey: KEY });
+    const run = vi.fn(async () => "ok");
+    const p = queue.enqueue(run);
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(run).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(4_999);
+    expect(run).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(await p).toBe("ok");
+  });
+
+  it("clamps a persisted timestamp beyond persistedCapMs so a corrupt write can't deadlock the queue", async () => {
+    // A bogus far-future write (ms/s mix-up, corruption) must not strand
+    // the queue for hours — the read clamps it to now + cap.
+    backing.set(KEY, String(BASE + 9_999_999));
+    const queue = new IntervalQueue({
+      intervalMs: 100,
+      persistKey: KEY,
+      persistedCapMs: 60_000,
+    });
+    expect(queue.nextRunAtTimestamp).toBe(BASE + 60_000);
+
+    const run = vi.fn(async () => "ok");
+    const p = queue.enqueue(run);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(run).toHaveBeenCalledTimes(1);
+    await p;
+  });
+
+  it("ignores a persisted timestamp already in the past (first task runs immediately)", async () => {
+    backing.set(KEY, String(BASE - 1_000));
+    const queue = new IntervalQueue({ intervalMs: 100, persistKey: KEY });
+    expect(queue.nextRunAtTimestamp).toBe(0);
+
+    const run = vi.fn(async () => "ok");
+    const p = queue.enqueue(run);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(run).toHaveBeenCalledTimes(1);
+    await p;
+  });
+
+  it("ignores a corrupt (non-numeric) persisted value", () => {
+    backing.set(KEY, "not-a-number");
+    const queue = new IntervalQueue({ intervalMs: 100, persistKey: KEY });
+    expect(queue.nextRunAtTimestamp).toBe(0);
+  });
+
+  it("persists nextRunAt after dispatching a task", async () => {
+    const queue = new IntervalQueue({ intervalMs: 1_000, persistKey: KEY });
+    const p = queue.enqueue(async () => "ok");
+    await vi.advanceTimersByTimeAsync(0);
+    await p;
+    // setNextRunAt(now + intervalMs) ran during dispatch (now === BASE).
+    expect(backing.get(KEY)).toBe(String(BASE + 1_000));
+  });
+
+  it("recordExternalPause persists the backoff so a fresh queue (reload) honors it", () => {
+    const queue = new IntervalQueue({ intervalMs: 100, persistKey: KEY });
+    queue.recordExternalPause(BASE + 30_000);
+    expect(backing.get(KEY)).toBe(String(BASE + 30_000));
+
+    // Reload: a new instance reads the persisted value back (within cap).
+    const reloaded = new IntervalQueue({ intervalMs: 100, persistKey: KEY });
+    expect(reloaded.nextRunAtTimestamp).toBe(BASE + 30_000);
+  });
+
+  it("reset() clears the persisted timestamp (setNextRunAt(0) removes the key)", () => {
+    backing.set(KEY, String(BASE + 5_000));
+    const queue = new IntervalQueue({ intervalMs: 100, persistKey: KEY });
+    expect(backing.get(KEY)).toBe(String(BASE + 5_000));
+
+    queue.reset();
+    expect(backing.has(KEY)).toBe(false);
+    expect(queue.nextRunAtTimestamp).toBe(0);
+  });
+
+  it("does not touch localStorage when no persistKey is configured", async () => {
+    const queue = new IntervalQueue({ intervalMs: 100 });
+    queue.recordExternalPause(BASE + 5_000);
+    const p = queue.enqueue(async () => "ok");
+    await vi.advanceTimersByTimeAsync(5_000);
+    await p;
+    expect(backing.size).toBe(0);
+  });
+});
+

@@ -58,6 +58,30 @@ function makeFakeDb() {
             store.set(value.key, value);
             return value.key;
           },
+          // Minimal cursor over a snapshot of the current rows. Deletes
+          // hit the live `store` Map; iteration advances by index over the
+          // snapshot, which is sufficient for the version-sweep test (real
+          // IDB cursors also tolerate deleting the row under the cursor).
+          openCursor: async () => {
+            if (isWrite) await headReached;
+            const rows = Array.from(store.values());
+            let i = 0;
+            const makeCursor = (): unknown => {
+              if (i >= rows.length) return null;
+              const value = rows[i]!;
+              return {
+                value,
+                delete: async () => {
+                  store.delete(value.key);
+                },
+                continue: async () => {
+                  i++;
+                  return makeCursor();
+                },
+              };
+            };
+            return makeCursor();
+          },
         },
         get done() {
           return (async () => {
@@ -89,6 +113,7 @@ import {
   deleteCachedCandidates,
   getCacheSize,
   loadCoverArtNegativeCache,
+  pruneStaleCacheEntries,
   readCachedCandidates,
   saveCoverArtNegativeMbids,
   writeCachedCandidates,
@@ -368,5 +393,82 @@ describe("writeCachedCandidates with empty input", () => {
     await writeCachedCandidates({ title: "Q", artist: "Q" }, []);
     const out = await readCachedCandidates({ title: "Q", artist: "Q" });
     expect(out).toEqual({ kind: "cached", candidates: [] });
+  });
+});
+
+describe("pruneStaleCacheEntries", () => {
+  function contentRow(key: string, version: number | undefined): StoreRow {
+    const row: StoreRow = { key, candidates: [candidate()], cachedAt: 1 };
+    if (version !== undefined) row.version = version;
+    return row;
+  }
+
+  it("deletes content rows at a stale (or missing) version and keeps current-version rows", async () => {
+    store.set("stale", contentRow("stale", MB_CACHE_VERSION - 1));
+    store.set("current", contentRow("current", MB_CACHE_VERSION));
+    store.set("unversioned", contentRow("unversioned", undefined));
+
+    const removed = await pruneStaleCacheEntries();
+
+    expect(removed).toBe(2);
+    expect(store.has("stale")).toBe(false);
+    expect(store.has("unversioned")).toBe(false);
+    expect(store.has("current")).toBe(true);
+  });
+
+  it("never deletes the CAA negative-cache row even though it carries no version field", async () => {
+    // Seed the negative-cache row through its real writer so the schema
+    // matches production exactly, then add a stale content row alongside.
+    await saveCoverArtNegativeMbids(["mbid-1", "mbid-2"]);
+    store.set("stale", contentRow("stale", MB_CACHE_VERSION - 1));
+
+    const removed = await pruneStaleCacheEntries();
+
+    expect(removed).toBe(1);
+    expect(store.has("stale")).toBe(false);
+    // The negative cache survived the version sweep intact.
+    expect(await loadCoverArtNegativeCache()).toEqual(["mbid-1", "mbid-2"]);
+  });
+
+  it("returns 0 and deletes nothing when every content row is current", async () => {
+    store.set("a", contentRow("a", MB_CACHE_VERSION));
+    store.set("b", contentRow("b", MB_CACHE_VERSION));
+    const removed = await pruneStaleCacheEntries();
+    expect(removed).toBe(0);
+    expect(store.size).toBe(2);
+  });
+});
+
+describe("saveCoverArtNegativeMbids — FIFO eviction at the cap", () => {
+  // Mirrors MAX_NEGATIVE_CACHE_SIZE in musicbrainzCache.ts. If that
+  // constant changes, this expectation should be updated in lock-step.
+  const CAP = 10_000;
+
+  it("evicts the oldest MBIDs (FIFO) once the merged list exceeds the cap", async () => {
+    const seeded = Array.from({ length: CAP }, (_, i) => `mbid-${i}`);
+    await saveCoverArtNegativeMbids(seeded);
+    expect((await loadCoverArtNegativeCache()).length).toBe(CAP);
+
+    // Three fresh misses push the list to CAP+3 → the three oldest are
+    // trimmed from the head, newest kept at the tail.
+    await saveCoverArtNegativeMbids(["new-a", "new-b", "new-c"]);
+
+    const result = await loadCoverArtNegativeCache();
+    expect(result.length).toBe(CAP);
+    expect(result).not.toContain("mbid-0");
+    expect(result).not.toContain("mbid-1");
+    expect(result).not.toContain("mbid-2");
+    expect(result).toContain("mbid-3"); // oldest survivor
+    expect(result.slice(-3)).toEqual(["new-a", "new-b", "new-c"]);
+  });
+
+  it("does not evict when the merged list is exactly at the cap", async () => {
+    const seeded = Array.from({ length: CAP - 1 }, (_, i) => `mbid-${i}`);
+    await saveCoverArtNegativeMbids(seeded);
+    await saveCoverArtNegativeMbids(["last"]);
+    const result = await loadCoverArtNegativeCache();
+    expect(result.length).toBe(CAP);
+    expect(result).toContain("mbid-0");
+    expect(result.at(-1)).toBe("last");
   });
 });

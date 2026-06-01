@@ -14,29 +14,33 @@ export function rangeBetween(
   return visibleIds.slice(lo, hi + 1);
 }
 
-// Move a multi-row selection while preserving its *shape* (the gaps between
-// selected rows) as much as the array's bounds allow. This is the drop
-// semantics used by the table's group-drag (§4.2): selected items keep
-// their relative offsets from the actively-dragged row whenever possible;
-// only when an offset would push a row off the end of the list do the gaps
-// shrink (from the far end first). Unselected items keep their original
-// relative order and fill the slots the selection didn't claim.
+// Move a multi-row selection while preserving its *shape* — the gaps
+// between selected rows stay constant as the selection moves, and the
+// unselected rows flow one at a time through those gaps. Gaps collapse
+// ONLY when the selection is pushed against an array boundary (a selected
+// row would otherwise land off the end). This is the drop semantics used
+// by the table's group-drag (§4.2).
+//
+// Each selected row keeps its original offset from the grabbed (active)
+// row. The subtlety that makes the motion feel right is how the active
+// row's landing slot (`activeTarget`) is derived: it counts only the
+// UNSELECTED rows the cursor has crossed, so dragging past one row moves
+// the selection by exactly one slot — even when selected rows sit between
+// the active row and the cursor. (Deriving it from the raw over-index
+// instead, as a naive version would, makes the block jump in
+// selection-sized steps — e.g. a 2-row selection lurching 2 slots at a
+// time, which reads as "it won't move one-by-one".)
 //
 // Worked examples for `[A, B, C, D]`, selection `{A, C}`:
-//   - drag A "below B" (over = B, target index 1)
-//       → A lands at 1, C wants 1+2=3 (fits), unselected [B,D] fill [0,2]
-//       → [B, A, D, C]
-//   - drag A "below D" (over = D, target index 3)
-//       → A is clamped to 2 (needs room for C after it), C clamps to 3,
-//         gap collapses because there's nothing left between them
-//       → [B, D, A, C]
+//   - grab A, drag down over B → A→1, C keeps its +2 offset → [B, A, D, C]
+//     (D flows into the gap; B moves above).
+//   - grab A, drag down over D → C would want index 4 (off the end), so the
+//     gap collapses at the boundary → [B, D, A, C].
 //
-// `activeId` must be one of the selected ids — it's the row the user
-// physically grabbed, and its target position drives the placement of the
-// rest of the block. `overId` is the unselected drop target (a row in
-// `selectedIds` returns the input unchanged — the "drop on self" guard).
-//
-// Returns the same reference when nothing changes.
+// `activeId` must be a selected id (the row physically grabbed). `overId`
+// is the unselected drop target; a selected `overId` returns the input
+// unchanged (the "drop on self" guard). Returns the same reference when
+// nothing changes.
 export function moveSelectionMaintainingShape(
   visibleIds: string[],
   selectedIds: ReadonlySet<string>,
@@ -64,29 +68,37 @@ export function moveSelectionMaintainingShape(
   if (activeIdx === -1) return visibleIds;
   const activeOrigIndex = selected[activeIdx]!.origIndex;
 
-  const targetOrigIndex = visibleIds.indexOf(overId);
-  if (targetOrigIndex === -1) return visibleIds;
+  const overOrigIndex = visibleIds.indexOf(overId);
+  if (overOrigIndex === -1) return visibleIds;
 
-  // The actively-dragged row's new position is wherever the over-row sits
-  // (dnd-kit convention with verticalListSortingStrategy: the dragged item
-  // takes the over-item's slot). Clamp to leave room for the other selected
-  // items on either side — without this clamp we'd compute placements that
-  // can't fit and the secondary passes would push items past array bounds.
+  // Smooth target for the active row: count only the UNSELECTED rows that
+  // sit before the drop point, so crossing one row shifts the selection by
+  // exactly one slot. Dragging DOWN (over below active) lands the active
+  // row just AFTER the over-row; dragging UP lands it just BEFORE. Selected
+  // rows that precede the active one still occupy slots, so add them back.
+  const overInUnselected = unselected.indexOf(overId);
+  const draggingDown = overOrigIndex > activeOrigIndex;
+  const insertAmongUnselected = draggingDown
+    ? overInUnselected + 1
+    : overInUnselected;
+  const selectedBeforeActive = activeIdx; // selected[] is in original order
+  let activeTarget = insertAmongUnselected + selectedBeforeActive;
+
+  // Clamp so the whole block fits — this is the only place gaps collapse,
+  // and only because a selected row would otherwise fall off an end.
   const beforeCount = activeIdx;
   const afterCount = selected.length - 1 - activeIdx;
   const activeMin = beforeCount;
   const activeMax = len - 1 - afterCount;
-  const activeTarget = Math.max(
-    activeMin,
-    Math.min(targetOrigIndex, activeMax),
-  );
+  activeTarget = Math.max(activeMin, Math.min(activeTarget, activeMax));
 
   const positions = new Array<number>(selected.length);
   positions[activeIdx] = activeTarget;
 
-  // Items after the active row: try to keep their original offset from the
-  // active row; clamp from the right so they don't run off the end, and
-  // bump forward so they don't overlap the previous selected item.
+  // Items after the active row: keep their original offset from the active
+  // row; clamp from the right so they don't run off the end, and bump
+  // forward so they don't overlap the previous selected item (this is where
+  // a trailing gap collapses at the bottom boundary).
   for (let i = activeIdx + 1; i < selected.length; i++) {
     const offset = selected[i]!.origIndex - activeOrigIndex;
     const desired = activeTarget + offset;
@@ -96,8 +108,7 @@ export function moveSelectionMaintainingShape(
     positions[i] = Math.max(earliest, Math.min(desired, latest));
   }
 
-  // Items before the active row: mirror the forward pass. The offset here
-  // is negative (origIndex < activeOrigIndex).
+  // Items before the active row: mirror the forward pass (negative offset).
   for (let i = activeIdx - 1; i >= 0; i--) {
     const offset = selected[i]!.origIndex - activeOrigIndex;
     const desired = activeTarget + offset;
@@ -115,14 +126,10 @@ export function moveSelectionMaintainingShape(
     if (result[i] === null) result[i] = unselected[u++] ?? null;
   }
 
-  // Fast no-op check: if every slot already matches the input, return the
-  // original reference so callers can shallow-compare for change detection.
-  let changed = false;
+  // Fast no-op check: return the original reference when nothing moved so
+  // callers can shallow-compare for change detection.
   for (let i = 0; i < len; i++) {
-    if (result[i] !== visibleIds[i]) {
-      changed = true;
-      break;
-    }
+    if (result[i] !== visibleIds[i]) return result as string[];
   }
-  return changed ? (result as string[]) : visibleIds;
+  return visibleIds;
 }

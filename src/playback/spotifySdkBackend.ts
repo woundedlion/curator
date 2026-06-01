@@ -246,6 +246,20 @@ export class SpotifySdkBackend implements Backend {
     if (this.lastEmittedPaused !== state.paused) {
       this.lastEmittedPaused = state.paused;
       this.observer(state.paused ? { kind: "paused" } : { kind: "playing" });
+      // The playhead is static while paused, so the 500ms getCurrentState
+      // poll is pure load against the Spotify rate limiter / circuit
+      // breaker until playback resumes. Halt it on a genuine mid-playback
+      // pause; `hasPlayed` guards out the paused-at-load state, where we
+      // must keep polling until the device actually starts. The SDK's
+      // player_state_changed listener still fires on resume (restarting
+      // the poller here) and on end-of-track — and it, not the poller, is
+      // what catches the {paused, position:0} end signal, so pausing the
+      // poller never strands a finished track.
+      if (state.paused) {
+        if (this.hasPlayed) this.stopPoller();
+      } else {
+        this.startPoller();
+      }
     }
   }
 }

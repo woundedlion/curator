@@ -3,6 +3,8 @@ import { pruneStaleCacheEntries } from "../db/musicbrainzCache";
 import { getMusicbrainzQueue } from "../enrichment/musicbrainzClient";
 import { usePlaybackStore } from "../playback/playbackStore";
 import { flushPendingPersist, usePlaylistStore } from "../store/playlistStore";
+import { useSettingsStore } from "../store/settingsStore";
+import { useSpotifyStore } from "../store/spotifyStore";
 import { useUiStore } from "../store/uiStore";
 import { bootstrapSpotify } from "../services/spotifyBootstrap";
 import { promoteSingleCandidateMatches } from "../services/spotifyMatchRunner";
@@ -50,12 +52,31 @@ export function useAppBootstrap(): void {
       await usePlaylistStore.getState().hydrateFromStorage();
       promoteSingleCandidateMatches();
     })();
-    bootstrapSpotify().catch((error) => {
-      // doBootstrap handles its own user-facing errors; this is a
-      // belt-and-suspenders guard so an unexpected throw can't surface as
-      // an unhandled rejection.
-      console.error("bootstrapSpotify crashed", error);
-    });
+    bootstrapSpotify()
+      .then(() => {
+        // Once Spotify is connected, eagerly warm up the Web Playback SDK
+        // when the user has opted into full-track playback — so the first
+        // play of a matched track plays the full Spotify track instead of
+        // falling back while init runs. Gated on `connected` because
+        // connecting the SDK before auth completes would mark it
+        // permanently unavailable for the session (the OAuth token
+        // callback would return empty). connectSdk() re-checks the opt-in.
+        const { preferFullPlayback, spotifyClientId } =
+          useSettingsStore.getState().settings;
+        if (
+          preferFullPlayback &&
+          spotifyClientId &&
+          useSpotifyStore.getState().connected
+        ) {
+          usePlaybackStore.getState().connectSdk();
+        }
+      })
+      .catch((error) => {
+        // doBootstrap handles its own user-facing errors; this is a
+        // belt-and-suspenders guard so an unexpected throw can't surface as
+        // an unhandled rejection.
+        console.error("bootstrapSpotify crashed", error);
+      });
     // Eagerly drop MB cache rows from prior `MB_CACHE_VERSION`s. Reads
     // already skip them (see `isCurrentVersion`), so this is a quota
     // reclaim, not a correctness fix — but a long-lived profile that

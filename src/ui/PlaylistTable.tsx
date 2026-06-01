@@ -262,6 +262,10 @@ export function PlaylistTable({
       className="flex min-h-0 flex-1 select-none flex-col focus:outline-none"
       role="grid"
       aria-label="Playlist tracks"
+      // Rows carry aria-selected and the model supports shift/ctrl/
+      // rubber-band multi-select; without this, assistive tech announces
+      // the grid as single-select and never conveys an extended selection.
+      aria-multiselectable="true"
       aria-rowcount={visibleTrackIds.length + 1}
       // Focusable grid container with managed focus: rather than moving
       // DOM focus onto individual (virtualized, unmountable) rows, the
@@ -334,6 +338,7 @@ export function PlaylistTable({
                       isCursor={isCursor}
                       nextSelected={nextSelected}
                       partOfActiveMultiDrag={multiDragActive && isSelected}
+                      multiDragActive={multiDragActive}
                       onRowClick={handleRowClick}
                       onPickSpotifyMatch={onPickSpotifyMatch}
                       onPickEnrichmentMatch={onPickEnrichmentMatch}

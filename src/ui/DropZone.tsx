@@ -121,8 +121,25 @@ export function DropZone({
       // are captured while the DataTransfer is still valid. Do not move
       // any awaited work above this line, or the list will have emptied
       // by the time the walker reads it.
-      const files = await walkDataTransferItems(dt.items, { recursive });
-      onFilesDropped(files);
+      //
+      // The walk is awaited inside an async `window` listener, whose
+      // returned promise the browser ignores — so a rejection here would
+      // surface as a global unhandled rejection rather than reaching the
+      // user. Catch it and route to a toast, matching how every other
+      // ingest entry point reports failure.
+      try {
+        const files = await walkDataTransferItems(dt.items, { recursive });
+        onFilesDropped(files);
+      } catch (error) {
+        console.error("DropZone: walking dropped items failed", error);
+        useUiStore.getState().pushToast({
+          kind: "error",
+          message:
+            error instanceof Error
+              ? `Couldn't read dropped items: ${error.message}`
+              : "Couldn't read dropped items — see console",
+        });
+      }
     }
     window.addEventListener("dragleave", onLeave);
     window.addEventListener("dragover", onOver);

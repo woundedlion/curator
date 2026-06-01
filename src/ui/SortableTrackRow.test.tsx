@@ -47,6 +47,7 @@ function renderRow(overrides: Partial<Parameters<typeof SortableTrackRow>[0]> = 
     isCursor: false,
     nextSelected: false,
     partOfActiveMultiDrag: false,
+    multiDragActive: false,
     onRowClick: () => {},
     onPickSpotifyMatch: () => {},
     onPickEnrichmentMatch: () => {},
@@ -99,6 +100,7 @@ describe("SortableTrackRow — grid semantics", () => {
             isCursor={false}
             nextSelected={false}
             partOfActiveMultiDrag={false}
+            multiDragActive={false}
             onRowClick={() => {}}
             onPickSpotifyMatch={() => {}}
             onPickEnrichmentMatch={() => {}}

@@ -28,7 +28,7 @@ export type MBCacheEntry = {
 // appear in normalized text. Joining with this avoids the collision class
 // where `("A B", "C", "D")` and `("A", "B C", "D")` would both map to
 // `"A B C D"` if delimited by a space.
-const KEY_DELIMITER = "";
+const KEY_DELIMITER = "\u001F";
 
 // Reserved key namespace for entries that aren't normal MB cache rows
 // (currently the CAA negative cache). The prefix uses ASCII characters
@@ -49,7 +49,7 @@ const COVER_ART_NEGATIVE_KEY = "__cover-art-negative__";
 // entry timestamps.
 const MAX_NEGATIVE_CACHE_SIZE = 10_000;
 
-type CoverArtNegativeEntry = {
+export type CoverArtNegativeEntry = {
   key: typeof COVER_ART_NEGATIVE_KEY;
   mbids: string[];
 };
@@ -60,6 +60,22 @@ export function buildCacheKey({ title, artist, album }: MBCacheKey): string {
 
 function isCurrentVersion(entry: MBCacheEntry | undefined): boolean {
   return entry?.version === MB_CACHE_VERSION;
+}
+
+// The mb_cache store holds two row shapes under one key space (typed as
+// MBCacheEntry | CoverArtNegativeEntry by CuratorDBSchema). These guards
+// discriminate them at read time so each consumer gets the right type
+// without a cast — `mbids` is unique to the negative-cache row.
+type MBCacheRow = MBCacheEntry | CoverArtNegativeEntry;
+
+function isContentEntry(entry: MBCacheRow | undefined): entry is MBCacheEntry {
+  return entry !== undefined && !("mbids" in entry);
+}
+
+function isNegativeEntry(
+  entry: MBCacheRow | undefined,
+): entry is CoverArtNegativeEntry {
+  return entry !== undefined && "mbids" in entry;
 }
 
 // Explicit tri-state read result. A `miss` (no row, or row exists at a
@@ -78,10 +94,10 @@ export async function readCachedCandidates(
   key: MBCacheKey,
 ): Promise<CachedCandidatesResult> {
   const db = await getDatabase();
-  const entry = (await db.get(STORE_MB_CACHE, buildCacheKey(key))) as
-    | MBCacheEntry
-    | undefined;
-  if (!isCurrentVersion(entry) || !entry) return { kind: "miss" };
+  const entry = await db.get(STORE_MB_CACHE, buildCacheKey(key));
+  if (!isContentEntry(entry) || !isCurrentVersion(entry)) {
+    return { kind: "miss" };
+  }
   return { kind: "cached", candidates: entry.candidates };
 }
 
@@ -131,10 +147,10 @@ export async function pruneStaleCacheEntries(): Promise<number> {
   let cursor = await tx.store.openCursor();
   let removed = 0;
   while (cursor) {
-    const entry = cursor.value as MBCacheEntry | CoverArtNegativeEntry;
-    const isContent =
-      typeof entry.key === "string" && entry.key !== COVER_ART_NEGATIVE_KEY;
-    if (isContent && (entry as MBCacheEntry).version !== MB_CACHE_VERSION) {
+    const entry = cursor.value;
+    // Skip the CAA negative-cache row (no `version` field — separate
+    // schema); delete only stale-version content rows.
+    if (isContentEntry(entry) && entry.version !== MB_CACHE_VERSION) {
       await cursor.delete();
       removed++;
     }
@@ -146,10 +162,8 @@ export async function pruneStaleCacheEntries(): Promise<number> {
 
 export async function loadCoverArtNegativeCache(): Promise<string[]> {
   const db = await getDatabase();
-  const entry = (await db.get(STORE_MB_CACHE, COVER_ART_NEGATIVE_KEY)) as
-    | CoverArtNegativeEntry
-    | undefined;
-  return entry?.mbids ?? [];
+  const entry = await db.get(STORE_MB_CACHE, COVER_ART_NEGATIVE_KEY);
+  return isNegativeEntry(entry) ? entry.mbids : [];
 }
 
 export async function saveCoverArtNegativeMbids(
@@ -158,14 +172,12 @@ export async function saveCoverArtNegativeMbids(
   if (newMbids.length === 0) return;
   const db = await getDatabase();
   const tx = db.transaction(STORE_MB_CACHE, "readwrite");
-  const existing = (await tx.store.get(COVER_ART_NEGATIVE_KEY)) as
-    | CoverArtNegativeEntry
-    | undefined;
+  const existing = await tx.store.get(COVER_ART_NEGATIVE_KEY);
   // Set preserves insertion order, so building it from
   // existing-then-new gives us oldest → newest. When the merged size
   // exceeds the cap, slice off the head (oldest) so survivors are the
   // most recently observed misses.
-  const merged = new Set(existing?.mbids ?? []);
+  const merged = new Set(isNegativeEntry(existing) ? existing.mbids : []);
   for (const mbid of newMbids) merged.add(mbid);
   const mbids =
     merged.size <= MAX_NEGATIVE_CACHE_SIZE

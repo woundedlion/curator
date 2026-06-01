@@ -404,33 +404,61 @@ export class Player {
       return this.htmlBackend;
     }
     if (source.kind === "spotify-sdk") {
-      if (this.sdkBackend) return this.sdkBackend;
-      if (this.sdkLoadAttempted) return null;
-      this.sdkLoadAttempted = true;
-      let loaded: Backend | null;
-      try {
-        loaded = await this.sdkLoader();
-      } catch (error) {
-        // A throwing loader (network error, unhandled SDK exception)
-        // would otherwise propagate up through install() and reject the
-        // caller's play() promise with no UI feedback. Treat as
-        // unavailable: surface to onError so a toast fires, and stick
-        // sdkLoadAttempted=true so we don't keep re-throwing on retries.
-        this.onError(
-          error instanceof Error
-            ? `Spotify SDK init failed: ${error.message}`
-            : "Spotify SDK init failed",
-        );
-        return null;
-      }
-      if (!loaded) return null;
-      this.sdkBackend = loaded;
-      this.sdkBackend.setObserver((event) =>
-        this.handleBackendEvent(this.sdkBackend!, event),
-      );
-      return this.sdkBackend;
+      return this.ensureSdkBackend();
     }
     return null;
+  }
+
+  /**
+   * Lazily load (once) and return the SDK backend. Returns the cached
+   * backend on subsequent calls, and null once a prior attempt failed
+   * (sdkLoadAttempted) so we never re-ask. Shared by resolveBackend (the
+   * play path) and preloadSdk (eager warm-up) so both go through the same
+   * single-attempt, observer-wiring logic.
+   */
+  private async ensureSdkBackend(): Promise<Backend | null> {
+    if (this.sdkBackend) return this.sdkBackend;
+    if (this.sdkLoadAttempted) return null;
+    this.sdkLoadAttempted = true;
+    let loaded: Backend | null;
+    try {
+      loaded = await this.sdkLoader();
+    } catch (error) {
+      // A throwing loader (network error, unhandled SDK exception)
+      // would otherwise propagate up through install() and reject the
+      // caller's play() promise with no UI feedback. Treat as
+      // unavailable: surface to onError so a toast fires, and stick
+      // sdkLoadAttempted=true so we don't keep re-throwing on retries.
+      this.onError(
+        error instanceof Error
+          ? `Spotify SDK init failed: ${error.message}`
+          : "Spotify SDK init failed",
+      );
+      return null;
+    }
+    if (!loaded) return null;
+    this.sdkBackend = loaded;
+    this.sdkBackend.setObserver((event) =>
+      this.handleBackendEvent(this.sdkBackend!, event),
+    );
+    return this.sdkBackend;
+  }
+
+  /**
+   * Eagerly connect the Spotify SDK without starting playback, so the
+   * first play of a matched track can route straight to full-track Spotify
+   * instead of falling back while init runs. Goes through the op queue so
+   * it serializes with plays/stops, and is a no-op once the SDK is loaded
+   * or a prior attempt failed. The store calls this at bootstrap when the
+   * user has opted into full playback AND Spotify is connected (calling it
+   * before auth would mark the SDK permanently unavailable for the
+   * session). Errors are swallowed — the loader already toasts and any
+   * later SDK-required play surfaces its own feedback.
+   */
+  preloadSdk(): Promise<void> {
+    return this.enqueue(async () => {
+      await this.ensureSdkBackend();
+    });
   }
 
   private handleBackendEvent(source: Backend, event: BackendEvent): void {

@@ -48,9 +48,15 @@ function compareDefined(a: Comparable, b: Comparable, dir: SortDirection): numbe
   return dir === "asc" ? cmp : -cmp;
 }
 
+// Minimal read interface over the track map. A `Map<string, Track>`
+// satisfies it directly (tests pass one), and the store passes a thin
+// adapter over its plain-object `tracksById` — so neither caller has to
+// materialize a full Map copy just to sort.
+type TrackLookup = { get(id: string): Track | undefined };
+
 export function sortTrackIds(
   trackIds: string[],
-  tracksById: Map<string, Track>,
+  tracksById: TrackLookup,
   field: SortField,
   dir: SortDirection,
 ): string[] {

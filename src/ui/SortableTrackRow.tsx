@@ -37,6 +37,15 @@ type Props = {
   // block reads as one group rather than the active row leaving the others
   // behind looking unchanged.
   partOfActiveMultiDrag: boolean;
+  // True for EVERY row (selected or not) while a multi-row drag is in
+  // flight. During such a drag the table re-renders in the live preview
+  // order, so the virtualizer already places each row in its landing slot.
+  // dnd-kit's verticalListSortingStrategy would ALSO transform rows to make
+  // room for the active item — double-positioning that visually tears the
+  // moving block apart. We suppress the per-row transform so the preview
+  // order is the sole positioner. (Single-row drags leave this false and
+  // keep dnd-kit's native row-shift animation, which already works.)
+  multiDragActive: boolean;
   // Row position in the visible list (1-based). Surfaced as aria-rowindex
   // so screen readers can announce row N of M during navigation; offset by
   // +1 to account for the column-header row.
@@ -67,6 +76,7 @@ function SortableTrackRowImpl({
   isCursor,
   nextSelected,
   partOfActiveMultiDrag,
+  multiDragActive,
   ariaRowIndex,
   onRowClick,
   onPickSpotifyMatch,
@@ -77,9 +87,13 @@ function SortableTrackRowImpl({
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
     useSortable({ id: track.id });
 
+  // During a multi-row drag the preview reorder (rendered by the
+  // virtualizer) already positions every row at its landing slot, so
+  // dnd-kit's strategy transform must be dropped to avoid double-movement
+  // that separates the dragged block. See `multiDragActive` in Props.
   const style: React.CSSProperties = {
-    transform: CSS.Transform.toString(transform),
-    transition,
+    transform: multiDragActive ? undefined : CSS.Transform.toString(transform),
+    transition: multiDragActive ? undefined : transition,
     opacity: isDragging || partOfActiveMultiDrag ? 0.6 : 1,
   };
 
