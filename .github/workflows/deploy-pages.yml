@@ -1,4 +1,3 @@
-FORCE_JAVASCRIPT_ACTIONS_TO_NODE24=true
 name: CI / Deploy to GitHub Pages
 
 on:
