@@ -5,13 +5,19 @@ type CachedCandidatesResult =
   | { kind: "miss" }
   | { kind: "cached"; candidates: MBCandidate[] };
 
-const searchRecordingsMock = vi.fn<(query: string, contact: string) => Promise<MBCandidate[]>>();
+type SearchOptions = { tag?: string; guard?: () => boolean };
+const searchRecordingsMock =
+  vi.fn<
+    (query: string, contact: string, options?: SearchOptions) => Promise<MBCandidate[]>
+  >();
 const readCacheMock = vi.fn<(key: unknown) => Promise<CachedCandidatesResult>>();
 const writeCacheMock = vi.fn<(key: unknown, candidates: MBCandidate[]) => Promise<void>>();
 
 vi.mock("./musicbrainzClient", () => ({
-  searchRecordings: (query: string, contact: string) =>
-    searchRecordingsMock(query, contact),
+  // Forward the 3rd `options` arg ({tag, guard}) so tests can assert the
+  // cancellation plumbing is threaded through fetchAndScore → searchRecordings.
+  searchRecordings: (query: string, contact: string, options?: SearchOptions) =>
+    searchRecordingsMock(query, contact, options),
 }));
 
 vi.mock("../db/musicbrainzCache", () => ({
@@ -63,6 +69,23 @@ describe("enrichTrack", () => {
 
   afterEach(() => {
     vi.clearAllMocks();
+  });
+
+  it("threads the track id as tag and forwards the guard to searchRecordings", async () => {
+    searchRecordingsMock.mockResolvedValue([candidate()]);
+    const guard = (): boolean => true;
+    const track = trackOf({
+      title: "Karma Police",
+      artist: "Radiohead",
+      album: "OK Computer",
+      year: 1997,
+    });
+    await enrichTrack(track, "me@example.com", 0.75, { guard });
+    expect(searchRecordingsMock).toHaveBeenCalledWith(
+      expect.any(String),
+      "me@example.com",
+      { tag: "track-1", guard },
+    );
   });
 
   it("returns 'matched' when score and similarity guards pass", async () => {

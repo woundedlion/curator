@@ -262,7 +262,13 @@ export function PlaylistTable({
   return (
     <div
       ref={gridRef}
-      className="flex min-h-0 flex-1 select-none flex-col focus:outline-none"
+      // `focus:outline-none` drops the default outline, but a sighted
+      // keyboard user who Tabs INTO the grid (before pressing an arrow to
+      // establish a cursor row) would then have no focus cue at all. Add a
+      // focus-visible inset ring on the container so keyboard focus on the
+      // grid itself is visible; once an arrow sets a cursor row, that row
+      // paints its own ring via aria-activedescendant.
+      className="flex min-h-0 flex-1 select-none flex-col focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-matched/50"
       role="grid"
       aria-label="Playlist tracks"
       // Rows carry aria-selected and the model supports shift/ctrl/

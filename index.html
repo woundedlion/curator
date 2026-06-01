@@ -2,6 +2,49 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <!--
+      Content-Security-Policy. This app is deployed as a static SPA on GitHub
+      Pages, which cannot set response headers, so the policy is delivered via
+      meta. It runs Spotify OAuth (PKCE) and holds tokens in the browser, so a
+      tight connect-src allow-list is the highest-value hardening available.
+
+      Origins, by responsibility:
+        - script-src   self + https://sdk.scdn.co (Spotify Web Playback SDK,
+                       loaded lazily for full-track playback). No 'unsafe-inline':
+                       Vite's inline modulepreload polyfill is disabled in
+                       vite.config.ts so the bundle ships no inline scripts.
+        - style-src    'unsafe-inline' is required — dnd-kit and react-virtual
+                       set inline style ATTRIBUTES for drag transforms and row
+                       positioning; a static SPA on Pages cannot use nonces.
+        - connect-src  Spotify API + accounts (token), the Web Playback SDK's
+                       *.spotify.com / wss dealer sockets, MusicBrainz, and the
+                       Cover Art Archive (which 30x-redirects image probes to
+                       *.archive.org).
+        - img-src      Spotify CDN (*.scdn.co), Cover Art Archive + archive.org,
+                       plus data:/blob: for any in-process thumbnails.
+        - media-src    blob: for local-file playback (createObjectURL) and
+                       *.scdn.co for Spotify 30s previews.
+        - frame-src    the Web Playback SDK renders an iframe from sdk.scdn.co.
+      (frame-ancestors / sandbox are header-only and ignored in meta — omitted.)
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="
+        default-src 'self';
+        script-src 'self' https://sdk.scdn.co;
+        style-src 'self' 'unsafe-inline';
+        img-src 'self' data: blob: https://*.scdn.co https://coverartarchive.org https://*.archive.org;
+        media-src 'self' blob: https://*.scdn.co;
+        connect-src 'self' https://api.spotify.com https://accounts.spotify.com https://*.spotify.com wss://*.spotify.com https://musicbrainz.org https://coverartarchive.org https://*.archive.org https://*.scdn.co;
+        frame-src https://sdk.scdn.co https://*.spotify.com;
+        worker-src 'self' blob:;
+        font-src 'self';
+        object-src 'none';
+        base-uri 'self';
+        form-action 'self';
+      "
+    />
+    <meta name="referrer" content="no-referrer" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Curator</title>
   </head>

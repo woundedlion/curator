@@ -23,7 +23,7 @@
 //   - circuit-breaker half-open: exactly one probe is admitted
 //   - probe success closes the circuit
 //   - probe 429 reopens for the new window
-//   - Retry-After missing → 5-minute default, floored up to 10 minutes
+//   - Retry-After missing/CORS-hidden → 10-minute default lockout
 //   - localStorage persistence across module reload
 //   - pendingCount surfaces queued callers for the UI
 

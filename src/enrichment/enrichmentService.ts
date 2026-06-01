@@ -246,30 +246,37 @@ export async function enrichTrack(
     );
   }
 
-  // The cache is keyed on the **primary** (title, artist, album) — so it
-  // must store only candidates that the primary query produced. If we
-  // wrote `mergedCandidates` here, alt-query-derived recordings would
-  // leak into a future enrichment of any *other* track that shares this
-  // primary identity. The alt query is a per-track-altQuery effort and
-  // re-runs on cache miss anyway. Skip the rewrite when we read from
-  // cache — `primaryScored` is byte-equal to what's already there, so
+  // STEP 1 — persist. The cache is keyed on the **primary** (title, artist,
+  // album), so it must store only candidates that the primary query
+  // produced. If we wrote `mergedCandidates` here, alt-query-derived
+  // recordings would leak into a future enrichment of any *other* track that
+  // shares this primary identity. The alt query is a per-track-altQuery
+  // effort and re-runs on cache miss anyway. Skip the rewrite when we read
+  // from cache — `primaryScored` is byte-equal to what's already there, so
   // the write is a no-op modulo cachedAt churn.
+  //
+  // (This is now a standalone decision, NOT chained to the no-query check
+  // below via if/else — conflating "should I persist?" with "should I
+  // early-return no-query?" was correct but brittle. They're independent:
+  // when primaryScored has entries the outcome is matched/ambiguous and the
+  // no-query branch can't fire, so splitting them changes no behavior.)
   if (primaryScored.length > 0 && !cacheHit) {
     await writeCachedCandidates(cacheKey, primaryScored);
-  } else if (
+  }
+
+  // STEP 2 — distinguish "no query to run" from "query ran, found nothing".
+  // A failed outcome where the primary had no queryable fields AND alt
+  // either doesn't exist or collapses to the primary is a `no-query`
+  // failure. Treat empty/whitespace title+artist as "no query" too, not just
+  // `undefined`: a blank-string field produces an empty Lucene query exactly
+  // like a missing one. When alt DID run, defer to its outcome
+  // (no-results / ambiguous / matched) rather than clobbering it.
+  if (
     outcome.status === "failed" &&
-    // Treat empty/whitespace title+artist as "no query" too, not just
-    // `undefined`: a blank-string field produces an empty Lucene query
-    // exactly like a missing one, so both should classify as `no-query`
-    // (not `no-results`).
     !primaryFields.title?.trim() &&
     !primaryFields.artist?.trim() &&
     !shouldTryAlt
   ) {
-    // True "no-query": primary had nothing to query AND alt either
-    // doesn't exist or matches primary (so it also had nothing). When
-    // alt did run, defer to its outcome (no-results / ambiguous /
-    // matched) rather than clobbering it.
     return {
       status: "failed",
       candidates: [],

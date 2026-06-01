@@ -13,6 +13,18 @@ let quotaToastShown = false;
 let genericPersistToastShown = false;
 let settingsToastShown = false;
 
+// Test-only: clear the per-session latches so a test can exercise the
+// "first failure toasts" behavior in isolation without `vi.resetModules()`
+// (which doesn't reliably re-evaluate this module's bindings across the
+// store graph). No-ops outside test mode so production callers can't
+// accidentally re-arm a toast storm.
+export function __resetPersistNotificationLatchesForTests(): void {
+  if (import.meta.env.MODE !== "test") return;
+  quotaToastShown = false;
+  genericPersistToastShown = false;
+  settingsToastShown = false;
+}
+
 /**
  * Surface a draft-persist failure to the user. Quota errors get their
  * own message because the recovery path is different — the user has to

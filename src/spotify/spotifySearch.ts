@@ -12,7 +12,7 @@ import {
 } from "../enrichment/titleSimilarity";
 import { callSpotify } from "./apiClient";
 import type { SpotifySearchResponse } from "./dtos";
-import { toSpotifyCandidate } from "./spotifyMappers";
+import { isUsableSpotifyTrack, toSpotifyCandidate } from "./spotifyMappers";
 
 type IdentifyingFields = { title?: string; artist?: string };
 
@@ -227,7 +227,12 @@ async function fetchCandidatesForQuery(
     clientId,
     { tag, guard },
   );
-  return (response.tracks?.items ?? []).map(toSpotifyCandidate);
+  // Filter out malformed/partial items (missing id/uri/name, or local-file
+  // URIs) BEFORE mapping so a candidate can never carry `title: undefined`
+  // or an undefined dedup key into scoring / mergeCandidatesPreferringPrimary.
+  return (response.tracks?.items ?? [])
+    .filter(isUsableSpotifyTrack)
+    .map(toSpotifyCandidate);
 }
 
 export type SearchOptions = {

@@ -1,6 +1,20 @@
 import { Component, Fragment, type ErrorInfo, type ReactNode } from "react";
 
-type Props = { children: ReactNode };
+type FallbackRender = (args: {
+  error: Error;
+  retry: () => void;
+}) => ReactNode;
+
+type Props = {
+  children: ReactNode;
+  // Optional region-scoped fallback. When provided, a caught error renders
+  // this instead of the default full-screen fallback — used by NESTED
+  // boundaries (around the table, the dialog host) so a localized crash
+  // blanks only that region, not the whole app. Receives `retry` so the
+  // compact fallback can offer its own Continue. Omitted → the top-level
+  // full-screen fallback (the app shell boundary).
+  fallback?: FallbackRender;
+};
 type State = { error: Error | null; resetKey: number };
 
 // Top-level boundary. Without it, any render-phase throw in a row,
@@ -45,6 +59,12 @@ export class ErrorBoundary extends Component<Props, State> {
     // across normal renders, so this adds no remount in the happy path.
     if (!error)
       return <Fragment key={resetKey}>{this.props.children}</Fragment>;
+    // Nested boundary: render the caller's region-scoped fallback so only
+    // that subtree is replaced. `retry` is the same remount path as the
+    // default fallback's Continue.
+    if (this.props.fallback) {
+      return this.props.fallback({ error, retry: this.retry });
+    }
     return (
       <div
         role="alert"

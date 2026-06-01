@@ -138,43 +138,45 @@ export function SettingsDialog() {
           <h3 className="mb-1 text-sm font-semibold">MusicBrainz</h3>
           <label className="block text-xs text-neutral-400">
             Contact email (required — sent in User-Agent / client param)
+            <input
+              type="email"
+              value={settings.musicbrainzContact}
+              onChange={(e) =>
+                updateSettings({ musicbrainzContact: e.target.value })
+              }
+              className="mt-1 w-full rounded border border-neutral-700 bg-neutral-950 px-2 py-1 text-sm"
+              placeholder="you@example.com"
+            />
           </label>
-          <input
-            type="email"
-            value={settings.musicbrainzContact}
-            onChange={(e) =>
-              updateSettings({ musicbrainzContact: e.target.value })
-            }
-            className="mt-1 w-full rounded border border-neutral-700 bg-neutral-950 px-2 py-1 text-sm"
-            placeholder="you@example.com"
-          />
         </section>
 
         <section className="mb-4">
           <h3 className="mb-1 text-sm font-semibold">Spotify</h3>
-          <label className="block text-xs text-neutral-400">Client ID</label>
-          <input
-            type="text"
-            value={settings.spotifyClientId ?? ""}
-            onChange={(e) =>
-              updateSettings({
-                spotifyClientId: emptyToUndefined(e.target.value),
-              })
-            }
-            className="mt-1 w-full rounded border border-neutral-700 bg-neutral-950 px-2 py-1 text-sm"
-            placeholder="From developer.spotify.com"
-          />
+          <label className="block text-xs text-neutral-400">
+            Client ID
+            <input
+              type="text"
+              value={settings.spotifyClientId ?? ""}
+              onChange={(e) =>
+                updateSettings({
+                  spotifyClientId: emptyToUndefined(e.target.value),
+                })
+              }
+              className="mt-1 w-full rounded border border-neutral-700 bg-neutral-950 px-2 py-1 text-sm"
+              placeholder="From developer.spotify.com"
+            />
+          </label>
           <label className="mt-2 block text-xs text-neutral-400">
             Redirect URI
+            <input
+              type="text"
+              value={settings.spotifyRedirectUri}
+              onChange={(e) =>
+                updateSettings({ spotifyRedirectUri: e.target.value })
+              }
+              className="mt-1 w-full rounded border border-neutral-700 bg-neutral-950 px-2 py-1 text-sm"
+            />
           </label>
-          <input
-            type="text"
-            value={settings.spotifyRedirectUri}
-            onChange={(e) =>
-              updateSettings({ spotifyRedirectUri: e.target.value })
-            }
-            className="mt-1 w-full rounded border border-neutral-700 bg-neutral-950 px-2 py-1 text-sm"
-          />
           <p className="mt-1 text-xs text-neutral-500">
             Register the exact Redirect URI in the Spotify dashboard.
           </p>

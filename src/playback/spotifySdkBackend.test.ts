@@ -318,6 +318,40 @@ describe("SpotifySdkBackend — 500ms polling cycle", () => {
     expect(events).not.toContainEqual({ kind: "playing" });
   });
 
+  it("detects end-of-track via the POLL path ({paused, position:0} after play) and tears the poller down", async () => {
+    // End-of-track surfaces as {paused:true, position:0}. The existing
+    // end-detection test drives it through fireStateChanged(); this one
+    // pins the SAME detection reached via a poll tick (applyState is shared
+    // by both paths), and asserts the poller self-quiesces afterward so a
+    // finished track doesn't keep burning a getCurrentState RPC every 500ms.
+    // First poll: playing → sets hasPlayed.
+    player.getCurrentState.mockResolvedValueOnce({
+      paused: false,
+      position: 5_000,
+      duration: 5_000,
+    } satisfies SpotifyPlayerSdkState);
+    // Second poll: finished (paused at position 0).
+    player.getCurrentState.mockResolvedValueOnce({
+      paused: true,
+      position: 0,
+      duration: 5_000,
+    } satisfies SpotifyPlayerSdkState);
+    await backend.load({
+      kind: "spotify-sdk",
+      uri: "spotify:track:abc",
+      label: "Spotify (full track)",
+    });
+
+    await vi.advanceTimersByTimeAsync(500); // playing tick
+    await vi.advanceTimersByTimeAsync(500); // end tick → ended + teardown
+    expect(events).toContainEqual({ kind: "ended" });
+
+    // Poller torn down by the ended path: no further getCurrentState calls.
+    const callsAtEnd = player.getCurrentState.mock.calls.length;
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(player.getCurrentState.mock.calls.length).toBe(callsAtEnd);
+  });
+
   it("stop() halts the poll: no further getCurrentState calls after stop", async () => {
     player.getCurrentState.mockResolvedValue({
       paused: false,

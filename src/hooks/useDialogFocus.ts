@@ -166,6 +166,16 @@ export function useDialogFocus<T extends HTMLElement>(
       if (idx !== -1) dialogStack.splice(idx, 1);
       if (previouslyFocused && document.contains(previouslyFocused)) {
         previouslyFocused.focus();
+        // .focus() can SILENTLY fail even on an in-document element — most
+        // commonly when an ancestor is still `inert` (an outer dialog in a
+        // nested stack hasn't removed its background isolation yet), in which
+        // case focus falls to <body> with no error. `document.contains` only
+        // proves the node exists, not that it became focused. Re-check and
+        // route to the landmark fallback if the focus didn't land, mirroring
+        // what focusFallbackTarget already does internally.
+        if (document.activeElement !== previouslyFocused) {
+          focusFallbackTarget();
+        }
       } else {
         // The originating element unmounted while the dialog was open (a
         // virtualized grid row scrolled out). Don't let focus drop to

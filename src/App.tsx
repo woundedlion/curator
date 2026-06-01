@@ -73,12 +73,34 @@ export function App() {
             ) : visibleTrackIds.length === 0 ? (
               <EmptyFilterState hiddenCount={hiddenCount} />
             ) : (
-              <PlaylistTable
-                visibleTrackIds={visibleTrackIds}
-                onPickSpotifyMatch={setSpotifyPickerTrackId}
-                onPickEnrichmentMatch={setEnrichmentPickerTrackId}
-                onReEnrich={handleReEnrich}
-              />
+              // Nested boundary: a render throw in a single row (malformed
+              // track, virtualizer edge) localizes to the table region —
+              // the toolbar, sidebar, and now-playing bar stay live, and
+              // Continue remounts just the table.
+              <ErrorBoundary
+                fallback={({ retry }) => (
+                  <div
+                    role="alert"
+                    className="flex flex-1 flex-col items-center justify-center gap-3 p-6 text-center text-sm text-neutral-400"
+                  >
+                    <p>The track list hit an unexpected error.</p>
+                    <button
+                      type="button"
+                      onClick={retry}
+                      className="rounded border border-neutral-700 px-3 py-1 hover:bg-neutral-800"
+                    >
+                      Reload list
+                    </button>
+                  </div>
+                )}
+              >
+                <PlaylistTable
+                  visibleTrackIds={visibleTrackIds}
+                  onPickSpotifyMatch={setSpotifyPickerTrackId}
+                  onPickEnrichmentMatch={setEnrichmentPickerTrackId}
+                  onReEnrich={handleReEnrich}
+                />
+              </ErrorBoundary>
             )}
             <CreatePlaylistPanel />
           </main>
@@ -90,22 +112,28 @@ export function App() {
           onPlaylistDropped={handlePlaylistDrop}
           recursive={recursive}
         />
-        <SettingsDialog />
-        {spotifyPickerTrackId !== null && (
-          // `key` gives each picker session a fresh component instance so
-          // the dialog's form state initializes via standard useState,
-          // not a render-phase reset (see useState §"Storing information
-          // from previous renders" — equivalent semantic, clearer intent).
-          <AmbiguousMatchDialog
-            key={spotifyPickerTrackId}
-            trackId={spotifyPickerTrackId}
-            onClose={() => setSpotifyPickerTrackId(null)}
+        {/* Nested boundary around the dialog host: a render throw inside a
+            dialog dismisses just the dialog (fallback renders nothing) and
+            leaves the main view interactive, rather than tearing down the
+            whole app shell. The user can reopen the dialog. */}
+        <ErrorBoundary fallback={() => null}>
+          <SettingsDialog />
+          {spotifyPickerTrackId !== null && (
+            // `key` gives each picker session a fresh component instance so
+            // the dialog's form state initializes via standard useState,
+            // not a render-phase reset (see useState §"Storing information
+            // from previous renders" — equivalent semantic, clearer intent).
+            <AmbiguousMatchDialog
+              key={spotifyPickerTrackId}
+              trackId={spotifyPickerTrackId}
+              onClose={() => setSpotifyPickerTrackId(null)}
+            />
+          )}
+          <AmbiguousEnrichmentDialog
+            trackId={enrichmentPickerTrackId}
+            onClose={() => setEnrichmentPickerTrackId(null)}
           />
-        )}
-        <AmbiguousEnrichmentDialog
-          trackId={enrichmentPickerTrackId}
-          onClose={() => setEnrichmentPickerTrackId(null)}
-        />
+        </ErrorBoundary>
       </ErrorBoundary>
       <ToastList />
     </div>

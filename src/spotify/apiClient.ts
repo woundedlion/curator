@@ -49,6 +49,7 @@ import { IntervalQueue, type QueueDepthObserver } from "../util/intervalQueue";
 import {
   SPOTIFY_API_BASE,
   SPOTIFY_NEXT_ALLOWED_AT_KEY,
+  SPOTIFY_QUEUE_TASK_TIMEOUT_MS,
   SPOTIFY_REQUEST_TIMEOUT_MS,
 } from "../constants";
 
@@ -222,6 +223,12 @@ export function parseRetryAfter(
       headerValue,
     );
   }
+  // The `headerValue === null` case (the CORS-hidden 429 — the most
+  // dangerous one) intentionally does NOT warn HERE: the 429 caller
+  // (`readRetryAfterMs`) logs it with full context (`corsHidden: true`,
+  // path, parsed wait). Warning here too would only double-log the 429
+  // path. Direct callers that pass `null` get the documented 10-min
+  // default by design.
   return DEFAULT_RETRY_AFTER_SECONDS * 1000;
 }
 
@@ -253,6 +260,10 @@ const queue = new IntervalQueue({
   intervalMs: MIN_REQUEST_SPACING_MS,
   persistKey: SPOTIFY_NEXT_ALLOWED_AT_KEY,
   persistedCapMs: NEXT_ALLOWED_AT_CAP_MS,
+  // Backstop a hung task so it can't pin the serial queue (and the shared
+  // breaker's half-open probe slot) forever. Generous vs. the per-request
+  // timeout so a legitimate token-refresh-then-call never trips it.
+  taskTimeoutMs: SPOTIFY_QUEUE_TASK_TIMEOUT_MS,
 });
 
 const breaker = new CircuitBreaker({
@@ -657,6 +668,22 @@ export async function submitTokenRefresh(
   // probe is already in flight to close it. (Nested-inside-a-probe leaves
   // probeInFlight=true → we defer to that probe; standalone half-open
   // refreshes — e.g. the SDK token callback — adopt the responsibility.)
+  //
+  // DELIBERATE DEVIATION from the strict single-canary contract: this lane
+  // does NOT set `probeInFlight`. So in the narrow window where a standalone
+  // refresh is the half-open canary, an API caller's `tryAcquire()` can also
+  // be promoted to "probe" and send concurrently — two outbound requests in
+  // one half-open window, not one. This is accepted, not a bug: (1) refreshes
+  // are single-flighted by `getValidAccessToken` (authFlow `refreshInFlight`),
+  // so it's at most one refresh + one API probe; (2) both share this breaker,
+  // so a 429 on EITHER reopens it for the new Retry-After; and (3) claiming
+  // `probeInFlight` here would make a refresh that is NESTED inside an API
+  // probe fail-fast against its own enclosing probe, deadlocking breaker
+  // recovery whenever a probe call needs a token refresh — the exact failure
+  // the bypass-the-queue design (above) exists to prevent. Enforcing strict
+  // single-canary is therefore incompatible with letting refresh through
+  // during half-open, and letting refresh through is the load-bearing
+  // requirement.
   const adoptProbe = breaker.isHalfOpen() && !breaker.isProbeInFlight();
 
   const response = await send();

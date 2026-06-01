@@ -4,7 +4,7 @@ import { loadDraft, saveDraft } from "../db/draftRepository";
 import { cancelTrackRequests } from "../services/cancelTrackRequests";
 import { notifyPersistFailure } from "./persistNotifications";
 import { rangeBetween } from "./selectionHelpers";
-import { sortTrackIds } from "./sortComparator";
+import { isMissing as isFieldMissing, sortTrackIds } from "./sortComparator";
 import {
   captureSelection,
   pushBounded,
@@ -274,6 +274,15 @@ function applyUndo(
     // delete entry (undoStack.ts) and restore it here.
     const nextById = { ...state.tracksById };
     for (const track of entry.deletedTracks) nextById[track.id] = track;
+    // DELIBERATE: the restored selection is the selection AS IT WAS AT DELETE
+    // TIME (snapshotted in the entry), which by construction did NOT include
+    // the just-deleted rows — so undoing a delete brings the rows back
+    // UNSELECTED, not re-selected. This is intentional: re-selecting the
+    // restored rows would require the entry to capture the pre-delete
+    // selection (the rows being deleted), and the more common follow-up after
+    // an accidental delete is to keep working with the prior selection intact,
+    // not to immediately re-act on the recovered rows. Change the snapshot in
+    // removeTracks (and undoStack) if that expectation ever flips.
     return {
       tracksById: nextById,
       playlist: { ...state.playlist, trackIds: [...entry.priorTrackIds] },
@@ -539,11 +548,19 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => {
     const changed = mutate((state) => {
       const current = state.playlist.sort;
       const next = cycleSortDirection(current?.field, current?.dir, field);
-      const priorSnapshot = snapshotReorderEntry(
-        state.playlist.trackIds,
-        state.playlist.sort,
-        captureSelection(state.selectedTrackIds, state.selectionAnchorId),
-      );
+      // Build the undo snapshot LAZILY — only on a committing path, never on
+      // a no-op header click. It's an O(n) trackIds copy plus a selection
+      // capture, and the two no-op guards below (clear-already-clear,
+      // re-sort-same-column) return early on every redundant click; allocating
+      // it up front did that work for nothing on the hot header-click path.
+      // The updater stays pure: this is a deferred value computation, not a
+      // side-effecting write.
+      const makePriorSnapshot = (): ReturnType<typeof snapshotReorderEntry> =>
+        snapshotReorderEntry(
+          state.playlist.trackIds,
+          state.playlist.sort,
+          captureSelection(state.selectedTrackIds, state.selectionAnchorId),
+        );
       // Leaving the unsorted state for the first time: remember the
       // manual order so the clearing (third) click can restore it.
       // Otherwise carry the existing capture forward unchanged. Computed
@@ -572,7 +589,7 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => {
         }
         return {
           playlist: { ...state.playlist, trackIds: restored, sort: null },
-          undoStack: pushBounded(state.undoStack, priorSnapshot),
+          undoStack: pushBounded(state.undoStack, makePriorSnapshot()),
           preSortManualOrder: null,
         };
       }
@@ -603,7 +620,7 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => {
           trackIds: orderedIds,
           sort: { field: next.field, dir: next.dir },
         },
-        undoStack: pushBounded(state.undoStack, priorSnapshot),
+        undoStack: pushBounded(state.undoStack, makePriorSnapshot()),
         preSortManualOrder: nextManualOrder,
       };
     });
@@ -885,9 +902,11 @@ export const usePlaylistStore = create<PlaylistStore>((set, get) => {
   };
 });
 
-function isFieldMissing(value: unknown): boolean {
-  return value === undefined || value === null || value === "";
-}
+// `isFieldMissing` is the shared `isMissing` predicate from sortComparator
+// (imported above). The fill-missing merge and the sort's notion of "empty"
+// MUST agree, so they're the same function rather than two copies that could
+// drift. FillableTrackFields values are all `string | number | undefined`,
+// which is exactly the predicate's `Comparable` domain.
 
 type FillableTrackFields = Pick<
   Track,

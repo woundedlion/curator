@@ -68,6 +68,52 @@ describe("ErrorBoundary", () => {
     expect(screen.getByText("recovered")).toBeTruthy();
   });
 
+  it("renders a region-scoped fallback (not the full-screen one) when `fallback` is provided", () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    shouldThrow = true;
+    render(
+      <ErrorBoundary
+        fallback={({ retry }) => (
+          <div>
+            <span>region failed</span>
+            <button type="button" onClick={retry}>
+              Reload region
+            </button>
+          </div>
+        )}
+      >
+        <Flaky />
+      </ErrorBoundary>,
+    );
+    // The nested fallback renders — NOT the default full-screen "Something
+    // went wrong" shell.
+    expect(screen.getByText("region failed")).toBeTruthy();
+    expect(screen.queryByText("Something went wrong")).toBeNull();
+
+    // The fallback's retry uses the same remount path: a now-resolvable
+    // child recovers after Continue.
+    shouldThrow = false;
+    fireEvent.click(screen.getByRole("button", { name: "Reload region" }));
+    expect(screen.queryByText("region failed")).toBeNull();
+    expect(screen.getByText("recovered")).toBeTruthy();
+  });
+
+  it("a deterministic re-throw still shows the fallback after Continue (no crash escape)", () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    shouldThrow = true; // stays true → child re-throws on remount
+    render(
+      <ErrorBoundary>
+        <Flaky />
+      </ErrorBoundary>,
+    );
+    expect(screen.getByText("Something went wrong")).toBeTruthy();
+    // Continue remounts, the child throws again, and the boundary re-catches
+    // → the fallback is shown again rather than the error escaping/looping
+    // into a blank tree.
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    expect(screen.getByText("Something went wrong")).toBeTruthy();
+  });
+
   it("remount gives children fresh state (proves a real remount, not a re-render)", () => {
     let renderCount = 0;
     function Counter() {

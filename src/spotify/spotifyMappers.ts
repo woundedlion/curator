@@ -98,15 +98,28 @@ export function toImportedTrack(item: SpotifyTrackResponse): Track {
   };
 }
 
-export function isImportableTrack(
+// A Spotify track result (search OR import) is only usable if it carries
+// the identity fields every downstream path depends on: `id` (candidate
+// dedup key), `uri` (selection + publish), and `name` (display + similarity
+// scoring). Partial/malformed items from schema drift or a truncated body
+// are dropped rather than producing a candidate with `title: undefined` or
+// an undefined dedup key. `spotify:local:` URIs are also excluded — they
+// aren't playable through the SDK or replayable to other playlists.
+export function isUsableSpotifyTrack(
   item: SpotifyTrackResponse | null | undefined,
 ): item is SpotifyTrackResponse {
   if (!item || !item.id || !item.uri || !item.name) return false;
-  // Defense-in-depth against the "flat" envelope shape where the
-  // `is_local` envelope flag is absent: spotify:local:... URIs aren't
-  // playable through the SDK or replayable to other playlists.
   if (item.uri.startsWith("spotify:local:")) return false;
   return true;
+}
+
+// Import uses the same usability contract as search — delegates so the two
+// paths can't drift (the search path previously had NO guard, letting a
+// malformed item map to a candidate with `title: undefined`).
+export function isImportableTrack(
+  item: SpotifyTrackResponse | null | undefined,
+): item is SpotifyTrackResponse {
+  return isUsableSpotifyTrack(item);
 }
 
 // The six displayed fields Spotify is authoritative for (DESIGN §4.5). Both

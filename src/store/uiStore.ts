@@ -131,3 +131,26 @@ export const useUiStore = create<UiStore>((set, get) => {
     },
   };
 });
+
+// Test-only: fully reset the UI store INCLUDING the module-global toast id
+// counter and the pending-timer map. Resetting store state via setState
+// alone leaves `nextToastId` climbing and stale entries in `toastTimers`, so
+// a toast pushed in one test whose fade/remove timer fires during the next
+// could mutate the next test's `toasts`. Clearing the timers here severs that
+// cross-test coupling. No-ops outside test mode.
+export function __resetUiStoreForTests(): void {
+  if (import.meta.env.MODE !== "test") return;
+  for (const timers of toastTimers.values()) {
+    clearTimeout(timers.fade);
+    clearTimeout(timers.remove);
+  }
+  toastTimers.clear();
+  nextToastId = 1;
+  useUiStore.setState({
+    toasts: [],
+    showSettings: false,
+    showCreateDialog: false,
+    enrichmentQueueDepth: 0,
+    busyCount: 0,
+  });
+}

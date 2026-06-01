@@ -79,6 +79,25 @@ function buildEnrichmentFromOutcome(
       userOverride,
     };
   }
+  // A "matched" outcome WITHOUT a recordingId is an upstream contract
+  // violation (enrichmentService should never emit one). Don't silently
+  // bury it as `failed`: log it, and degrade to `ambiguous` when there are
+  // candidates so the user can still pick from the dialog rather than seeing
+  // a dead-end `failed` glyph for a lookup that actually found something.
+  if (outcome.status === "matched" && !outcome.recordingId) {
+    console.warn(
+      "enrichmentRunner: matched MB outcome had no recordingId — degrading",
+      { topScore: outcome.topScore, candidateCount: outcome.candidates.length },
+    );
+    if (outcome.candidates.length > 0) {
+      return {
+        status: "ambiguous",
+        candidates: outcome.candidates,
+        score: outcome.topScore,
+        userOverride,
+      };
+    }
+  }
   if (outcome.status === "ambiguous") {
     return {
       status: "ambiguous",
@@ -232,9 +251,16 @@ async function runOneTrackInner(
         originalYear: best.originalYear,
       });
     }
+    // Read userOverride from the post-fill live track rather than the
+    // pre-guard `liveTrack` snapshot so the enrichment write is keyed to the
+    // latest committed state. All of these store reads/writes are synchronous
+    // (no await between them), so this is belt-and-suspenders — but it keeps
+    // the load-bearing source-of-truth bit (userOverride) anchored to the
+    // freshest value rather than a captured one.
+    const postFill = store.tracksById[trackId];
     const enrichment = buildEnrichmentFromOutcome(
       outcome,
-      liveTrack.enrichment.userOverride,
+      postFill?.enrichment.userOverride ?? liveTrack.enrichment.userOverride,
     );
     store.updateTrack(trackId, { enrichment });
 
@@ -257,6 +283,15 @@ async function runOneTrackInner(
     // longer exists; updateTrack would be a no-op anyway, but the
     // early return keeps the error reporting path silent.
     if (error instanceof RequestCancelledError) {
+      return { result: "cancelled" };
+    }
+    // A bare AbortError can surface if the in-flight fetch was aborted by a
+    // path that didn't route through the queue's cancel→RequestCancelledError
+    // translation. Treat it as cancellation, not a failure: don't log it and
+    // don't rewrite the (being-torn-down) row to `failed`. A genuine task
+    // timeout arrives as TaskTimeoutError, NOT AbortError, so it correctly
+    // falls through to the `failed` path below.
+    if (error instanceof Error && error.name === "AbortError") {
       return { result: "cancelled" };
     }
     console.error("MusicBrainz enrichment failed", { trackId, error });

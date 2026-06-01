@@ -53,6 +53,18 @@ export const SPOTIFY_API_BASE = "https://api.spotify.com/v1";
 // above Spotify's p99 (~1s) — a real timeout is the signal, not the norm.
 export const SPOTIFY_REQUEST_TIMEOUT_MS = 20_000;
 
+// Queue-level backstop for a wedged Spotify task. A single queued task may
+// legitimately chain a token REFRESH (one fetch) followed by the API call
+// (a second fetch), each bounded by SPOTIFY_REQUEST_TIMEOUT_MS — so the
+// backstop is set to 3× that bound, well clear of a legitimate
+// refresh-then-call, to avoid false-positive timeouts. It exists ONLY to
+// break a task that hangs in a way the per-request fetch timeout can't
+// catch (e.g. a promise that never settles): without it, that one task
+// would wedge the serial queue forever, and with it the shared circuit
+// breaker's half-open probe slot. On fire, the caller rejects with
+// TaskTimeoutError (surfaced as a normal failure, NOT a rate-limit trip).
+export const SPOTIFY_QUEUE_TASK_TIMEOUT_MS = SPOTIFY_REQUEST_TIMEOUT_MS * 3;
+
 export const MUSICBRAINZ_API_BASE = "https://musicbrainz.org/ws/2";
 export const COVER_ART_BASE = "https://coverartarchive.org/release";
 

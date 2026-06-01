@@ -30,12 +30,15 @@ function saneYear(value: number | undefined): number | undefined {
 }
 
 function saneDuration(value: number | undefined): number | undefined {
-  // The worker already drops NaN/Infinity/negative durations, but repeat
-  // the guard here so a direct buildTrackFromParsed caller can't leak a
-  // junk duration into the Track (matches the worker's durationToMs).
+  // The worker already drops NaN/Infinity/negative durations AND rounds to an
+  // integer millisecond, but repeat the guard here so a direct
+  // buildTrackFromParsed caller can't leak a junk OR fractional duration into
+  // the Track. Rounding here keeps this fully equivalent to the worker's
+  // durationToMs — the two "kept in sync" sanitizers must agree, else a
+  // direct caller could store a fractional ms the worker path never can.
   if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
   if (value < 0) return undefined;
-  return value;
+  return Math.round(value);
 }
 
 function pickArtistFromParsed(fields: ParsedFields): string | undefined {

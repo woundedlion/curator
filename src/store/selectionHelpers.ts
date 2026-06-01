@@ -55,10 +55,25 @@ export function moveSelectionMaintainingShape(
 
   // Partition into selected (carrying original index for offset math) and
   // unselected (used to fill the remaining slots in original order).
+  // The algorithm assumes `visibleIds` holds UNIQUE ids — it relies on
+  // `indexOf` and Set membership, so a duplicate would drop one row and
+  // leave a `null` hole (coerced to a stray null in the result). Callers
+  // dedupe at the store boundary (trackIds is deduped on add), so this is a
+  // defensive bail, not an expected path: if a future caller ever passes a
+  // non-deduped list, return the input unchanged rather than corrupt the
+  // order. Detection piggybacks on the partition loop (no extra pass).
   const selected: { id: string; origIndex: number }[] = [];
   const unselected: string[] = [];
+  const seen = new Set<string>();
   for (let i = 0; i < len; i++) {
     const id = visibleIds[i]!;
+    if (seen.has(id)) {
+      console.warn(
+        "moveSelectionMaintainingShape: duplicate id in visibleIds — skipping move to avoid corrupting order",
+      );
+      return visibleIds;
+    }
+    seen.add(id);
     if (selectedIds.has(id)) selected.push({ id, origIndex: i });
     else unselected.push(id);
   }

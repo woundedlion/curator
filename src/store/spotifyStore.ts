@@ -112,7 +112,19 @@ export const useSpotifyStore = create<SpotifyStore>((set) => ({
     if (loadPlaylistsInflight && loadPlaylistsInflight.clientId === clientId) {
       return loadPlaylistsInflight.promise;
     }
-    const promise = doLoadPlaylists(clientId, set).finally(() => {
+    // Annotated explicitly: the isCurrentRun closure below references
+    // `promise` in this same initializer, so without an annotation tsc can't
+    // infer the type (TS7022 self-reference).
+    const promise: Promise<void> = doLoadPlaylists(
+      clientId,
+      set,
+      // Still the active run iff our promise is the one in the slot. By the
+      // time doLoadPlaylists's finally runs (async), `promise` is assigned
+      // and `loadPlaylistsInflight` points at it — unless a later
+      // different-clientId call replaced the slot, in which case this run
+      // must not clear the shared spinner flag out from under it.
+      () => loadPlaylistsInflight?.promise === promise,
+    ).finally(() => {
       // Only clear the slot if it's still ours — a later different-client
       // call may have replaced it while we were running.
       if (loadPlaylistsInflight?.promise === promise) {
@@ -168,6 +180,13 @@ async function doRefreshConnection(
 async function doLoadPlaylists(
   clientId: string,
   set: SpotifySet,
+  // True iff THIS run is still the active in-flight load. A
+  // different-clientId call (loadPlaylists dedups only on matching clientId)
+  // can overlap this one; without this guard, the first run to settle would
+  // clear `loadingPlaylists` in its finally while the second is still
+  // fetching, flickering the sidebar spinner off mid-load. Only the currently
+  // active run is allowed to clear the flag.
+  isCurrentRun: () => boolean,
 ): Promise<void> {
   set({ loadingPlaylists: true });
   try {
@@ -193,6 +212,7 @@ async function doLoadPlaylists(
       });
     }
   } finally {
-    set({ loadingPlaylists: false });
+    // Only the active run clears the spinner — see isCurrentRun above.
+    if (isCurrentRun()) set({ loadingPlaylists: false });
   }
 }

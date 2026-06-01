@@ -44,10 +44,21 @@ type MBSearchResponse = {
   recordings?: MBRecording[];
 };
 
+// Queue-level backstop. A single in-slot attempt is already bounded by
+// SEARCH_TIMEOUT_MS inside fetchWithTimeout, and the 503 backoff runs
+// OUTSIDE the slot, so an in-slot task should never approach this. It only
+// fires if an attempt hangs in a way the fetch timeout misses, so one
+// wedged lookup can't pin the 1-req/sec queue — and every enrichment behind
+// it — indefinitely. 2× the fetch timeout leaves ample headroom.
+const QUEUE_TASK_TIMEOUT_MS = SEARCH_TIMEOUT_MS * 2;
+
 // MB has a rigid 1 req/sec contract; no rolling window, no escalating
 // penalty, so we don't persist `nextRunAt` across reloads (a fresh tab
 // is fine to start at t=0 against MB's per-IP gate).
-const queue = new IntervalQueue({ intervalMs: MUSICBRAINZ_RATE_INTERVAL_MS });
+const queue = new IntervalQueue({
+  intervalMs: MUSICBRAINZ_RATE_INTERVAL_MS,
+  taskTimeoutMs: QUEUE_TASK_TIMEOUT_MS,
+});
 
 export function getMusicbrainzQueue(): IntervalQueue {
   return queue;

@@ -1,6 +1,7 @@
 import {
   RequestCancelledError,
   SpotifyAuthExpiredError,
+  SpotifyForbiddenError,
   SpotifyRateLimitError,
 } from "../spotify/apiClient";
 import { searchSpotifyForTrack } from "../spotify/spotifySearch";
@@ -38,6 +39,18 @@ function createErrorReporter(): ErrorReporter {
         kind: "error",
         message:
           "Spotify rate limit hit too many times — wait a minute, then re-enrich",
+      });
+      return true;
+    }
+    if (error instanceof SpotifyForbiddenError) {
+      // Mirror ingestController's import 403 guidance so a search 403 (region
+      // restriction, missing scope, app not allow-listed) surfaces an
+      // actionable message instead of the raw `Spotify 403 on /search: …`
+      // body via the generic branch below.
+      ui.pushToast({
+        kind: "error",
+        message:
+          "Spotify denied the search (403) — verify your app's scopes and redirect URI in Settings, then reconnect",
       });
       return true;
     }
@@ -136,6 +149,12 @@ async function matchOne(
     // nothing to update and nothing to toast. updateTrack would be
     // a no-op anyway but skipping is clearer.
     if (error instanceof RequestCancelledError) return;
+    // A bare AbortError can surface if the in-flight fetch was aborted by a
+    // path that didn't route through the queue's cancel→RequestCancelledError
+    // translation (or, post-timeout-wiring, a controller abort that lost the
+    // race). Treat it as cancellation too: don't toast it, don't mark the row
+    // `missing` — the row is being torn down or retried.
+    if (error instanceof Error && error.name === "AbortError") return;
     // Only log the FIRST failure of the batch to the console. The toast
     // is already deduped to one per batch by the reporter; mirroring that
     // for the console keeps a rate-limit storm (every track 429s) from

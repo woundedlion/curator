@@ -6,6 +6,8 @@ import type {
 import {
   callSpotify,
   SpotifyAuthExpiredError,
+  SpotifyForbiddenError,
+  SpotifyHttpError,
   SpotifyRateLimitError,
   SpotifyServerError,
 } from "./apiClient";
@@ -226,6 +228,15 @@ function isFatalPushError(error: unknown): boolean {
   return (
     error instanceof SpotifyAuthExpiredError ||
     error instanceof SpotifyRateLimitError ||
+    // 403 on a chunk = write access to this playlist was lost (scope
+    // revoked, collaborator removed). Every subsequent chunk hits the same
+    // wall — abort with the real error instead of bucketing each one and
+    // claiming a misleading "0/N added" with no surfaced cause.
+    error instanceof SpotifyForbiddenError ||
+    // 404 on a chunk = the playlist was deleted mid-publish (e.g. from
+    // another device). Same reasoning: it can never succeed for the
+    // remaining chunks, so fail loudly rather than retry-bucket them all.
+    (error instanceof SpotifyHttpError && error.status === 404) ||
     // A failed token refresh (transient 5xx on /api/token) leaves us with
     // no valid bearer for ANY subsequent chunk — abort rather than retry
     // the same doomed refresh once per remaining chunk. A chunk-level 5xx

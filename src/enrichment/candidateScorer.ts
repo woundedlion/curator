@@ -78,17 +78,33 @@ export function scoreCandidates(
 ): MBCandidate[] {
   if (candidates.length === 0) return candidates;
 
-  const query = {
-    title: normalizeForMatching(track.title),
-    artist: normalizeForMatching(track.artist),
-    album: normalizeForMatching(track.album),
-  };
+  // Build the Fuse query from ONLY the non-empty normalized fields. Fuse
+  // treats an object query as a logical AND across its keys, and an
+  // empty-string sub-query matches nothing — so including `album: ""`
+  // (every text-source / album-less track) or `artist: ""` (a title-only
+  // `.txt` line) makes `fuse.search` return `[]`, collapsing every
+  // candidate's fuseScore to 0 and silently reducing ranking to year-only.
+  // Omitting empty keys preserves the documented field weights for the
+  // fields we actually have. (Verified: the per-key weights still apply to
+  // partial queries.)
+  const query: Partial<Scorable> = {};
+  const queryTitle = normalizeForMatching(track.title);
+  const queryArtist = normalizeForMatching(track.artist);
+  const queryAlbum = normalizeForMatching(track.album);
+  if (queryTitle) query.title = queryTitle;
+  if (queryArtist) query.artist = queryArtist;
+  if (queryAlbum) query.album = queryAlbum;
 
   const fuse = new Fuse<Scorable>(candidates.map(buildFuseTarget), FUSE_OPTIONS);
 
   const fuseScoresByIndex = new Map<number, number>();
-  for (const result of fuse.search(query)) {
-    fuseScoresByIndex.set(result.refIndex, fuseDistanceToScore(result.score));
+  // No non-empty query fields → no text signal; leave all fuseScores at 0
+  // and let year credit alone order the candidates (an empty `search({})`
+  // returns nothing anyway, so guarding here just makes the intent explicit).
+  if (queryTitle || queryArtist || queryAlbum) {
+    for (const result of fuse.search(query)) {
+      fuseScoresByIndex.set(result.refIndex, fuseDistanceToScore(result.score));
+    }
   }
 
   return candidates

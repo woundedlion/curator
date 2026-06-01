@@ -504,7 +504,6 @@ describe("searchRecordings (mocked fetch)", () => {
       expect(String(error)).toContain("MusicBrainz unavailable");
       expect(fetchMock).toHaveBeenCalledTimes(2);
     });
-  });
 
     it("REGRESSION: cancelling a tag during the 503 backoff rejects promptly with RequestCancelledError", async () => {
       // Finding #4: the backoff must surface cancellation immediately,
@@ -532,6 +531,7 @@ describe("searchRecordings (mocked fetch)", () => {
       expect(error).toBeInstanceOf(RequestCancelledError);
       expect(fetchMock).toHaveBeenCalledTimes(1);
     });
+  });
 
   describe("error paths", () => {
     it("surfaces non-2xx responses as Errors with the body", async () => {

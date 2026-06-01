@@ -121,6 +121,45 @@ describe("scoreCandidates", () => {
     }
   });
 
+  // REGRESSION: a track with no album (every plain-text import) must still
+  // rank by title/artist. The Fuse object query is a logical AND across keys,
+  // and an empty-string `album` sub-query matches nothing — so including
+  // `album: ""` returned [] from search, collapsing every fuseScore to 0 and
+  // leaving the candidates ordered by year only. The scorer now omits empty
+  // query fields. Asserting RANKING (not just finiteness) is what catches the
+  // regression: under the bug both scores were equal (year-only), so the
+  // wrong-title candidate could sort first.
+  it("ranks by title/artist when the track has no album (text-import path)", () => {
+    const candidates = [
+      buildCandidate({
+        recordingId: "wrong",
+        title: "Idioteque",
+        artist: "Radiohead",
+      }),
+      buildCandidate({
+        recordingId: "right",
+        title: "Karma Police",
+        artist: "Radiohead",
+      }),
+    ];
+    const track = buildTrack({ title: "Karma Police", artist: "Radiohead" });
+    const out = scoreCandidates(track, candidates);
+    expect(out[0]!.recordingId).toBe("right");
+    expect(out[0]!.score).toBeGreaterThan(out[1]!.score);
+  });
+
+  // REGRESSION: a title-only `.txt` line (no artist, no album) must still
+  // produce a usable title ranking rather than all-zero scores.
+  it("ranks by title when the track has only a title", () => {
+    const candidates = [
+      buildCandidate({ recordingId: "wrong", title: "Paranoid Android" }),
+      buildCandidate({ recordingId: "right", title: "Karma Police" }),
+    ];
+    const out = scoreCandidates(buildTrack({ title: "Karma Police" }), candidates);
+    expect(out[0]!.recordingId).toBe("right");
+    expect(out[0]!.score).toBeGreaterThan(out[1]!.score);
+  });
+
   it("does not mutate the input array", () => {
     const original = [
       buildCandidate({ recordingId: "a", title: "Karma Police" }),

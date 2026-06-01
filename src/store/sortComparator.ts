@@ -33,7 +33,12 @@ function getFieldValue(track: Track, field: SortField): Comparable {
   }
 }
 
-function isMissing(value: Comparable): boolean {
+// A field counts as "missing" for sort (sorts to the bottom) and for the
+// source-of-truth fill-missing merge (a missing field may be filled by an
+// automatic source). The two notions MUST stay identical — exported as the
+// single shared predicate so playlistStore's fill logic can't drift from
+// the sort's definition of empty.
+export function isMissing(value: Comparable): boolean {
   return value === undefined || value === null || value === "";
 }
 
