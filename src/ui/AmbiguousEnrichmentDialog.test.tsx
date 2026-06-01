@@ -132,4 +132,24 @@ describe("AmbiguousEnrichmentDialog", () => {
       "ambiguous",
     );
   });
+
+  it("clicking the backdrop closes the dialog (== onClose)", () => {
+    seedTrack(ambiguousTrack([candidate()]));
+    const onClose = vi.fn();
+    const { container } = render(
+      <AmbiguousEnrichmentDialog trackId="t1" onClose={onClose} />,
+    );
+    const backdrop = container.querySelector(".fixed.inset-0") as HTMLElement;
+    fireEvent.click(backdrop);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("clicking inside the panel does NOT close the dialog", () => {
+    seedTrack(ambiguousTrack([candidate()]));
+    const onClose = vi.fn();
+    render(<AmbiguousEnrichmentDialog trackId="t1" onClose={onClose} />);
+    // Click the heading inside the panel — must not bubble to the backdrop.
+    fireEvent.click(screen.getByText("Pick a MusicBrainz match"));
+    expect(onClose).not.toHaveBeenCalled();
+  });
 });

@@ -365,6 +365,71 @@ describe("SpotifySdkBackend — 500ms polling cycle", () => {
     expect(events).toEqual([]);
   });
 
+  it("REGRESSION: resume() restarts the poller after a mid-track pause stopped it (no player_state_changed needed)", async () => {
+    // A mid-track pause stops the poller to spare the rate limiter,
+    // counting on the SDK's player_state_changed(paused:false) to restart
+    // it on resume. But resume() itself must defensively restart the
+    // poller: if the SDK resumes WITHOUT firing that event (or fires it
+    // before the dedupe flips), the poller would otherwise stay dead and
+    // position updates freeze. resume() calls startPoller() directly.
+    player.getCurrentState.mockResolvedValue({
+      paused: false,
+      position: 1_000,
+      duration: 30_000,
+    } satisfies SpotifyPlayerSdkState);
+    await backend.load({
+      kind: "spotify-sdk",
+      uri: "spotify:track:abc",
+      label: "Spotify (full track)",
+    });
+    // One tick to register playback (hasPlayed=true) via a playing state.
+    await vi.advanceTimersByTimeAsync(500);
+    expect(player.getCurrentState.mock.calls.length).toBeGreaterThan(0);
+
+    // Mid-track pause (position != 0) via the SDK event — applyState stops
+    // the poller because hasPlayed is set.
+    player.fireStateChanged({ paused: true, position: 1_200, duration: 30_000 });
+    const callsAtPause = player.getCurrentState.mock.calls.length;
+    // Poller is dead: advancing time produces no further getCurrentState.
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(player.getCurrentState.mock.calls.length).toBe(callsAtPause);
+
+    // Resume WITHOUT any player_state_changed(paused:false) event. resume()
+    // must restart the poller on its own.
+    await backend.resume();
+    expect(resumeSpotifyPlayback).toHaveBeenCalledWith(player);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(player.getCurrentState.mock.calls.length).toBeGreaterThan(
+      callsAtPause,
+    );
+  });
+
+  it("resume() restarting an already-running poller does not double-schedule (idempotent)", async () => {
+    // resume() unconditionally calls startPoller(); if the poller is still
+    // running (e.g. resume issued while playing), startPoller() must no-op
+    // rather than stack a second interval that doubles the RPC rate.
+    player.getCurrentState.mockResolvedValue({
+      paused: false,
+      position: 1_000,
+      duration: 30_000,
+    } satisfies SpotifyPlayerSdkState);
+    await backend.load({
+      kind: "spotify-sdk",
+      uri: "spotify:track:abc",
+      label: "Spotify (full track)",
+    });
+    await vi.advanceTimersByTimeAsync(500);
+    const callsAfterOneTick = player.getCurrentState.mock.calls.length;
+
+    // Poller is running; resume() while running must not add a 2nd timer.
+    await backend.resume();
+    await vi.advanceTimersByTimeAsync(500);
+    // Exactly ONE additional tick — not two — proves no double-scheduling.
+    expect(player.getCurrentState.mock.calls.length).toBe(
+      callsAfterOneTick + 1,
+    );
+  });
+
   it("a getCurrentState rejection is swallowed silently (no observer error event)", async () => {
     // The comment in startPoller says rejection happens when the device
     // is no longer active and we don't want to spam errors — the SDK

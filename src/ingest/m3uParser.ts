@@ -1,11 +1,18 @@
 import { v4 as uuid } from "uuid";
 import { ARTIST_TITLE_SEPARATOR } from "../constants";
 import type { Track } from "../types";
+import { classifySegments } from "./filenameHeuristic";
 import { normalizeText, readBlobAsText } from "../util/textNormalize";
 
 const EXTINF_PREFIX = "#EXTINF:";
 
-type ExtInfHint = { artist?: string; title?: string; durationMs?: number };
+type ExtInfHint = {
+  artist?: string;
+  title?: string;
+  album?: string;
+  trackNo?: number;
+  durationMs?: number;
+};
 
 function parseExtInfLine(line: string): ExtInfHint {
   // `#EXTINF:<seconds>,<artist - title>` per the EXTM3U convention.
@@ -26,23 +33,27 @@ function parseExtInfLine(line: string): ExtInfHint {
 
   const after = payload.slice(commaIndex + 1).trim();
   if (after.length === 0) return durationMs !== undefined ? { durationMs } : {};
+  // Route the metadata tail through the same `classifySegments` source of
+  // truth that the filename heuristic and text-line parser use, so a
+  // `<artist> - <album> - <track#> - <title>` EXTINF tail parses
+  // identically to the same string arriving as a filename instead of
+  // collapsing everything after the first separator into the title (which
+  // silently dropped the album and any embedded track number).
   const segments = after
     .split(ARTIST_TITLE_SEPARATOR)
     .map((segment) => segment.trim());
-  if (segments.length >= 2) {
-    // Defense-in-depth: coerce empty segments to undefined rather than
-    // letting `""` through as a real blank field (a blank title/artist
-    // would suppress the downstream blank-fallthrough and feed an empty
-    // string to the matchers). The leading `.trim()` on `after` makes an
-    // empty segment unreachable today, but this keeps the contract intact
-    // if the separator handling ever changes.
-    return {
-      artist: segments[0] || undefined,
-      title: segments.slice(1).join(ARTIST_TITLE_SEPARATOR) || undefined,
-      durationMs,
-    };
-  }
-  return { title: after, durationMs };
+  const hint = classifySegments(segments);
+  return {
+    // Coerce empty fields to undefined rather than letting `""` through as
+    // a real blank field (a blank title/artist would suppress the
+    // downstream blank-fallthrough and feed an empty string to the
+    // matchers).
+    artist: hint.artist || undefined,
+    title: hint.title || undefined,
+    album: hint.album || undefined,
+    trackNo: hint.trackNo,
+    durationMs,
+  };
 }
 
 function buildTrack(rawLine: string, hint: ExtInfHint): Track {
@@ -51,6 +62,8 @@ function buildTrack(rawLine: string, hint: ExtInfHint): Track {
     source: { kind: "m3u", rawLine },
     artist: hint.artist,
     title: hint.title,
+    album: hint.album,
+    trackNo: hint.trackNo,
     durationMs: hint.durationMs,
     enrichment: { status: "idle" },
     spotify: { status: "idle" },

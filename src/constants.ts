@@ -37,6 +37,13 @@ export const SPOTIFY_AUTHORIZE_URL = "https://accounts.spotify.com/authorize";
 export const SPOTIFY_TOKEN_URL = "https://accounts.spotify.com/api/token";
 export const SPOTIFY_API_BASE = "https://api.spotify.com/v1";
 
+// Per-request fetch timeout shared by api.spotify.com calls (apiClient) and
+// the token endpoint (authFlow). Both lanes share one circuit breaker, so a
+// hung request on either must time out or it traps the half-open probe slot.
+// Single source of truth so the two lanes can't drift apart. 20s is well
+// above Spotify's p99 (~1s) — a real timeout is the signal, not the norm.
+export const SPOTIFY_REQUEST_TIMEOUT_MS = 20_000;
+
 export const MUSICBRAINZ_API_BASE = "https://musicbrainz.org/ws/2";
 export const COVER_ART_BASE = "https://coverartarchive.org/release";
 

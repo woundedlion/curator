@@ -199,6 +199,7 @@ describe("pickSpotifyCandidate — identity-change contract (DESIGN §4.5 item 1
           status: "matched",
           mbRecordingId: "stale-rec",
           score: 0.88,
+          candidates: [],
         },
       }),
     );

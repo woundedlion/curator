@@ -18,7 +18,9 @@ type ParseResponse =
   | { id: number; ok: true; fields: ParsedFields }
   | { id: number; ok: false; error: string };
 
-function durationToMs(durationSec: number | undefined): number | undefined {
+export function durationToMs(
+  durationSec: number | undefined,
+): number | undefined {
   // music-metadata can surface a NaN or Infinity duration for some
   // containers/streams. `typeof NaN === "number"`, so a bare type check
   // would let it through and poison Track.durationMs (sort/scoring/UI).
@@ -37,14 +39,14 @@ function durationToMs(durationSec: number | undefined): number | undefined {
 // isn't a sane, in-range value to undefined rather than letting it
 // poison the Track. Kept in sync with the equivalent guards in
 // metadata/audioParser.ts (the non-worker fallback consumer).
-function sanePosition(value: unknown): number | undefined {
+export function sanePosition(value: unknown): number | undefined {
   // track/disc numbers: must be a finite positive integer.
   if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
   if (!Number.isInteger(value) || value <= 0) return undefined;
   return value;
 }
 
-function saneYear(value: unknown): number | undefined {
+export function saneYear(value: unknown): number | undefined {
   // A plausible release year. The lower bound predates recorded music;
   // the upper bound gives generous slack past "now" for mis-tagged or
   // future-dated promo releases without admitting 5-digit garbage.
@@ -69,18 +71,30 @@ async function parseOne(file: File): Promise<ParsedFields> {
   };
 }
 
-self.addEventListener("message", async (event: MessageEvent<ParseRequest>) => {
-  const { id, file } = event.data;
-  try {
-    const fields = await parseOne(file);
-    const response: ParseResponse = { id, ok: true, fields };
-    (self as unknown as Worker).postMessage(response);
-  } catch (error) {
-    const message =
-      error instanceof Error ? error.message : "unknown parse error";
-    const response: ParseResponse = { id, ok: false, error: message };
-    (self as unknown as Worker).postMessage(response);
-  }
-});
+// Guard the top-level worker wiring behind a typeof check. In a real
+// Worker context `self` is the WorkerGlobalScope and this registers the
+// message handler exactly as before. Under the node/happy-dom test env
+// there is no worker `self.addEventListener`, so importing this module
+// to unit-test the pure helpers above would otherwise throw at load
+// time. The guard makes the module importable in tests WITHOUT changing
+// runtime behavior in an actual worker.
+if (typeof self !== "undefined" && typeof self.addEventListener === "function") {
+  self.addEventListener(
+    "message",
+    async (event: MessageEvent<ParseRequest>) => {
+      const { id, file } = event.data;
+      try {
+        const fields = await parseOne(file);
+        const response: ParseResponse = { id, ok: true, fields };
+        (self as unknown as Worker).postMessage(response);
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "unknown parse error";
+        const response: ParseResponse = { id, ok: false, error: message };
+        (self as unknown as Worker).postMessage(response);
+      }
+    },
+  );
+}
 
 export type { ParseRequest, ParseResponse, ParsedFields };

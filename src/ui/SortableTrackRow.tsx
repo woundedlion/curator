@@ -1,4 +1,4 @@
-import { memo, useCallback, type KeyboardEvent, type MouseEvent } from "react";
+import { memo, useCallback, type MouseEvent } from "react";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import type { Track } from "../types";
@@ -115,29 +115,11 @@ function SortableTrackRowImpl({
     [onRowClick, track.id],
   );
 
-  // Keyboard activation parity with click: Enter or Space on a row
-  // toggles selection with the same shift/ctrl semantics. Ignored when
-  // focus is inside a child button so the per-row icons keep their own
-  // Enter/Space behavior.
-  const handleKeyDown = useCallback(
-    (e: KeyboardEvent<HTMLDivElement>) => {
-      if (
-        e.target instanceof Element &&
-        e.target !== e.currentTarget &&
-        e.target.closest('button, a, input, [role="button"]')
-      ) {
-        return;
-      }
-      if (e.key === "Enter" || e.key === " ") {
-        e.preventDefault();
-        onRowClick(track.id, {
-          shift: e.shiftKey,
-          meta: e.metaKey || e.ctrlKey,
-        });
-      }
-    },
-    [onRowClick, track.id],
-  );
+  // NOTE: rows deliberately have NO onKeyDown handler. They are
+  // tabIndex=-1 (never a tab stop) and virtualize, so DOM focus lives on
+  // the grid container, not the row. Keyboard activation of the cursor
+  // row (Space/Enter toggles selection) is handled centrally by the
+  // container's nav hook (useTableKeyboardNav) against the cursor row.
   const handlePickSpotify = useCallback(
     () => onPickSpotifyMatch(track.id),
     [onPickSpotifyMatch, track.id],
@@ -178,7 +160,6 @@ function SortableTrackRowImpl({
       id={rowId}
       style={style}
       onClick={handleClick}
-      onKeyDown={handleKeyDown}
       role="row"
       // Focus is managed at the grid container via aria-activedescendant
       // (rows virtualize and can unmount), so individual rows are never

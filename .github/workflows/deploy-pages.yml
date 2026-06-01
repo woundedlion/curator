@@ -24,6 +24,12 @@ jobs:
           node-version: 20
           cache: npm
       - run: npm ci
+      # Non-blocking supply-chain audit: surfaces high-severity advisories
+      # in the CI logs without failing the build on transitive advisories
+      # we can't immediately fix (avoids blocking deploys on upstream CVEs).
+      - run: npm audit --audit-level=high
+        continue-on-error: true
+      - run: npm run typecheck
       - run: npm run lint
       - run: npm test
       - run: npm run build

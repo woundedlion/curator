@@ -23,6 +23,17 @@ export function isNavKey(key: string): key is NavKey {
   return (NAV_KEYS as readonly string[]).includes(key);
 }
 
+// Keys that toggle selection on the cursor row (the grid's active
+// descendant) — parity with a plain row click. Space and Enter both
+// activate, matching native list/grid affordances. The container owns
+// keyboard focus (rows are tabIndex=-1 and virtualize), so this is the
+// ONLY keyboard path to toggle the cursor row; see useTableKeyboardNav.
+const TOGGLE_KEYS = ["Enter", " "] as const;
+
+export function isToggleKey(key: string): boolean {
+  return (TOGGLE_KEYS as readonly string[]).includes(key);
+}
+
 export type KeyboardNavInput = {
   key: NavKey;
   shift: boolean;

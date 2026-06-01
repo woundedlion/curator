@@ -2,6 +2,7 @@ import {
   PKCE_STATE_KEY,
   PKCE_VERIFIER_KEY,
   SPOTIFY_AUTHORIZE_URL,
+  SPOTIFY_REQUEST_TIMEOUT_MS,
   SPOTIFY_SCOPES,
   SPOTIFY_TOKEN_URL,
 } from "../constants";
@@ -21,10 +22,10 @@ import { clearTokens, readTokens, writeTokens } from "./tokenStorage";
 
 const ACCESS_TOKEN_REFRESH_GUARD_MS = 30 * 1000;
 
-// Matches apiClient REQUEST_TIMEOUT_MS. Bounded so a hung token-endpoint
-// request can't trap the half-open probe slot (the token path shares
-// the same breaker as api.spotify.com calls).
-const TOKEN_REQUEST_TIMEOUT_MS = 20_000;
+// Shared with apiClient's REQUEST_TIMEOUT_MS via constants. Bounded so a
+// hung token-endpoint request can't trap the half-open probe slot (the
+// token path shares the same breaker as api.spotify.com calls).
+const TOKEN_REQUEST_TIMEOUT_MS = SPOTIFY_REQUEST_TIMEOUT_MS;
 
 type TokenResponse = {
   access_token: string;

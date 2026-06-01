@@ -33,10 +33,15 @@
 //     it; the fallback for the blind (CORS-hidden) case is a 10-minute
 //     default — long enough to break the retry-into-ban loop on a
 //     hidden multi-hour penalty.
-//   - Queue and breaker state are both persisted to localStorage; a
-//     page reload after a heavy burst doesn't reset the spacing
-//     Spotify is still counting against the rolling window, and it
-//     can't reset an active ban.
+//   - The rate-limit machinery's own state — the queue's spacing
+//     window and the breaker's open-until/escalation counters — is
+//     persisted to localStorage; a page reload after a heavy burst
+//     doesn't reset the spacing (Spotify is still counting against the
+//     rolling window) and can't reset an active ban. NOTE: this is
+//     ONLY the queue/breaker bookkeeping. OAuth tokens are NOT here —
+//     they live in sessionStorage (see tokenStorage.ts); none of the
+//     persistence described in this file touches the access/refresh
+//     token.
 
 import { getValidAccessToken } from "./authFlow";
 import { CircuitBreaker } from "./circuitBreaker";
@@ -44,6 +49,7 @@ import { IntervalQueue, type QueueDepthObserver } from "../util/intervalQueue";
 import {
   SPOTIFY_API_BASE,
   SPOTIFY_NEXT_ALLOWED_AT_KEY,
+  SPOTIFY_REQUEST_TIMEOUT_MS,
 } from "../constants";
 
 export { RequestCancelledError } from "../util/intervalQueue";
@@ -79,6 +85,10 @@ const NEXT_ALLOWED_AT_CAP_MS = 60_000;
 // ceiling room to reach them.
 const CIRCUIT_BREAKER_MIN_MS = 5_000;
 const CIRCUIT_BREAKER_MAX_MS = 12 * 60 * 60 * 1000;
+// MAX_RETRY_AFTER_MS (the Retry-After clamp ceiling, below) MUST equal
+// this so a Spotify-supplied multi-hour value is honored without exceeding
+// the breaker's open ceiling — derive it from this single source of truth
+// rather than re-spelling the 12h literal.
 
 // Pessimistic Retry-After fallback — the DEFAULT applied ONLY when no
 // usable Retry-After is available. Spotify hides Retry-After behind
@@ -91,14 +101,19 @@ const CIRCUIT_BREAKER_MAX_MS = 12 * 60 * 60 * 1000;
 // the same max as the breaker so a Spotify-supplied multi-hour value
 // is honored without exceeding the breaker's ceiling.
 const DEFAULT_RETRY_AFTER_SECONDS = 10 * 60;
-const MAX_RETRY_AFTER_MS = 12 * 60 * 60 * 1000;
+// Kept identical to CIRCUIT_BREAKER_MAX_MS (single source of truth) — the
+// Retry-After clamp ceiling and the breaker's open ceiling are the same
+// 12h bound, so a Spotify multi-hour value is honored up to but not beyond
+// what the breaker can stay open for.
+const MAX_RETRY_AFTER_MS = CIRCUIT_BREAKER_MAX_MS;
 
 // Per-call fetch timeout. Bounded so a hung connection can't keep the
 // half-open probe slot indefinitely (without this, a probe that never
 // resolves would leave `probeInFlight = true` forever and every
-// subsequent caller would fail fast for the rest of the session).
-// 20s is well above Spotify's p99 (~1s); a real timeout is the signal.
-const REQUEST_TIMEOUT_MS = 20_000;
+// subsequent caller would fail fast for the rest of the session). Shared
+// with authFlow's token-endpoint timeout via constants (one breaker, so
+// the two lanes must use the same bound).
+const REQUEST_TIMEOUT_MS = SPOTIFY_REQUEST_TIMEOUT_MS;
 
 // --- error types -----------------------------------------------------------
 
@@ -592,14 +607,25 @@ export const runWithRateLimitPolicy = submitTokenRequest;
  *     fail-fast against the probe-in-flight guard, reopening the circuit
  *     forever while the token stays expired).
  *
- * PRECONDITION (load-bearing): this MUST only be called from inside an
- * in-flight API submission (sendOnce → getValidAccessToken). The
- * half-open logic above relies on it: a refresh does NOT close the
- * breaker itself — it leans on the enclosing API probe to close it once
- * the refresh returns. If a future caller ever refreshes OUTSIDE an API
- * submission (e.g. a proactive "warm the token on focus" path), a
- * half-open refresh would succeed but leave the breaker half-open with
- * no probe to close it. Keep token refreshes subordinate to an API call.
+ * BREAKER RECOVERY (was a load-bearing precondition): a refresh can be
+ * triggered EITHER from inside an in-flight API submission (the common
+ * path: sendOnce → getValidAccessToken) OR from outside one — notably the
+ * Web Playback SDK's `getOAuthToken` callback, which calls
+ * getValidAccessToken directly with no enclosing API request (see
+ * spotifyPlayer.ts). The two cases differ only in who closes the breaker
+ * after a successful half-open refresh:
+ *   - Nested inside an API probe: the breaker already has a probe slot in
+ *     flight (`isProbeInFlight()`), so this refresh must NOT close —
+ *     closing here would reset the escalation counter out from under an
+ *     enclosing probe that might still 429. The enclosing probe closes it.
+ *   - Standalone (no probe in flight) during half-open: there is no
+ *     enclosing probe to restore the breaker, so a successful refresh
+ *     closes it ITSELF (`adoptProbe` below). Without this, a standalone
+ *     refresh — e.g. the SDK token callback firing while the breaker is
+ *     half-open — would succeed yet leave the breaker stuck half-open
+ *     until some unrelated API call happened by to act as the probe.
+ * This makes the refresh lane self-contained w.r.t. breaker recovery, so
+ * it no longer depends on an enclosing API probe.
  */
 export async function submitTokenRefresh(
   send: () => Promise<Response>,
@@ -612,8 +638,19 @@ export async function submitTokenRefresh(
     throw new SpotifyRateLimitError(openMs);
   }
 
+  // Decide ONCE, synchronously at entry, whether THIS refresh owns
+  // breaker recovery: it does iff the breaker is half-open AND no API
+  // probe is already in flight to close it. (Nested-inside-a-probe leaves
+  // probeInFlight=true → we defer to that probe; standalone half-open
+  // refreshes — e.g. the SDK token callback — adopt the responsibility.)
+  const adoptProbe = breaker.isHalfOpen() && !breaker.isProbeInFlight();
+
   const response = await send();
   if (response.status !== RATE_LIMIT_STATUS) {
+    // Self-contained recovery: a standalone successful refresh that
+    // traversed a half-open breaker closes it, so it can't be left stuck
+    // half-open with no enclosing probe to restore it.
+    if (adoptProbe) breaker.close();
     return response;
   }
 

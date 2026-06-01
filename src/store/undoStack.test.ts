@@ -104,7 +104,12 @@ describe("snapshot helpers", () => {
       id: "a",
       source: { kind: "text", rawLine: "a" },
       title: "Karma Police",
-      enrichment: { status: "matched", mbRecordingId: "mb-1", score: 1 },
+      enrichment: {
+        status: "matched",
+        mbRecordingId: "mb-1",
+        score: 1,
+        candidates: [],
+      },
       spotify: {
         status: "matched",
         uri: "spotify:track:xyz",

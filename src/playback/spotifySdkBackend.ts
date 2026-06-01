@@ -101,6 +101,17 @@ export class SpotifySdkBackend implements Backend {
   async resume(): Promise<void> {
     try {
       await resumeSpotifyPlayback(this.player);
+      // Defensively (re)start the position poller. A mid-track pause stops
+      // the poller to spare the rate limiter (see applyState), counting on
+      // the SDK's player_state_changed (paused:false) to restart it on
+      // resume. But that event isn't guaranteed to fire on every resume —
+      // and even when it does, the phase-dedupe in applyState suppresses
+      // the restart if `lastEmittedPaused` was already flipped to false by
+      // an interleaving event. Without an independent restart here, the
+      // poller can stay dead and position updates freeze. startPoller() is
+      // idempotent (no-ops when a poller is already running), so calling it
+      // unconditionally on resume can't double-schedule.
+      this.startPoller();
     } catch (error) {
       console.warn("Spotify SDK resume failed", error);
     }

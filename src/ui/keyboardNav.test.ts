@@ -3,6 +3,7 @@ import {
   computeKeyboardNavStep,
   deriveExtendEnd,
   isNavKey,
+  isToggleKey,
   type KeyboardNavInput,
 } from "./keyboardNav";
 
@@ -37,6 +38,24 @@ describe("isNavKey", () => {
     expect(isNavKey("Enter")).toBe(false);
     expect(isNavKey("Tab")).toBe(false);
     expect(isNavKey("a")).toBe(false);
+  });
+});
+
+describe("isToggleKey", () => {
+  it("matches Space and Enter (cursor-row selection toggle)", () => {
+    expect(isToggleKey(" ")).toBe(true);
+    expect(isToggleKey("Enter")).toBe(true);
+  });
+  it("rejects nav and other keys", () => {
+    expect(isToggleKey("ArrowDown")).toBe(false);
+    expect(isToggleKey("Spacebar")).toBe(false);
+    expect(isToggleKey("Tab")).toBe(false);
+    expect(isToggleKey("a")).toBe(false);
+  });
+  it("is disjoint from isNavKey", () => {
+    for (const key of ["Enter", " "]) {
+      expect(isNavKey(key)).toBe(false);
+    }
   });
 });
 

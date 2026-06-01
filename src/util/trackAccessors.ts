@@ -35,12 +35,13 @@ export function getMbRecordingId(
   return enrichment.status === "matched" ? enrichment.mbRecordingId : undefined;
 }
 
-/** MB candidate list — present on ambiguous, optional on matched/failed. */
+/** MB candidate list — present on matched/ambiguous, optional on failed. */
 export function getMbCandidates(
   enrichment: Enrichment,
 ): readonly MBCandidate[] | undefined {
-  // matched / failed / ambiguous all expose `candidates`; the remaining
-  // arms (idle / pending) don't. One narrowing check covers all three.
+  // matched / failed / ambiguous all expose `candidates` (failed's is
+  // optional, so this can still return undefined); the remaining arms
+  // (idle / pending) don't. One narrowing check covers all three.
   if (
     enrichment.status === "matched" ||
     enrichment.status === "failed" ||

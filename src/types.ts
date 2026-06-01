@@ -1,11 +1,17 @@
 export type SourceKind = "file" | "text" | "m3u" | "spotify-import";
 
-export type TrackSource = {
-  kind: SourceKind;
-  fileName?: string;
-  rawLine?: string;
-  spotifyUri?: string;
-};
+// Discriminated on `kind` so each arm carries exactly the locator field
+// that's meaningful for that source — a `file` row can't smuggle a
+// `spotifyUri`, a `spotify-import` row can't be missing one, and a text/
+// m3u line can't claim a `fileName`. The constructors in ingest/ and
+// spotify/ are the only writers; the union keeps a future writer from
+// producing a nonsensical combination the type system would otherwise
+// wave through.
+export type TrackSource =
+  | { kind: "file"; fileName: string }
+  | { kind: "text"; rawLine?: string }
+  | { kind: "m3u"; rawLine?: string }
+  | { kind: "spotify-import"; spotifyUri: string };
 
 export type MBCandidate = {
   recordingId: string;
@@ -45,7 +51,11 @@ export type Enrichment =
       status: "matched";
       mbRecordingId: string;
       score: number;
-      candidates?: MBCandidate[];
+      // Required (possibly empty) so `matched ⇒ candidates array exists`
+      // holds symmetrically with SpotifyMatch.matched and the `ambiguous`
+      // arm below — a consumer never has to disambiguate "no candidates"
+      // from "candidates not carried." Round-tripped imports synthesize [].
+      candidates: MBCandidate[];
       userOverride?: boolean;
     }
   | {

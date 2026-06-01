@@ -101,7 +101,14 @@ export function NameCollisionDialog({
   if (matches.length === 0) return null;
 
   return (
-    <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/70 p-4">
+    <div
+      className="fixed inset-0 z-40 flex items-center justify-center bg-black/70 p-4"
+      // Clicking the backdrop cancels (== onCancel), matching ConfirmDialog/
+      // SettingsDialog so all dialogs dismiss the same way. Cancel is the
+      // safe/non-destructive choice here (Replace is the only mutation, and
+      // it's behind an explicit button), so backdrop-close is fine.
+      onClick={onCancel}
+    >
       <div
         ref={dialogRef}
         // role/aria-modal/aria-label live on the focus-trapped panel, not
@@ -111,6 +118,9 @@ export function NameCollisionDialog({
         aria-modal="true"
         aria-label="Existing playlist with the same name"
         tabIndex={-1}
+        // Stop clicks inside the panel from bubbling to the backdrop's
+        // onCancel, so interacting with the dialog doesn't dismiss it.
+        onClick={(event) => event.stopPropagation()}
         className="w-full max-w-md rounded-lg bg-neutral-900 p-5 shadow-xl"
       >
         <h2 className="text-base font-semibold">

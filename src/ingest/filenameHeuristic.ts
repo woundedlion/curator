@@ -90,14 +90,22 @@ function hintFromFourOrMoreSegments(segments: string[]): FilenameHint {
     segments[segments.length - 2]!,
   );
   if (trackNoAtMinus2 !== undefined) {
-    // Pattern A: …Artist… - Album - Track# - Title.
-    // Treat segment[-3] alone as album, everything before as artist.
+    // Pattern A: Artist - …Album… - Track# - Title.
+    // `head` is everything before the track number; it has >= 2 entries
+    // (>= 4 total segments minus the track# and the title). Treat the
+    // FIRST segment as the artist and JOIN the remaining middle segments
+    // as the album — mirroring Pattern B's album-join below. For the
+    // canonical 4-segment "Artist - Album - 03 - Title" this is unchanged
+    // (artist=Artist, album=Album); for 5+ segments like
+    // "Various Artists - Greatest Hits - Disc 2 - 03 - Title" it yields a
+    // single artist with a multi-part album instead of folding the extra
+    // leading segments into the artist.
     const head = segments.slice(0, segments.length - 2);
     return {
       trackNo: trackNoAtMinus2,
       title,
-      artist: head.slice(0, -1).join(ARTIST_TITLE_SEPARATOR) || undefined,
-      album: head[head.length - 1],
+      artist: head[0],
+      album: head.slice(1).join(ARTIST_TITLE_SEPARATOR) || undefined,
     };
   }
 

@@ -108,4 +108,36 @@ describe("NameCollisionDialog", () => {
     );
     expect(screen.getByText(/Roadtrip 2026/)).toBeTruthy();
   });
+
+  it("clicking the backdrop cancels (== onCancel) without replacing", () => {
+    const onReplace = vi.fn();
+    const onCancel = vi.fn();
+    const { container } = render(
+      <NameCollisionDialog
+        candidateName="My Mix"
+        matches={[summary("pl-1", "My Mix", 12)]}
+        onReplace={onReplace}
+        onCancel={onCancel}
+      />,
+    );
+    const backdrop = container.querySelector(".fixed.inset-0") as HTMLElement;
+    fireEvent.click(backdrop);
+    expect(onCancel).toHaveBeenCalledTimes(1);
+    expect(onReplace).not.toHaveBeenCalled();
+  });
+
+  it("clicking inside the panel does NOT cancel", () => {
+    const onCancel = vi.fn();
+    render(
+      <NameCollisionDialog
+        candidateName="My Mix"
+        matches={[summary("pl-1", "My Mix", 12)]}
+        onReplace={() => {}}
+        onCancel={onCancel}
+      />,
+    );
+    // Click the heading inside the panel — must not bubble to the backdrop.
+    fireEvent.click(screen.getByText(/You already have a playlist named/));
+    expect(onCancel).not.toHaveBeenCalled();
+  });
 });

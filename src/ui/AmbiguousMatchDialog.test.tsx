@@ -183,6 +183,29 @@ describe("AmbiguousMatchDialog", () => {
     expect(searchSpotifyCandidatesByFields).toHaveBeenCalledTimes(1);
   });
 
+  it("clicking the backdrop closes the dialog (== onClose)", () => {
+    seedTrack(ambiguousTrack([candidate()]));
+    const onClose = vi.fn();
+    const { container } = render(
+      <AmbiguousMatchDialog trackId="t1" onClose={onClose} />,
+    );
+    // The backdrop is the outermost fixed-inset overlay; clicking it
+    // (NOT the panel) cancels.
+    const backdrop = container.querySelector(".fixed.inset-0") as HTMLElement;
+    fireEvent.click(backdrop);
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("clicking inside the panel does NOT close the dialog", () => {
+    seedTrack(ambiguousTrack([candidate()]));
+    const onClose = vi.fn();
+    render(<AmbiguousMatchDialog trackId="t1" onClose={onClose} />);
+    // The dialog heading is inside the panel — a click there must not
+    // bubble to the backdrop's onClose.
+    fireEvent.click(screen.getByText("Pick a Spotify version"));
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
   it("auto-searches on mount when a candidate-less track has query fields", async () => {
     // Round-tripped imports drop the candidate array; the dialog fires one
     // search on mount so the user lands on a populated picker.

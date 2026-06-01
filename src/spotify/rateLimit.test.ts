@@ -1125,6 +1125,55 @@ describe("submitTokenRefresh — breaker-only lane", () => {
     expect(returned).toBeNull();
   });
 
+  it("REGRESSION: a standalone half-open refresh (SDK token callback, no enclosing API probe) closes the breaker itself", async () => {
+    // The latent bug: submitTokenRefresh used to rely on an enclosing API
+    // probe to close() the breaker after a successful half-open refresh.
+    // The Web Playback SDK's getOAuthToken callback calls
+    // getValidAccessToken directly — NO enclosing API submission — so if
+    // the token is expired AND the breaker is half-open at that instant,
+    // the refresh succeeded but left the breaker stuck half-open (openUntil
+    // in the past, no probe in flight) with nothing to close it. The fix
+    // makes a standalone half-open refresh adopt the probe and close the
+    // breaker itself.
+
+    // Trip the breaker with a short window, then let it elapse to half-open.
+    {
+      const send = vi.fn(async () => tooMany("5"));
+      const rej = captureRejection(submitTokenRequest(send, "/trip"));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(await rej).toBeInstanceOf(SpotifyRateLimitError);
+    }
+    await vi.advanceTimersByTimeAsync(6_000);
+    // Sanity: half-open (remainingMs === 0) but the breaker has NOT been
+    // closed — escalation state is still live, so a non-probe API caller
+    // would still need a probe to recover.
+    expect(spotifyCircuitOpenMs()).toBe(0);
+
+    // The SDK token callback's refresh runs with NO enclosing API
+    // submission (no breaker.tryAcquire → no probe in flight). On success
+    // it must close the breaker on its own.
+    const refreshSend = vi.fn(async () => ok());
+    const refreshP = submitTokenRefresh(refreshSend);
+    await vi.advanceTimersByTimeAsync(0);
+    await refreshP;
+    expect(refreshSend).toHaveBeenCalledTimes(1);
+
+    // The breaker is now FULLY closed — the next API caller is admitted as
+    // a plain pass (NOT a half-open probe), proving the breaker wasn't left
+    // stuck half-open. And a fresh 429 starts escalation over at trip #1
+    // (10-min default), confirming the escalation counter was reset by the
+    // self-close rather than carried forward.
+    const apiSend = vi.fn(async () => tooMany(null));
+    const apiRej = captureRejection(submitTokenRequest(apiSend, "/after"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(await apiRej).toBeInstanceOf(SpotifyRateLimitError);
+    expect(apiSend).toHaveBeenCalledTimes(1);
+    expect(spotifyCircuitOpenMs()).toBeGreaterThanOrEqual(
+      DEFAULT_LOCKOUT_MS - 1000,
+    );
+    expect(spotifyCircuitOpenMs()).toBeLessThan(DEFAULT_LOCKOUT_MS + 60_000);
+  });
+
   it("proceeds during half-open WITHOUT consuming the probe slot", async () => {
     // Trip with a short window, then let it elapse into half-open.
     {

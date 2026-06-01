@@ -96,6 +96,7 @@ function track(
             status: "matched",
             mbRecordingId: `mb-${id}`,
             score: 1,
+            candidates: [],
           }
         : { status: opts.enrichmentStatus ?? "idle" },
   };
@@ -277,6 +278,42 @@ describe("enrichAllPending — streaming mode (whileActive)", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("re-processes an id that is deleted and then re-added (same id) mid-session", async () => {
+    // Regression: the `seen` Set was never pruned, so once a track's id
+    // was processed it was skipped for the rest of the session. If that
+    // track was deleted and a NEW track reused the same id within the same
+    // streaming session, the stale `seen` entry wrongly skipped it. The
+    // prune step must drop ids absent from the live playlist so a re-added
+    // id is treated as fresh work.
+    setTracks([track("a", { spotifyStatus: "matched" })]);
+
+    let producerDone = false;
+    const run = enrichAllPending(undefined, {
+      whileActive: () => !producerDone,
+    });
+
+    // After `a` is enriched, delete it and re-add a brand-new track that
+    // reuses the id "a". Use two ticks so the runner observes the deletion
+    // (pruning `seen`) before the re-add becomes eligible again.
+    setTimeout(() => {
+      setTracks([]); // delete "a"
+    }, 30);
+    setTimeout(() => {
+      setTracks([track("a", { spotifyStatus: "matched" })]); // re-add same id
+    }, 60);
+    setTimeout(() => {
+      producerDone = true;
+    }, 120);
+
+    await run;
+
+    const callsForA = mocks.enrichTrack.mock.calls.filter(
+      (c) => c[0].id === "a",
+    );
+    // Once for the original track, once for the re-added one.
+    expect(callsForA.length).toBe(2);
   });
 
   it("each track is enriched AT MOST ONCE per streaming session", async () => {

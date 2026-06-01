@@ -187,7 +187,9 @@ describe("toImportedTrack", () => {
   it("builds a spotify-import sourced Track in matched state", () => {
     const t = toImportedTrack(buildTrackResponse());
     expect(t.source.kind).toBe("spotify-import");
-    expect(t.source.spotifyUri).toBe("spotify:track:track-1");
+    if (t.source.kind === "spotify-import") {
+      expect(t.source.spotifyUri).toBe("spotify:track:track-1");
+    }
     expect(t.spotify.status).toBe("matched");
     if (t.spotify.status === "matched") {
       expect(t.spotify.uri).toBe("spotify:track:track-1");

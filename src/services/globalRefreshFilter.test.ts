@@ -80,7 +80,21 @@ import { reenrichAll } from "./enrichmentRunner";
 import { matchAllOnSpotify } from "./spotifyMatchRunner";
 import { usePlaylistStore } from "../store/playlistStore";
 import { useSettingsStore } from "../store/settingsStore";
-import type { Enrichment, SpotifyMatch, Track } from "../types";
+import type { Enrichment, SpotifyMatch, Track, TrackSource } from "../types";
+
+function sourceFor(
+  id: string,
+  kind: "file" | "text" | "spotify-import",
+): TrackSource {
+  switch (kind) {
+    case "file":
+      return { kind: "file", fileName: `${id}.mp3` };
+    case "text":
+      return { kind: "text", rawLine: `Artist ${id} - Title ${id}` };
+    case "spotify-import":
+      return { kind: "spotify-import", spotifyUri: `spotify:track:${id}` };
+  }
+}
 
 function spotifyStateFor(
   id: string,
@@ -118,6 +132,7 @@ function enrichmentStateFor(
         status: "matched",
         mbRecordingId: "mb-stub",
         score: 1,
+        candidates: [],
         userOverride,
       };
     case "ambiguous":
@@ -136,7 +151,7 @@ function track(
 ): Track {
   return {
     id,
-    source: { kind: opts.sourceKind ?? "file", fileName: `${id}.mp3` },
+    source: sourceFor(id, opts.sourceKind ?? "file"),
     title: `Title ${id}`,
     artist: `Artist ${id}`,
     spotify: spotifyStateFor(id, opts.spotifyStatus ?? "idle"),

@@ -42,6 +42,37 @@ describe("titleSimilarity", () => {
     expect(titleSimilarity("xxxx", "yyyy")).toBe(0);
   });
 
+  it("scores a short coincidental substring BELOW auto-match (precision)", () => {
+    // "Live" is a contiguous substring of "Alive", but they are different
+    // titles. The old code returned 4/5 = 0.8 via the containment branch;
+    // the length gate now forces it through the blended signal, which
+    // lands it below the auto-match threshold.
+    const score = titleSimilarity("Live", "Alive");
+    expect(score).toBeLessThan(MIN_AUTO_MATCH_TITLE_SIMILARITY);
+  });
+
+  it("scores word reorderings BELOW auto-match (order sensitivity)", () => {
+    // "Karma Police" vs "Police Karma" share every word but in a
+    // different order. The old whitespace-stripped bigram Jaccard scored
+    // them ~0.69 (near-identical); the order-sensitive word signal now
+    // pushes the reordering below the auto-match threshold.
+    const score = titleSimilarity("Karma Police", "Police Karma");
+    expect(score).toBeLessThan(MIN_AUTO_MATCH_TITLE_SIMILARITY);
+  });
+
+  it("keeps true subset / reorder-free matches AT OR ABOVE auto-match", () => {
+    // Sanity floor for the true positives the gate must not regress.
+    expect(
+      titleSimilarity("Yeah! feat. Lil Jon", "Yeah!"),
+    ).toBeGreaterThanOrEqual(MIN_AUTO_MATCH_TITLE_SIMILARITY);
+    expect(
+      titleSimilarity("Lovesponge", "Love Sponge Extended"),
+    ).toBeGreaterThanOrEqual(MIN_AUTO_MATCH_TITLE_SIMILARITY);
+    expect(
+      titleSimilarity("Stargazer", "Stargazers"),
+    ).toBeGreaterThanOrEqual(MIN_AUTO_MATCH_TITLE_SIMILARITY);
+  });
+
   it("publishes a documented auto-match threshold", () => {
     expect(MIN_AUTO_MATCH_TITLE_SIMILARITY).toBe(0.4);
   });

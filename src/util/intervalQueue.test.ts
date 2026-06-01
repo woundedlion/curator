@@ -3,7 +3,11 @@
 // regression here would affect every rate-limited code path.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { IntervalQueue, RequestCancelledError } from "./intervalQueue";
+import {
+  IntervalQueue,
+  RequestCancelledError,
+  TaskTimeoutError,
+} from "./intervalQueue";
 
 describe("IntervalQueue", () => {
   beforeEach(() => {
@@ -603,6 +607,211 @@ describe("IntervalQueue persistence", () => {
     await vi.advanceTimersByTimeAsync(5_000);
     await p;
     expect(backing.size).toBe(0);
+  });
+});
+
+// `inFlight` is now derived from the size of the in-flight Set rather
+// than a hand-maintained counter — these tests pin the getter to the
+// single source of truth and assert it can never desync or go negative.
+describe("IntervalQueue.inFlight", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("reflects the in-flight slot count (0 idle, 1 while a task runs)", async () => {
+    const queue = new IntervalQueue({ intervalMs: 10 });
+    expect(queue.inFlight).toBe(0);
+
+    let resolveTask: (v: string) => void = () => undefined;
+    const taskPromise = new Promise<string>((resolve) => {
+      resolveTask = resolve;
+    });
+    const p = queue.enqueue(() => taskPromise);
+
+    // Task is dispatched and suspended inside run(): exactly one slot.
+    await vi.advanceTimersByTimeAsync(0);
+    expect(queue.inFlight).toBe(1);
+
+    resolveTask("done");
+    await p;
+    // Slot released after settle.
+    expect(queue.inFlight).toBe(0);
+  });
+
+  it("returns to 0 after reset() aborts an in-flight task (no negative drift)", async () => {
+    const queue = new IntervalQueue({ intervalMs: 10 });
+    const p = queue.enqueue(
+      (signal) =>
+        new Promise<string>((_, reject) => {
+          signal.addEventListener("abort", () => reject(new Error("aborted")), {
+            once: true,
+          });
+        }),
+    );
+    const rejection = expect(p).rejects.toThrow();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(queue.inFlight).toBe(1);
+
+    // reset() clears the slot Set immediately. When the stranded run()
+    // later settles its finally block deletes an already-absent slot —
+    // the Set's size simply can't go negative (the old counter needed a
+    // Math.max(0, …) clamp here).
+    queue.reset();
+    expect(queue.inFlight).toBe(0);
+    await rejection;
+    expect(queue.inFlight).toBe(0);
+  });
+});
+
+// Per-task timeout safeguard. DEFAULT (no `taskTimeoutMs`) leaves the
+// queue awaiting a task's run() indefinitely — these tests cover the
+// opt-in behavior: a hung task is failed with TaskTimeoutError, its slot
+// is released, the queue keeps draining, and the timer is cleared on a
+// normal settle so no late rejection fires.
+describe("IntervalQueue task timeout", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("rejects a never-settling task with TaskTimeoutError after the timeout", async () => {
+    const queue = new IntervalQueue({ intervalMs: 10, taskTimeoutMs: 1_000 });
+    // A task that never resolves and ignores its abort signal.
+    const p = queue.enqueue(() => new Promise<string>(() => undefined));
+    // Attach the rejection expectation BEFORE advancing fake timers so
+    // the rejection has a handler when the timeout fires.
+    const expectation = expect(p).rejects.toBeInstanceOf(TaskTimeoutError);
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(queue.inFlight).toBe(1);
+
+    // Just before the timeout: still in flight, not yet rejected.
+    await vi.advanceTimersByTimeAsync(999);
+    expect(queue.inFlight).toBe(1);
+
+    // Crossing the timeout fires the rejection and releases the slot.
+    await vi.advanceTimersByTimeAsync(1);
+    await expectation;
+    expect(queue.inFlight).toBe(0);
+  });
+
+  it("keeps draining subsequent tasks after one times out", async () => {
+    const queue = new IntervalQueue({ intervalMs: 10, taskTimeoutMs: 1_000 });
+    const ran: string[] = [];
+
+    const pHang = queue.enqueue(() => new Promise<string>(() => undefined));
+    const hangExpectation = expect(pHang).rejects.toBeInstanceOf(
+      TaskTimeoutError,
+    );
+    const pNext = queue.enqueue(async () => {
+      ran.push("next");
+      return "ok";
+    });
+
+    await vi.advanceTimersByTimeAsync(0);
+    // Fire the timeout for the hung task.
+    await vi.advanceTimersByTimeAsync(1_000);
+    await hangExpectation;
+
+    // The spacing gap then lets the following task run — the queue did
+    // not wedge on the hung task.
+    await vi.advanceTimersByTimeAsync(10);
+    expect(await pNext).toBe("ok");
+    expect(ran).toEqual(["next"]);
+    expect(queue.inFlight).toBe(0);
+  });
+
+  it("aborts the in-flight controller when a task times out", async () => {
+    const queue = new IntervalQueue({ intervalMs: 10, taskTimeoutMs: 500 });
+    let observedAbort = false;
+    // The task surfaces the queue-supplied signal so we can confirm the
+    // timeout tears it down (mirroring a real fetch cancellation).
+    const p = queue.enqueue(
+      (signal) =>
+        new Promise<string>((_, reject) => {
+          signal.addEventListener(
+            "abort",
+            () => {
+              observedAbort = true;
+              reject(new Error("aborted by timeout"));
+            },
+            { once: true },
+          );
+        }),
+    );
+    const expectation = expect(p).rejects.toBeInstanceOf(TaskTimeoutError);
+
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(500);
+    await expectation;
+    expect(observedAbort).toBe(true);
+    expect(queue.inFlight).toBe(0);
+  });
+
+  it("clears the timer on normal completion (no late rejection fires)", async () => {
+    const queue = new IntervalQueue({ intervalMs: 10, taskTimeoutMs: 1_000 });
+    // Resolves well within the timeout window.
+    const p = queue.enqueue(async () => "fast");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(await p).toBe("fast");
+
+    // The promise already resolved; attach a guard that would catch any
+    // late TaskTimeoutError rejection. Advancing past the original
+    // timeout deadline must NOT trigger anything (timer was cleared).
+    let lateRejection = false;
+    void Promise.resolve(p).catch(() => {
+      lateRejection = true;
+    });
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(lateRejection).toBe(false);
+    expect(queue.inFlight).toBe(0);
+  });
+
+  it("leaves default behavior unchanged when no timeout is configured", async () => {
+    // Without taskTimeoutMs, a hung task stays in flight forever (the
+    // pre-existing behavior). We assert it does NOT get rejected by a
+    // phantom timeout even after a long virtual wait.
+    const queue = new IntervalQueue({ intervalMs: 10 });
+    let settled = false;
+    const p = queue.enqueue(() => new Promise<string>(() => undefined));
+    void p.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(1_000_000);
+    expect(settled).toBe(false);
+    expect(queue.inFlight).toBe(1);
+    // Clean up the stranded in-flight task so it can't leak past the test.
+    queue.reset();
+  });
+
+  it("ignores a non-positive or non-finite taskTimeoutMs (treated as no timeout)", async () => {
+    const queue = new IntervalQueue({ intervalMs: 10, taskTimeoutMs: 0 });
+    let settled = false;
+    const p = queue.enqueue(() => new Promise<string>(() => undefined));
+    void p.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(1_000_000);
+    expect(settled).toBe(false);
+    expect(queue.inFlight).toBe(1);
+    queue.reset();
   });
 });
 

@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { parseM3uContent } from "./m3uParser";
+import type { TrackSource } from "../types";
+
+// m3u rows carry their URL in the `rawLine` arm of the TrackSource union.
+function rawLineOf(source: TrackSource): string | undefined {
+  return "rawLine" in source ? source.rawLine : undefined;
+}
 
 describe("parseM3uContent", () => {
   it("returns no tracks for empty / whitespace-only input", () => {
@@ -10,7 +16,7 @@ describe("parseM3uContent", () => {
   it("ignores comment lines (other than EXTINF)", () => {
     const tracks = parseM3uContent("#EXTM3U\n#some random comment\nfoo.mp3\n");
     expect(tracks).toHaveLength(1);
-    expect(tracks[0]!.source.rawLine).toBe("foo.mp3");
+    expect(rawLineOf(tracks[0]!.source)).toBe("foo.mp3");
   });
 
   it("captures Artist - Title hints from EXTINF", () => {
@@ -26,7 +32,37 @@ describe("parseM3uContent", () => {
       title: "Karma Police",
     });
     expect(tracks[0]!.source.kind).toBe("m3u");
-    expect(tracks[0]!.source.rawLine).toBe("/music/track1.mp3");
+    expect(rawLineOf(tracks[0]!.source)).toBe("/music/track1.mp3");
+  });
+
+  it("extracts album from a 3-part EXTINF tail (artist - album - title)", () => {
+    // Previously the tail was split only on the first separator, so
+    // everything after the artist became the title and the album was
+    // silently lost. Routing through classifySegments restores it.
+    const m3u = [
+      "#EXTINF:200,Radiohead - OK Computer - Karma Police",
+      "/music/track.mp3",
+    ].join("\n");
+    const tracks = parseM3uContent(m3u);
+    expect(tracks[0]).toMatchObject({
+      artist: "Radiohead",
+      album: "OK Computer",
+      title: "Karma Police",
+    });
+  });
+
+  it("extracts the track number from a 4-part EXTINF tail", () => {
+    const m3u = [
+      "#EXTINF:200,Radiohead - In Rainbows - 03 - Nude",
+      "/music/track.mp3",
+    ].join("\n");
+    const tracks = parseM3uContent(m3u);
+    expect(tracks[0]).toMatchObject({
+      artist: "Radiohead",
+      album: "In Rainbows",
+      trackNo: 3,
+      title: "Nude",
+    });
   });
 
   it("falls back to title-only when EXTINF has no separator", () => {
@@ -73,7 +109,7 @@ describe("parseM3uContent", () => {
 
   it("normalizes Windows / classic-Mac line endings", () => {
     const tracks = parseM3uContent("a.mp3\r\nb.mp3\rc.mp3");
-    expect(tracks.map((t) => t.source.rawLine)).toEqual([
+    expect(tracks.map((t) => rawLineOf(t.source))).toEqual([
       "a.mp3",
       "b.mp3",
       "c.mp3",

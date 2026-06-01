@@ -85,6 +85,23 @@ describe("deriveHintsFromFileName", () => {
     });
   });
 
+  it("parses 5+ segments (track at -2) with one artist and a joined album", () => {
+    // "Various Artists - Greatest Hits - Disc 2 - 03 - Title.mp3". The
+    // first segment is the artist; the middle segments before the track
+    // number join into the album (symmetric with the Pattern B album-join)
+    // rather than folding the extra leading segment into the artist.
+    expect(
+      deriveHintsFromFileName(
+        "Various Artists - Greatest Hits - Disc 2 - 03 - Closer.mp3",
+      ),
+    ).toEqual({
+      trackNo: 3,
+      artist: "Various Artists",
+      album: "Greatest Hits - Disc 2",
+      title: "Closer",
+    });
+  });
+
   it("does NOT treat 4-digit years as track numbers", () => {
     // "1999 - Prince - 1999.mp3". The leading "1999" is 4 digits, so the
     // segment regex (`\d{1,3}`) rejects it before the value check even

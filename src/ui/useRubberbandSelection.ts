@@ -15,6 +15,15 @@ import { usePlaylistStore } from "../store/playlistStore";
 // the two interaction models feel symmetric.
 const RUBBERBAND_THRESHOLD_PX = 6;
 
+// Edge auto-scroll: while a marquee drag is active and the pointer sits
+// within this many pixels of the scroll viewport's top/bottom edge, the
+// container scrolls so the user can extend the selection past the
+// visible rows in a single gesture. Scroll speed ramps with edge
+// proximity (0 at the band boundary → AUTO_SCROLL_MAX_PX_PER_FRAME at
+// the very edge) for a smooth, controllable pull.
+const AUTO_SCROLL_EDGE_PX = 48;
+const AUTO_SCROLL_MAX_PX_PER_FRAME = 18;
+
 export type RubberbandRect = {
   // Viewport-relative pixel coordinates for the visible rectangle.
   left: number;
@@ -96,6 +105,16 @@ export function useRubberbandSelection(
     visibleIdsRef.current = visibleTrackIds;
   }, [visibleTrackIds]);
 
+  // Last pointer viewport coords seen during an active drag. The edge
+  // auto-scroll rAF loop replays selection from these as the container
+  // scrolls under a stationary pointer, so rows scrolling into view get
+  // selected without further pointer movement.
+  const lastPointerRef = useRef<{ clientX: number; clientY: number } | null>(
+    null,
+  );
+  // Handle for the edge auto-scroll animation frame; null when idle.
+  const autoScrollRafRef = useRef<number | null>(null);
+
   const onContainerPointerDown = useCallback(
     (e: ReactPointerEvent<HTMLDivElement>) => {
       // Only respond to primary mouse button / touch / pen.
@@ -123,23 +142,19 @@ export function useRubberbandSelection(
   );
 
   useEffect(() => {
-    function pointerMove(e: PointerEvent) {
+    // Recompute the selection rect + selection for a given pointer
+    // position. Factored out so both the live pointermove handler AND the
+    // edge auto-scroll rAF loop (which keeps the pointer fixed but moves
+    // the container under it) can drive it. Reads container.scrollTop
+    // fresh each call, so a mid-gesture scroll is reflected immediately.
+    function applySelectionForPointer(clientX: number, clientY: number): void {
       const pending = pendingRef.current;
-      if (!pending || pending.pointerId !== e.pointerId) return;
+      if (!pending || !pending.active) return;
       const container = parentRef.current;
       if (!container) return;
-      const dx = e.clientX - pending.startClientX;
-      const dy = e.clientY - pending.startClientY;
-      if (
-        !pending.active &&
-        Math.hypot(dx, dy) < RUBBERBAND_THRESHOLD_PX
-      ) {
-        return;
-      }
-      pending.active = true;
 
       const rect = container.getBoundingClientRect();
-      const currContainerY = e.clientY - rect.top + container.scrollTop;
+      const currContainerY = clientY - rect.top + container.scrollTop;
       const minY = Math.min(pending.startContainerY, currContainerY);
       const maxY = Math.max(pending.startContainerY, currContainerY);
       const totalRows = visibleAtPressRef.current.length;
@@ -167,11 +182,93 @@ export function useRubberbandSelection(
       setSelection(ids, pending.baselineAnchorId);
 
       // Render rectangle in viewport coords (fixed-positioned overlay).
-      const left = Math.min(pending.startClientX, e.clientX);
-      const top = Math.min(pending.startClientY, e.clientY);
-      const width = Math.abs(e.clientX - pending.startClientX);
-      const height = Math.abs(e.clientY - pending.startClientY);
+      const left = Math.min(pending.startClientX, clientX);
+      const top = Math.min(pending.startClientY, clientY);
+      const width = Math.abs(clientX - pending.startClientX);
+      const height = Math.abs(clientY - pending.startClientY);
       setRubberbandRect({ left, top, width, height });
+    }
+
+    // Per-frame edge auto-scroll: while a drag is active and the pointer
+    // is within AUTO_SCROLL_EDGE_PX of the viewport's top/bottom, nudge
+    // the container's scrollTop (proportional to edge proximity) and
+    // re-run the selection from the last pointer position so rows
+    // scrolling into the band get selected. Re-schedules itself until the
+    // drag ends or the pointer leaves the edge zone.
+    function autoScrollStep(): void {
+      autoScrollRafRef.current = null;
+      const pending = pendingRef.current;
+      const container = parentRef.current;
+      const pointer = lastPointerRef.current;
+      if (!pending || !pending.active || !container || !pointer) return;
+
+      const rect = container.getBoundingClientRect();
+      let delta = 0;
+      const distFromTop = pointer.clientY - rect.top;
+      const distFromBottom = rect.bottom - pointer.clientY;
+      if (distFromTop < AUTO_SCROLL_EDGE_PX) {
+        // Proximity ∈ (0,1]: stronger pull closer to the edge.
+        const proximity = Math.min(1, (AUTO_SCROLL_EDGE_PX - distFromTop) / AUTO_SCROLL_EDGE_PX);
+        delta = -Math.ceil(proximity * AUTO_SCROLL_MAX_PX_PER_FRAME);
+      } else if (distFromBottom < AUTO_SCROLL_EDGE_PX) {
+        const proximity = Math.min(1, (AUTO_SCROLL_EDGE_PX - distFromBottom) / AUTO_SCROLL_EDGE_PX);
+        delta = Math.ceil(proximity * AUTO_SCROLL_MAX_PX_PER_FRAME);
+      }
+
+      if (delta !== 0) {
+        const before = container.scrollTop;
+        const maxScroll = container.scrollHeight - container.clientHeight;
+        const next = Math.max(0, Math.min(maxScroll, before + delta));
+        if (next !== before) {
+          container.scrollTop = next;
+          // Re-run selection so the rows now under the (fixed) pointer
+          // band are picked up as the content scrolled.
+          applySelectionForPointer(pointer.clientX, pointer.clientY);
+        }
+        // Keep looping while still in the edge zone (even if clamped at a
+        // boundary, so we resume immediately if scrollHeight grows).
+        autoScrollRafRef.current = requestAnimationFrame(autoScrollStep);
+      }
+      // Out of the edge zone → loop stops; pointermove restarts it.
+    }
+
+    function ensureAutoScroll(): void {
+      if (autoScrollRafRef.current === null) {
+        autoScrollRafRef.current = requestAnimationFrame(autoScrollStep);
+      }
+    }
+
+    function stopAutoScroll(): void {
+      if (autoScrollRafRef.current !== null) {
+        cancelAnimationFrame(autoScrollRafRef.current);
+        autoScrollRafRef.current = null;
+      }
+      lastPointerRef.current = null;
+    }
+
+    function pointerMove(e: PointerEvent) {
+      const pending = pendingRef.current;
+      if (!pending || pending.pointerId !== e.pointerId) return;
+      const container = parentRef.current;
+      if (!container) return;
+      const dx = e.clientX - pending.startClientX;
+      const dy = e.clientY - pending.startClientY;
+      if (
+        !pending.active &&
+        Math.hypot(dx, dy) < RUBBERBAND_THRESHOLD_PX
+      ) {
+        return;
+      }
+      pending.active = true;
+
+      // Record the live pointer so the auto-scroll loop can replay
+      // selection from it while the container scrolls under it.
+      lastPointerRef.current = { clientX: e.clientX, clientY: e.clientY };
+      applySelectionForPointer(e.clientX, e.clientY);
+      // Kick the edge auto-scroll loop; autoScrollStep self-cancels when
+      // the pointer isn't near an edge, so this is a cheap no-op away from
+      // the edges.
+      ensureAutoScroll();
     }
 
     function pointerUp(e: PointerEvent) {
@@ -179,6 +276,9 @@ export function useRubberbandSelection(
       if (!pending || pending.pointerId !== e.pointerId) return;
       const wasActive = pending.active;
       pendingRef.current = null;
+      // Always stop the auto-scroll loop on release — a drag must not keep
+      // scrolling after the pointer is up.
+      stopAutoScroll();
       if (wasActive) {
         // We treated this as a drag; suppress the synthetic click that
         // the browser is about to fire on the press-down target.
@@ -195,6 +295,7 @@ export function useRubberbandSelection(
       const pending = pendingRef.current;
       if (!pending || pending.pointerId !== e.pointerId) return;
       pendingRef.current = null;
+      stopAutoScroll();
       setRubberbandRect(null);
     }
 
@@ -205,6 +306,9 @@ export function useRubberbandSelection(
       window.removeEventListener("pointermove", pointerMove);
       window.removeEventListener("pointerup", pointerUp);
       window.removeEventListener("pointercancel", pointerCancel);
+      // Cancel any in-flight auto-scroll frame on unmount so we don't
+      // touch a detached container a frame later.
+      stopAutoScroll();
     };
   }, [parentRef, setSelection]);
 

@@ -37,7 +37,13 @@ export function AmbiguousEnrichmentDialog({ trackId, onClose }: Props) {
       : [];
 
   return (
-    <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/70 p-4">
+    <div
+      className="fixed inset-0 z-40 flex items-center justify-center bg-black/70 p-4"
+      // Clicking the backdrop cancels (== onClose), matching ConfirmDialog/
+      // SettingsDialog so all dialogs dismiss the same way. This picker is
+      // fully cancelable, so backdrop-close is safe (no destructive footgun).
+      onClick={onClose}
+    >
       <div
         ref={dialogRef}
         // role/aria-modal/aria-label live on the focus-trapped panel
@@ -50,6 +56,9 @@ export function AmbiguousEnrichmentDialog({ trackId, onClose }: Props) {
         // than a separate aria-label that can drift from the <h2> text.
         aria-labelledby="ambiguous-enrichment-dialog-title"
         tabIndex={-1}
+        // Stop clicks inside the panel from bubbling to the backdrop's
+        // onClose, so interacting with the dialog doesn't dismiss it.
+        onClick={(event) => event.stopPropagation()}
         className="w-full max-w-xl rounded-lg bg-neutral-900 p-4 shadow-xl"
       >
         <div className="mb-3">

@@ -415,14 +415,25 @@ export async function enrichAllPending(
   let pollMs = STREAMING_POLL_MS;
 
   while (true) {
-    const trackIds = usePlaylistStore
-      .getState()
-      .playlist.trackIds.filter(
-        (id) =>
-          !seen.has(id) &&
-          !shouldSkipTrack(id) &&
-          (!scope || scope.has(id)),
-      );
+    const liveIds = usePlaylistStore.getState().playlist.trackIds;
+    // Prune `seen` of ids that no longer exist in the live playlist.
+    // Without this, a track deleted mid-session leaves its id in `seen`
+    // forever; if a NEW track later REUSES that same id (a delete +
+    // re-add within one streaming session), the stale entry would wrongly
+    // skip it. Pruning costs one O(n) pass per poll and keeps the
+    // common-case throughput unchanged (no extra MB calls).
+    if (seen.size > 0) {
+      const liveIdSet = new Set(liveIds);
+      for (const id of seen) {
+        if (!liveIdSet.has(id)) seen.delete(id);
+      }
+    }
+    const trackIds = liveIds.filter(
+      (id) =>
+        !seen.has(id) &&
+        !shouldSkipTrack(id) &&
+        (!scope || scope.has(id)),
+    );
     if (trackIds.length === 0) {
       // Nothing eligible right now. Exit unless a producer is still
       // running, in which case poll briefly to catch its output.

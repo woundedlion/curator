@@ -4,6 +4,7 @@ import {
   computeKeyboardNavStep,
   deriveExtendEnd,
   isNavKey,
+  isToggleKey,
 } from "./keyboardNav";
 
 export type TableKeyboardNavOptions = {
@@ -50,6 +51,9 @@ function targetIsTypingSurface(target: EventTarget | null): boolean {
  *
  *   Esc                  clear selection (no-op when empty)
  *   Delete / Backspace   call onDeleteSelection (which owns confirm UI)
+ *   Space / Enter        toggle selection on the cursor row (parity with
+ *                        a row click; the container owns focus so this is
+ *                        the only keyboard path to the cursor-row toggle)
  *   ArrowUp / ArrowDown  move cursor by 1 row, single-select
  *   Home / End           jump to first/last visible row, single-select
  *   PageUp / PageDown    jump by one viewport, single-select
@@ -124,6 +128,20 @@ export function useTableKeyboardNav(options: TableKeyboardNavOptions): void {
         if (selection.size === 0) return;
         onDeleteSelectionRef.current();
         e.preventDefault();
+        return;
+      }
+
+      // Space / Enter toggle selection on the cursor row. The cursor is
+      // the selection anchor (the row the keyboard nav last landed on);
+      // with no anchor there is nothing to toggle, so bail and let the
+      // key do its default thing. preventDefault is required so Space
+      // doesn't also scroll the page.
+      if (isToggleKey(e.key)) {
+        const cursorId = store.selectionAnchorId;
+        if (cursorId === null) return;
+        if (!visibleIds.includes(cursorId)) return;
+        e.preventDefault();
+        store.toggleSelection(cursorId);
         return;
       }
 

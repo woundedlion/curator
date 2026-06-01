@@ -48,8 +48,10 @@
 //   …capped at 2^6 = 64× (~10.6h from the 10-min default), and again
 //    by maxOpenMs (12h).
 //
-// A successful probe (`close()`) resets the count. State is persisted
-// to localStorage so a page refresh DURING an active open window honors
+// A successful probe (`close()`) resets the count. The breaker's own
+// state (open-until timestamp + escalation count — NOT any OAuth token;
+// tokens live in sessionStorage, see tokenStorage.ts) is persisted to
+// localStorage so a page refresh DURING an active open window honors
 // both the window AND the escalation count — Spotify enforces the
 // penalty per app (client_id), not per tab, so a fresh tab that started
 // over at trip #1 would probe back into the ban. Crucially, the count
@@ -142,6 +144,23 @@ export class CircuitBreaker {
   /** Called when the probe call settles (success or rejection). */
   releaseProbe(): void {
     this.probeInFlight = false;
+  }
+
+  /**
+   * Half-open = the open window has elapsed but the breaker hasn't been
+   * closed by a successful probe yet (openUntil is a real past timestamp,
+   * not the closed sentinel 0). Distinguishes "closed" from "recovering"
+   * for callers that traverse the breaker without going through
+   * tryAcquire (the token-refresh lane), which must know whether a
+   * successful pass should itself close the circuit.
+   */
+  isHalfOpen(): boolean {
+    return this.openUntil !== 0 && Date.now() >= this.openUntil;
+  }
+
+  /** Whether a half-open probe slot is currently held by an API submission. */
+  isProbeInFlight(): boolean {
+    return this.probeInFlight;
   }
 
   /**

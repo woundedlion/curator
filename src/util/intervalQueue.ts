@@ -38,6 +38,22 @@ export type IntervalQueueOptions = {
    */
   persistKey?: string;
   persistedCapMs?: number;
+  /**
+   * Optional per-task timeout safeguard. When set (a positive,
+   * finite number of milliseconds), a task whose `run()` promise
+   * does not settle within `taskTimeoutMs` of dispatch is forcibly
+   * failed: its caller rejects with `TaskTimeoutError`, its
+   * AbortController is aborted (so a hung `fetch` is torn down on
+   * the wire), its in-flight slot is released, and the drain loop
+   * continues to the next task. This guards against an upstream
+   * request that never resolves wedging the entire queue forever.
+   *
+   * DEFAULT is `undefined` = no timeout, preserving the original
+   * behavior for existing consumers and tests. The timer is always
+   * cleared when a task settles normally so no timer leaks and no
+   * late rejection can fire after a successful completion.
+   */
+  taskTimeoutMs?: number;
 };
 
 export type EnqueueOptions = {
@@ -91,6 +107,22 @@ export class RequestCancelledError extends Error {
   }
 }
 
+/**
+ * Thrown to the awaiter of a queued task when the task's `run()`
+ * promise fails to settle within the queue's configured
+ * `taskTimeoutMs`. Distinct from `RequestCancelledError` (which
+ * signals "no longer relevant") — a timeout means the work WAS
+ * relevant but the upstream call hung. Callers may choose to treat
+ * it as a transient network failure (retry/back off) rather than
+ * silently dropping it.
+ */
+export class TaskTimeoutError extends Error {
+  constructor(timeoutMs: number) {
+    super(`Task timed out after ${timeoutMs}ms`);
+    this.name = "TaskTimeoutError";
+  }
+}
+
 type Task<T> = {
   run: (signal: AbortSignal) => Promise<T>;
   resolve: (value: T) => void;
@@ -116,9 +148,9 @@ export class IntervalQueue {
   private readonly intervalMs: number;
   private readonly persistKey: string | undefined;
   private readonly persistedCapMs: number;
+  private readonly taskTimeoutMs: number | undefined;
   private readonly pending: Task<unknown>[] = [];
   private readonly inFlightSlots = new Set<InFlightSlot>();
-  private inFlight = 0;
   private draining = false;
   private nextRunAt: number;
   private observers = new Set<QueueDepthObserver>();
@@ -127,9 +159,27 @@ export class IntervalQueue {
     this.intervalMs = options.intervalMs;
     this.persistKey = options.persistKey;
     this.persistedCapMs = options.persistedCapMs ?? 60_000;
+    // Only honor a positive, finite timeout; anything else (0, NaN,
+    // negative) disables the safeguard to preserve default behavior.
+    this.taskTimeoutMs =
+      typeof options.taskTimeoutMs === "number" &&
+      Number.isFinite(options.taskTimeoutMs) &&
+      options.taskTimeoutMs > 0
+        ? options.taskTimeoutMs
+        : undefined;
     this.nextRunAt = this.persistKey
       ? readPersistedFutureTimestamp(this.persistKey, this.persistedCapMs)
       : 0;
+  }
+
+  /**
+   * Number of tasks currently in flight. Single source of truth:
+   * the size of `inFlightSlots`. (Previously mirrored by a manual
+   * counter that needed a `Math.max(0, …)` clamp to survive reset
+   * races — the Set can't go negative, so the clamp is gone.)
+   */
+  get inFlight(): number {
+    return this.inFlightSlots.size;
   }
 
   /** Tasks waiting in the FIFO plus any currently running. */
@@ -290,7 +340,6 @@ export class IntervalQueue {
       slot.controller.abort();
     }
     this.inFlightSlots.clear();
-    this.inFlight = 0;
     this.draining = false;
     this.setNextRunAt(0);
     this.notify();
@@ -348,7 +397,6 @@ export class IntervalQueue {
             continue;
           }
         }
-        this.inFlight++;
         this.setNextRunAt(Date.now() + this.intervalMs);
         const slot: InFlightSlot = {
           tag: task.tag,
@@ -357,25 +405,73 @@ export class IntervalQueue {
         };
         this.inFlightSlots.add(slot);
         this.notify();
+        // Optional per-task timeout. When configured, race the task's
+        // run() against a timer. If the timer wins, abort the slot's
+        // controller (tearing down a hung fetch) and resolve the race
+        // with a sentinel so the loop rejects the caller with
+        // TaskTimeoutError and keeps draining instead of awaiting a
+        // promise that never settles. The timer is ALWAYS cleared in
+        // `finally` so it can't leak or fire a late rejection after a
+        // normal settle.
+        let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+        let timedOut = false;
         try {
-          const value = await task.run(slot.controller.signal);
-          task.resolve(value);
+          let value: unknown;
+          if (this.taskTimeoutMs === undefined) {
+            value = await task.run(slot.controller.signal);
+          } else {
+            const timeoutMs = this.taskTimeoutMs;
+            const timeoutPromise = new Promise<typeof TIMEOUT_SENTINEL>(
+              (resolve) => {
+                timeoutHandle = setTimeout(() => {
+                  timedOut = true;
+                  // Abort the in-flight controller so the underlying
+                  // request is torn down on the wire, mirroring the
+                  // cancelByTag teardown path.
+                  slot.controller.abort();
+                  resolve(TIMEOUT_SENTINEL);
+                }, timeoutMs);
+              },
+            );
+            const runPromise = task.run(slot.controller.signal);
+            // If the timer wins, the run promise stays pending (or
+            // later rejects with an AbortError because we aborted its
+            // controller). Attach a no-op catch so that late settle
+            // doesn't surface as an unhandled rejection — the caller
+            // has already been rejected with TaskTimeoutError.
+            runPromise.catch(() => undefined);
+            const raced = await Promise.race([runPromise, timeoutPromise]);
+            if (raced === TIMEOUT_SENTINEL) {
+              task.reject(new TaskTimeoutError(timeoutMs));
+              // Skip the resolve/cancel handling below — the timeout
+              // already rejected the caller. `finally` releases the
+              // slot and clears the timer.
+              continue;
+            }
+            value = raced;
+          }
+          task.resolve(value as never);
         } catch (error) {
           // When `cancelByTag` aborted us, the underlying fetch throws
           // an AbortError. Translate it to the canonical
           // `RequestCancelledError` so callers (and toasts) see the
           // same typed signal regardless of whether the cancel landed
           // pre-dispatch or mid-flight.
-          task.reject(
-            slot.cancelled ? new RequestCancelledError() : error,
-          );
+          //
+          // A timeout also aborts the controller, so a run() that
+          // rejects with its own AbortError AFTER the timer fired must
+          // surface as TaskTimeoutError, not RequestCancelledError —
+          // `timedOut` disambiguates (the caller was already rejected
+          // above for the sentinel path; here we cover the case where
+          // run() loses the race by rejecting first).
+          if (timedOut) {
+            task.reject(new TaskTimeoutError(this.taskTimeoutMs!));
+          } else {
+            task.reject(slot.cancelled ? new RequestCancelledError() : error);
+          }
         } finally {
+          if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
           this.inFlightSlots.delete(slot);
-          // Clamp at 0: reset() can zero `inFlight` and abort this slot
-          // while its `task.run` is still suspended here; when that
-          // stranded run finally settles, this decrement would otherwise
-          // drive the counter (and `depth`) negative.
-          this.inFlight = Math.max(0, this.inFlight - 1);
           this.notify();
         }
       }
@@ -384,6 +480,10 @@ export class IntervalQueue {
     }
   }
 }
+
+// Unique sentinel used to distinguish "the timeout timer won the race"
+// from any value a task's run() might legitimately resolve with.
+const TIMEOUT_SENTINEL: unique symbol = Symbol("IntervalQueue.timeout");
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));

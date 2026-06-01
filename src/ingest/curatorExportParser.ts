@@ -151,6 +151,7 @@ export function buildTrackFromExport(t: CuratorExportedTrack): Track {
           status: "matched",
           mbRecordingId: t.mbRecordingId,
           score: 1,
+          candidates: [],
         }
       : { status: "idle" },
     spotify: t.spotifyUri
